@@ -1,26 +1,26 @@
-import { createSignal, onMount, onCleanup } from 'solid-js';
-import { SHARED_CONSTANT } from '@connectionengine/core';
+import { SHARED_CONSTANT } from '@connectionengine/core'
+import { createSignal, onCleanup, onMount } from 'solid-js'
 
 export default function App() {
-  const [message, setMessage] = createSignal('Loading...');
+  const [message, setMessage] = createSignal('Loading...')
 
   const fetchData = async () => {
     try {
-      const res = await fetch('http://localhost:3001/health');
-      const data = (await res.json()) as { message: string; status: string };
-      setMessage(data.message + ' ' + data.status);
+      const res = await fetch('http://localhost:3001/health')
+      const data = (await res.json()) as { message: string; status: string }
+      setMessage(data.message + ' ' + data.status)
     } catch {
-      setMessage('Error fetching data');
+      setMessage('Error fetching data')
     }
-  };
+  }
 
   onMount(() => {
-    void fetchData();
+    void fetchData()
     const interval = setInterval(() => {
-      void fetchData();
-    }, 5000);
-    onCleanup(() => clearInterval(interval));
-  });
+      void fetchData()
+    }, 5000)
+    onCleanup(() => clearInterval(interval))
+  })
 
   return (
     <div class="p-4">
@@ -28,5 +28,5 @@ export default function App() {
       <p>Shared: {SHARED_CONSTANT}</p>
       <p>Server: {message()}</p>
     </div>
-  );
+  )
 }

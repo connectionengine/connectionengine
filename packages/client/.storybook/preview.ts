@@ -1,16 +1,16 @@
-import type { Preview } from "storybook-solidjs-vite";
-import "../src/index.css";
+import type { Preview } from 'storybook-solidjs-vite'
+import '../src/index.css'
 
 const preview: Preview = {
   parameters: {
-    actions: { argTypesRegex: "^on[A-Z].*" },
+    actions: { argTypesRegex: '^on[A-Z].*' },
     controls: {
       matchers: {
         color: /(background|color)$/i,
-        date: /Date$/i,
-      },
-    },
-  },
-};
+        date: /Date$/i
+      }
+    }
+  }
+}
 
-export default preview;
+export default preview
