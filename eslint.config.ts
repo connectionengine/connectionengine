@@ -18,7 +18,7 @@ export default tseslint.config(
       },
       parserOptions: {
         projectService: {
-          allowDefaultProject: ['prettier.config.js', 'tailwind.config.ts', 'vite.config.ts', 'packages/client/.storybook/*.ts']
+          allowDefaultProject: ['prettier.config.js', 'tailwind.config.ts', 'vite.config.ts']
         },
         tsconfigRootDir: import.meta.dirname
       }
