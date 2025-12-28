@@ -15,8 +15,9 @@
     }
   },
   "scripts": {
-    "test": "vitest run",
-    "build": "rollup -c"
+    "build": "rollup -c",
+    "check": "tsc --noEmit",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@rollup/plugin-typescript": "^12.3.0",

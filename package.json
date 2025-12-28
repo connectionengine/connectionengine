@@ -10,7 +10,7 @@
     "test": "npm run test --workspaces",
     "lint": "npm run lint --workspaces",
     "format": "prettier . -w",
-    "check": "tsc --noEmit && eslint .",
+    "check": "npm run check --workspaces && eslint .",
     "prepare": "husky"
   },
   "lint-staged": {

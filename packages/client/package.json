@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "check": "tsc --noEmit",
     "build": "vite build",
+    "dev": "vite",
     "preview": "vite preview",
     "test": "playwright test",
     "storybook": "storybook dev -p 6006",
