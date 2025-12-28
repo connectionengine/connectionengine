@@ -1,0 +1,34 @@
+{
+  "name": "connectionengine-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w @connectionengine/client\" \"npm run dev -w @connectionengine/server\"",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "lint": "npm run lint --workspaces",
+    "format": "prettier . -w",
+    "eslint": "eslint .",
+    "eslint:fix": "eslint . --fix"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.2",
+    "@fastify/pre-commit": "^2.2.1",
+    "@ianvs/prettier-plugin-sort-imports": "4.7.0",
+    "@types/node": "^25.0.3",
+    "concurrently": "^9.2.1",
+    "eslint": "9.39.2",
+    "eslint-config-prettier": "10.1.8",
+    "lint-staged": "^16.2.7",
+    "prettier": "3.7.4",
+    "prettier-eslint-cli": "8.0.1",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "prettier-plugin-tailwindcss": "0.7.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "8.50.1",
+    "vitest": "^4.0.16"
+  }
+}
