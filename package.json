@@ -2,16 +2,13 @@
   "name": "connectionengine-monorepo",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "packages/*"
-  ],
   "scripts": {
-    "dev": "concurrently \"npm run dev -w @connectionengine/client\" \"npm run dev -w @connectionengine/server\"",
-    "build": "npm run build --workspaces --if-present",
-    "test": "npm run test --workspaces",
-    "lint": "npm run lint --workspaces",
+    "dev": "concurrently \"pnpm --filter @connectionengine/client dev\" \"pnpm --filter @connectionengine/server dev\"",
+    "build": "pnpm -r --if-present build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
     "format": "prettier . -w",
-    "check": "npm run check --workspaces && eslint .",
+    "check": "pnpm -r check && eslint .",
     "prepare": "husky"
   },
   "lint-staged": {
