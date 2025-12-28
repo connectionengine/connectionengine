@@ -1,6 +1,7 @@
 {
   "name": "connectionengine-monorepo",
   "private": true,
+  "type": "module",
   "workspaces": [
     "packages/*"
   ],
