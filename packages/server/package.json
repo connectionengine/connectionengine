@@ -8,12 +8,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "express": "^5.2.1",
+    "@template/core": "workspace:*",
     "cors": "^2.8.5",
-    "@template/core": "workspace:*"
+    "express": "^5.2.1"
   },
   "devDependencies": {
-    "@types/express": "^5.0.6",
-    "@types/cors": "^2.8.19"
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6"
   }
 }

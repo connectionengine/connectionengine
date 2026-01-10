@@ -40,37 +40,42 @@ pnpm dev
 
 Run these scripts from the root directory:
 
-| Script | Description |
-| :--- | :--- |
-| `pnpm dev` | Starts client and server in development mode concurrently. |
-| `pnpm build` | Builds all packages in the workspace. |
-| `pnpm test` | Runs tests across all packages (Vitest & Playwright). |
-| `pnpm lint` | Lints code using ESLint. |
-| `pnpm format` | Formats code using Prettier. |
-| `pnpm check` | Runs type checking (`tsc`) and linting. |
-| `pnpm prepare` | Sets up Husky git hooks. |
+| Script         | Description                                                |
+| :------------- | :--------------------------------------------------------- |
+| `pnpm dev`     | Starts client and server in development mode concurrently. |
+| `pnpm build`   | Builds all packages in the workspace.                      |
+| `pnpm test`    | Runs tests across all packages (Vitest & Playwright).      |
+| `pnpm lint`    | Lints code using ESLint.                                   |
+| `pnpm format`  | Formats code using Prettier.                               |
+| `pnpm check`   | Runs type checking (`tsc`) and linting.                    |
+| `pnpm prepare` | Sets up Husky git hooks.                                   |
 
 ## 🧰 Tech Stack & Tooling
 
 ### Core Technologies
+
 - **Language**: [TypeScript](https://www.typescriptlang.org/)
 - **Package Manager**: [pnpm](https://pnpm.io/) (Workspaces)
 - **Build Tools**: [Vite](https://vitejs.dev/) (Client), [Rollup](https://rollupjs.org/) (Core)
 
 ### Frontend (`packages/client`)
+
 - **Framework**: [SolidJS](https://www.solidjs.com/)
 - **Styling**: [Tailwind CSS](https://tailwindcss.com/)
 - **Testing**: [Playwright](https://playwright.dev/)
 - **Documentation**: [Storybook](https://storybook.js.org/)
 
 ### Backend (`packages/server`)
+
 - **Framework**: [Express](https://expressjs.com/)
 - **Runtime**: [tsx](https://github.com/privatenumber/tsx) (TypeScript execution)
 
 ### Shared (`packages/core`)
+
 - **Testing**: [Vitest](https://vitest.dev/)
 
 ### DevOps & Code Quality
+
 - **Linting**: [ESLint](https://eslint.org/) (v9, Flat Config)
 - **Formatting**: [Prettier](https://prettier.io/)
 - **Git Hooks**: [Husky](https://typicode.github.io/husky/) & [lint-staged](https://github.com/okonet/lint-staged)
