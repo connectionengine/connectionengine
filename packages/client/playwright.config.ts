@@ -6,10 +6,11 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-  reporter: [['list'], ['html', { open: 'never' }]],
+  reporter: process.env.CI ? 'github' : 'list',
   use: {
-    baseURL: 'http://localhost:5173',
-    trace: 'on-first-retry'
+    baseURL: 'https://localhost:3000',
+    trace: 'on-first-retry',
+    ignoreHTTPSErrors: true
   },
   projects: [
     {
@@ -19,7 +20,8 @@ export default defineConfig({
   ],
   webServer: {
     command: 'npm run dev',
-    url: 'http://localhost:5173',
-    reuseExistingServer: !process.env.CI
+    url: 'https://localhost:3000',
+    reuseExistingServer: !process.env.CI,
+    ignoreHTTPSErrors: true
   }
 })

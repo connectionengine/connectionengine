@@ -6,7 +6,7 @@ test('has title', async ({ page }) => {
 })
 
 test('shows server message', async ({ page }) => {
-  await page.route('http://localhost:3001/health', async (route) => {
+  await page.route('https://localhost:3001/health', async (route) => {
     const json = { message: 'template', status: 'ok' }
     await route.fulfill({ json })
   })
