@@ -6,19 +6,18 @@ import path from 'node:path'
 dotenv.config({ path: '.env.local' })
 dotenv.config()
 
-import { SHARED_CONSTANT } from '@template/core'
 import cors from 'cors'
 import express from 'express'
+import healthRouter from './routes/health'
 
 const app = express()
 const port = process.env.PORT || 3001
 const host = process.env.HOST || 'localhost'
 
 app.use(cors())
+app.use(express.json())
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', message: SHARED_CONSTANT })
-})
+app.use('/health', healthRouter)
 
 const options = {
   key: fs.readFileSync(path.join(process.cwd(), '../../.certs/localhost.key')),
