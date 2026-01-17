@@ -41,7 +41,7 @@ importers:
 
   packages/client:
     dependencies:
-      '@template/core':
+      '@connectionengine/core':
         specifier: workspace:*
         version: link:../core
       solid-js:
@@ -96,7 +96,7 @@ importers:
 
   packages/server:
     dependencies:
-      '@template/core':
+      '@connectionengine/core':
         specifier: workspace:*
         version: link:../core
       cors:

@@ -1,4 +1,4 @@
-import { SHARED_CONSTANT } from '@template/core'
+import { SHARED_CONSTANT } from '@connectionengine/core'
 import type { Component } from 'solid-js'
 import Status from '../components/Status'
 

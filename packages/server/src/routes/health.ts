@@ -1,4 +1,4 @@
-import { SHARED_CONSTANT } from '@template/core'
+import { SHARED_CONSTANT } from '@connectionengine/core'
 import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { healthResponseSchema } from '../schemas/health'
