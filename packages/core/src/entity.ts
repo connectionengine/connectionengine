@@ -25,14 +25,23 @@ export const createEntity = (world: World, options: CreateEntityOptions = {}): E
 }
 
 export const removeEntity = (world: World, entity: Entity, options: CreateEntityOptions = {}): void => {
-  // Components clean themselves up: bitECS removes all components on entity removal,
-  // and our component observer registry (see component.ts) cascades stores + caches.
+  // Identity caches first (synchronous), then bitECS removal which cascades
+  // component + relation cleanup and (via autoRemoveSubject) any subjects of
+  // relations targeting this entity.
+  for (const hook of removeHooks) hook(world, entity)
   bitecs.removeEntity(world, entity)
-  // Identity bookkeeping is handled by component observers (identity.ts) — they
-  // see the UID/BelongsTo removal and update caches accordingly.
   if (!options.silent) {
     world.trace.emit({ kind: 'entity.remove', ts: world.clock.now(), entity })
   }
+}
+
+/**
+ * Pre-removal hook registry. Modules (identity, mutation pipeline) register
+ * cleanup functions here at module load to avoid import cycles.
+ */
+const removeHooks: Array<(world: World, entity: Entity) => void> = []
+export const registerRemoveHook = (hook: (world: World, entity: Entity) => void): void => {
+  removeHooks.push(hook)
 }
 
 export const entityExists = (world: World, entity: Entity): boolean => bitecs.entityExists(world, entity)

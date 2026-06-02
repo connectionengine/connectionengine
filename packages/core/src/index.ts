@@ -38,4 +38,12 @@ export type { Quat2 } from './maths/quat2'
 // ── Tier 1 ────────────────────────────────────────────────────────────────────
 export * from './component'
 export * from './relation'
-export * from './observer'
+// Observers: re-export only the unique hook constructors. The operator
+// vocabulary (Or/And/Not/Any/All/None) lives in ./query for the canonical
+// import path; observers compose them via the same names.
+export { observe, onAdd, onRemove, onSet, onGet } from './observer'
+export type { ObserverTerm } from './observer'
+
+// ── Tier 2 ────────────────────────────────────────────────────────────────────
+export * from './identity'
+export * from './query'
