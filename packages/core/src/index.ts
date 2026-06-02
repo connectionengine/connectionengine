@@ -34,3 +34,8 @@ export type { Vec3 } from './maths/vec3'
 export type { Vec4 } from './maths/vec4'
 export type { Quat } from './maths/quat'
 export type { Quat2 } from './maths/quat2'
+
+// ── Tier 1 ────────────────────────────────────────────────────────────────────
+export * from './component'
+export * from './relation'
+export * from './observer'
