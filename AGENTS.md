@@ -15,7 +15,18 @@ An ECS engine where the entity-component-relationship graph **is** a semantic gr
 
 ## Tech stack
 
-TypeScript · pnpm workspaces · bitECS v4 · TypeBox · SolidJS · Vite/Rollup · Vitest/Playwright · oxlint · Havok (physics worker via SharedArrayBuffer)
+TypeScript · pnpm workspaces · bitECS v4 · TypeBox · SolidJS · @noble/ed25519 · Vite/Rollup · Vitest/Playwright · oxlint · Havok (physics worker via SharedArrayBuffer)
+
+## Engine surface (`@connectionengine/core`)
+
+Tier-by-tier API. All wired through `packages/core/src/index.ts`:
+
+- **Tier 0** — `createWorld`, `destroyWorld`, `tickWorld`, `createEntity`, `removeEntity`, `Schema.*` (TypeBox + SoA Vec3/Quat/Float32/…), `generateKeyPair`, `signTriple`, `verifyTriple`, `createManualClock`, `createTraceSink`.
+- **Tier 1** — `defineComponent({ id, schema, mutationCategory? })`, `setComponent`, `getComponent`, `removeComponent`, `defineRelation`, `addRelation`, `removeRelation`, `observe`, `onAdd`/`onRemove`/`onSet`/`onGet`.
+- **Tier 2** — `UIDComponent`, `BelongsTo`, `setUID`, `getEntityByUID`, `getEntityPath`, `resolveEntityPath`, `query`, `Or`/`And`/`Not`/`Hierarchy`/`Cascade`.
+- **Tier 3** — `defineSystem({ phase, execute?, reactor? })`, `runSystems`, `flushAuthored`/`flushRuntime`, `receivePayload`, `connectInMemory`, `definePrefab`, `instantiatePrefab`, `createSnapshot`, `applySnapshot`.
+- **Tier 4** — `createUser`, `createPeer`, `OwnedBy`/`AuthoritativeFor`, `requestAuthority`, `transferAuthority`, `recoverAuthority`, `createRootCapability`, `delegateCapability`, `verifyCapability`, `addConstraint`, `resolveConstraints`, `validateEvent`.
+- **Testing** — `createPeerPair`, `createPeerMesh` (deterministic clocks + seeded DIDs + in-memory transport).
 
 ## Checks
 
