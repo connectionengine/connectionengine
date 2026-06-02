@@ -11,3 +11,6 @@ test-results
 .env.local
 
 .certs
+
+# CodeGraph index — local, per-machine. Built via `pnpm --filter @connectionengine/core map`.
+.codegraph

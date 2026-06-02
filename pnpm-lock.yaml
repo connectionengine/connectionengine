@@ -103,6 +103,9 @@ importers:
         specifier: ^1.9.3
         version: 1.9.10
     devDependencies:
+      '@colbymchenry/codegraph':
+        specifier: ^0.9.8
+        version: 0.9.8
       '@rollup/plugin-typescript':
         specifier: ^12.3.0
         version: 12.3.0(rollup@4.54.0)(tslib@2.8.1)(typescript@5.9.3)
@@ -245,6 +248,40 @@ packages:
   '@babel/types@7.28.5':
     resolution: {integrity: sha512-qQ5m48eI/MFLQ5PxQj4PFaprjyCTLI37ElWMmNs0K8Lk3dVeOdNpB3ks8jc7yM5CDmVC73eMVk/trk3fgmrUpA==}
     engines: {node: '>=6.9.0'}
+
+  '@colbymchenry/codegraph-darwin-arm64@0.9.8':
+    resolution: {integrity: sha512-5VkzEu37ry6Ol//pK2ZcAYAGtrrCc0PceB/go5TwvP4xqTnYsMDXx2TJviU1ga5ZzLuy6vNnnLikLorNce9uYA==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@colbymchenry/codegraph-darwin-x64@0.9.8':
+    resolution: {integrity: sha512-KhSgxm2xVnhY0HROuN+6VeNCMq+gMIVQpA5e1CpTEt19qWHcFqJcnEwWiL/jWt6tvDQ8TtxO4qUyfIwlod+jHQ==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@colbymchenry/codegraph-linux-arm64@0.9.8':
+    resolution: {integrity: sha512-Y5YV6ZHouM99uN44IWeZ/okUf29wS4kk+m0aGKmec7fKOLwDPKd5QsS5Es5hMjB++h69P8jxc2AGLLXTfOL28Q==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@colbymchenry/codegraph-linux-x64@0.9.8':
+    resolution: {integrity: sha512-vgM1Qa1xLJm52Ju9/JVID3F2ZY3U1xRy+1phy9Bop0Lu4Dx/fHFtZeTnzwdNsBBrmviWz5EsTkdB0g1lbsMmHA==}
+    cpu: [x64]
+    os: [linux]
+
+  '@colbymchenry/codegraph-win32-arm64@0.9.8':
+    resolution: {integrity: sha512-Qn10DVW3zooyd6ixKIR6aygZX1TdKWZPzS2HZvICWw5VVyeKCg2mbAJtLgOzW95jvhMvG05vdqAZeRshmDpcHQ==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@colbymchenry/codegraph-win32-x64@0.9.8':
+    resolution: {integrity: sha512-TWWrVIEZMdO07okfiwHoUprCno9JKQAO8tYwxKBjPTKM8dwGJPL6d/E2E3fCL4FPgk6FMrSnKYfHriyMsoVaaw==}
+    cpu: [x64]
+    os: [win32]
+
+  '@colbymchenry/codegraph@0.9.8':
+    resolution: {integrity: sha512-fH3w7+h8Wn8F7B5zF+y0Upw6j24sAByeshz+Xwhz5DuIFJkHilXw6EGpWlJt6i7cEqK/eSSZv5/PQvEriyseeg==}
+    hasBin: true
 
   '@csstools/color-helpers@5.1.0':
     resolution: {integrity: sha512-S11EXWJyy0Mz5SYvRmY8nJYTFFd1LCNV+7cXyAgQtOOuzb4EsgfqDufL+9esx72/eLhsRdGZwaldu/h+E4t4BA==}
@@ -2871,6 +2908,33 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
+
+  '@colbymchenry/codegraph-darwin-arm64@0.9.8':
+    optional: true
+
+  '@colbymchenry/codegraph-darwin-x64@0.9.8':
+    optional: true
+
+  '@colbymchenry/codegraph-linux-arm64@0.9.8':
+    optional: true
+
+  '@colbymchenry/codegraph-linux-x64@0.9.8':
+    optional: true
+
+  '@colbymchenry/codegraph-win32-arm64@0.9.8':
+    optional: true
+
+  '@colbymchenry/codegraph-win32-x64@0.9.8':
+    optional: true
+
+  '@colbymchenry/codegraph@0.9.8':
+    optionalDependencies:
+      '@colbymchenry/codegraph-darwin-arm64': 0.9.8
+      '@colbymchenry/codegraph-darwin-x64': 0.9.8
+      '@colbymchenry/codegraph-linux-arm64': 0.9.8
+      '@colbymchenry/codegraph-linux-x64': 0.9.8
+      '@colbymchenry/codegraph-win32-arm64': 0.9.8
+      '@colbymchenry/codegraph-win32-x64': 0.9.8
 
   '@csstools/color-helpers@5.1.0': {}
 

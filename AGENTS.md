@@ -37,6 +37,25 @@ pnpm run check   # type checking + linting
 pnpm run test     # vitest unit tests
 ```
 
+## Code map
+
+The core package wraps [`@colbymchenry/codegraph`](https://github.com/colbymchenry/codegraph) (Tree-sitter under the hood — 79 files / 704 nodes / 1.8k edges in this repo) for cross-package code intelligence.
+
+```bash
+pnpm --filter @connectionengine/core map   # sync index + print status
+```
+
+The graph lives at `.codegraph/codegraph.db` (gitignored, ~1.6 MB). After running `map` once, raw queries work from the repo root:
+
+```bash
+npx codegraph query "<symbol>"             # search by name
+npx codegraph callers "<symbol>"           # who calls this?
+npx codegraph callees "<symbol>"           # what does this call?
+npx codegraph impact  "<symbol>"           # full blast radius of a change
+npx codegraph context "<task description>" # markdown context bundle for an AI agent
+npx codegraph serve                        # MCP server for editor / agent integration
+```
+
 ## Design docs
 
 Canonical design document: [`.specs/planning/ecs-network-exploration.md`](./.specs/planning/ecs-network-exploration.md). Per-tier specs derived from it live in `.specs/01-..06-*.md`. Implementation status: [`.specs/planning/implementation-status.md`](./.specs/planning/implementation-status.md).
