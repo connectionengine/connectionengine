@@ -1,4 +1,3 @@
-import { SHARED_CONSTANT } from '@connectionengine/core'
 import type { Component } from 'solid-js'
 import Status from '../components/Status'
 
@@ -13,7 +12,7 @@ interface HomeViewProps {
 const HomeView: Component<HomeViewProps> = (props) => {
   return (
     <>
-      <Status message={props.serverMessage} sharedConstant={SHARED_CONSTANT} />
+      <Status message={props.serverMessage} sharedConstant="connectionengine" />
     </>
   )
 }
