@@ -47,3 +47,10 @@ export type { ObserverTerm } from './observer'
 // ── Tier 2 ────────────────────────────────────────────────────────────────────
 export * from './identity'
 export * from './query'
+
+// ── Tier 3 ────────────────────────────────────────────────────────────────────
+export * from './mutation'
+export * from './transport'
+export * from './system'
+export * from './prefab'
+export * from './snapshot'

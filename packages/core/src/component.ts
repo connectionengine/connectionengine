@@ -138,10 +138,14 @@ export const deriveMutationCategory = (schema: TSchema): MutationCategory => {
 
 // ── defineComponent ───────────────────────────────────────────────────────────
 
-const componentRegistry = new WeakMap<bitecs.ComponentRef, ComponentDefinition>()
+const componentByRef = new WeakMap<bitecs.ComponentRef, ComponentDefinition>()
+/** Global id → definition registry. Components are global; multiple worlds share them. */
+const componentById = new Map<string, ComponentDefinition>()
 
 export const defineComponent = <T extends TSchema>(options: ComponentOptions<T>): ComponentDefinition<T> => {
   const { id, label = id, schema } = options
+  const existing = componentById.get(id)
+  if (existing) return existing as ComponentDefinition<T>
   const mutationCategory = options.mutationCategory ?? deriveMutationCategory(schema)
   const { soaFields, valueFields } = classifyFields(schema)
   const $soa = buildSoAStores(schema)
@@ -172,13 +176,17 @@ export const defineComponent = <T extends TSchema>(options: ComponentOptions<T>)
     $soaFields: soaFields,
     $valueFields: valueFields
   }
-  componentRegistry.set($ref, definition as ComponentDefinition)
+  componentByRef.set($ref, definition as ComponentDefinition)
+  componentById.set(id, definition as ComponentDefinition)
   return definition
 }
 
 /** Resolve a ComponentDefinition from its bitECS ref. */
 export const getComponentDefinition = (ref: bitecs.ComponentRef): ComponentDefinition | undefined =>
-  componentRegistry.get(ref)
+  componentByRef.get(ref)
+
+/** Resolve a ComponentDefinition by its id (across worlds). */
+export const getComponentById = (id: string): ComponentDefinition | undefined => componentById.get(id)
 
 // ── Registration on a world ───────────────────────────────────────────────────
 
@@ -193,6 +201,12 @@ const ensureRegistered = (world: World, component: ComponentDefinition): void =>
   if (set.has(component)) return
   set.add(component)
   world.network.schemas.set(component.id, component.componentSchema)
+  for (const hook of componentRegisterHooks) hook(world, component)
+}
+
+const componentRegisterHooks: Array<(world: World, component: ComponentDefinition) => void> = []
+export const registerComponentRegisterHook = (hook: (world: World, component: ComponentDefinition) => void): void => {
+  componentRegisterHooks.push(hook)
 }
 
 // ── set / get / remove ────────────────────────────────────────────────────────
@@ -272,8 +286,21 @@ export const setComponent = <T extends TSchema>(
     writeSoA(component as ComponentDefinition, entity, value as Record<string, unknown>)
   }
 
-  // Mutation pipeline hooks
-  if (component.mutationCategory === 'runtime') markRuntimeDirty(world, entity, component.id)
+  // Mutation pipeline: runtime → dirty flag; authored → enqueue for end-of-tick
+  // Only locally originated mutations propagate; 'network' origin is suppressed.
+  if (origin === 'local') {
+    if (component.mutationCategory === 'runtime') {
+      markRuntimeDirty(world, entity, component.id)
+    } else if (component.mutationCategory === 'authored') {
+      world.authoredQueue.push({
+        entity,
+        predicate: component.id,
+        op: 'set',
+        value: getComponent(world, entity, component),
+        origin
+      })
+    }
+  }
 
   world.trace.emit({
     kind: 'component.set',
@@ -309,6 +336,15 @@ export const removeComponent = <T extends TSchema>(
   bitecs.removeComponent(world, entity, component.$ref)
   delete component.$store[entity]
   if (component.mutationCategory === 'runtime') clearRuntimeDirty(world, entity, component.id)
+  if (origin === 'local' && component.mutationCategory === 'authored') {
+    world.authoredQueue.push({
+      entity,
+      predicate: component.id,
+      op: 'remove',
+      value: null,
+      origin
+    })
+  }
   world.trace.emit({
     kind: 'component.remove',
     ts: world.clock.now(),

@@ -12,23 +12,18 @@ import type { Clock } from './clock'
 import { wallClock } from './clock'
 import type { TraceSink } from './trace'
 import { createTraceSink } from './trace'
-import type { SignedTriple } from './did'
+import type { KeyPair, SignedTriple } from './did'
+import { generateKeyPair } from './did'
 
 export type Entity = number
 
-/** Forward-declared — full shape in transport.ts. */
+/** A live transport link to a peer. Full shape (memory/webrtc/websocket) in transport.ts. */
 export interface Connection {
   peer: Entity
   backend: 'webrtc' | 'websocket' | 'memory'
-  send(payload: TransportPayload): void
+  /** Payload is mutation.TransportPayload — typed there to keep the cycle clean. */
+  send(payload: unknown): void
   close(): void
-}
-
-/** Forward-declared — full shape in mutation.ts. */
-export interface TransportPayload {
-  kind: 'authored' | 'runtime'
-  data: unknown
-  fromPeer: string
 }
 
 /** Forward-declared — full shape in component.ts. */
@@ -39,9 +34,12 @@ export interface ComponentSchema {
   readonly mutationCategory: 'authored' | 'runtime' | 'local'
 }
 
-/** A queued authored mutation awaiting end-of-tick batch + send. */
+/** A queued authored mutation awaiting end-of-tick path-resolution + sign + send. */
 export interface QueuedAuthored {
-  triple: SignedTriple
+  entity: Entity
+  predicate: string
+  op: 'set' | 'remove' | 'spawn' | 'destroy'
+  value: unknown
   /** Origin: 'local' goes outbound; 'network' does not (received). */
   origin: 'local' | 'network'
 }
@@ -57,10 +55,12 @@ export interface RealtimeBindings {
   connections: Set<Connection>
   /** Component id → ComponentSchema (shareable metadata). */
   schemas: Map<string, ComponentSchema>
-  /** Local peer DID (set when this world joins a session as a peer). */
-  localPeerDID?: string
+  /** Local peer's signing keypair — used to author signed triples on outbound mutations. */
+  localKeyPair: KeyPair
   /** Local peer entity (set on createPeer for this runtime). */
   localPeer?: Entity
+  /** Governance constraint registry — populated by Tier 4 governance.ts. */
+  constraints: Map<Entity, unknown>
 }
 
 export interface World extends bitecs.World {
@@ -103,6 +103,8 @@ export interface CreateWorldOptions {
   clock?: Clock
   /** Trace sink — defaults to an in-memory recording sink. */
   trace?: TraceSink
+  /** Local Ed25519 keypair for signing authored mutations. Defaults to a fresh ephemeral key. */
+  keyPair?: KeyPair
 }
 
 export const createWorld = (options: CreateWorldOptions = {}): World => {
@@ -114,7 +116,9 @@ export const createWorld = (options: CreateWorldOptions = {}): World => {
   world.accumulator = 0
   world.network = {
     connections: new Set(),
-    schemas: new Map()
+    schemas: new Map(),
+    localKeyPair: options.keyPair ?? generateKeyPair(),
+    constraints: new Map()
   }
   world.nameCache = new Map()
   world.parentOf = new Map()

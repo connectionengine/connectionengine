@@ -42,7 +42,8 @@ export interface RelationDefinition<T = void> {
   readonly $relation: bitecs.Relation<T>
 }
 
-const relationRegistry = new WeakMap<bitecs.Relation<unknown>, RelationDefinition<unknown>>()
+const relationByRef = new WeakMap<bitecs.Relation<unknown>, RelationDefinition<unknown>>()
+const relationByName = new Map<string, RelationDefinition<unknown>>()
 
 export const defineRelation = <T = void>(options: RelationOptions<T>): RelationDefinition<T> => {
   const {
@@ -53,6 +54,8 @@ export const defineRelation = <T = void>(options: RelationOptions<T>): RelationD
     store,
     onTargetRemoved
   } = options
+  const existing = relationByName.get(name)
+  if (existing) return existing as RelationDefinition<T>
   const $relation = bitecs.createRelation<T>({
     exclusive,
     autoRemoveSubject,
@@ -66,17 +69,40 @@ export const defineRelation = <T = void>(options: RelationOptions<T>): RelationD
     autoRemoveSubject,
     $relation
   }
-  relationRegistry.set($relation as bitecs.Relation<unknown>, def as RelationDefinition<unknown>)
+  relationByRef.set($relation as bitecs.Relation<unknown>, def as RelationDefinition<unknown>)
+  relationByName.set(name, def as RelationDefinition<unknown>)
   return def
 }
 
 export const getRelationDefinition = (relation: bitecs.Relation<unknown>): RelationDefinition<unknown> | undefined =>
-  relationRegistry.get(relation)
+  relationByRef.get(relation)
+
+export const getRelationByName = (name: string): RelationDefinition<unknown> | undefined => relationByName.get(name)
 
 // ── add / remove pair ────────────────────────────────────────────────────────-
 
 export interface RelationMutationOptions {
   origin?: Origin
+}
+
+// Tier 3 mutation pipeline registers a hook so relations are pipeline-resolvable.
+const relationRegisterHooks: Array<(world: World, relation: RelationDefinition<unknown>) => void> = []
+export const registerRelationRegisterHook = (
+  hook: (world: World, relation: RelationDefinition<unknown>) => void
+): void => {
+  relationRegisterHooks.push(hook)
+}
+
+const seenRelations = new WeakMap<import('./world').World, Set<RelationDefinition<unknown>>>()
+const ensureRelationRegistered = (world: import('./world').World, relation: RelationDefinition<unknown>): void => {
+  let set = seenRelations.get(world)
+  if (!set) {
+    set = new Set()
+    seenRelations.set(world, set)
+  }
+  if (set.has(relation)) return
+  set.add(relation)
+  for (const hook of relationRegisterHooks) hook(world, relation)
 }
 
 export const addRelation = <T>(
@@ -86,8 +112,18 @@ export const addRelation = <T>(
   target: Entity,
   options: RelationMutationOptions = {}
 ): void => {
+  ensureRelationRegistered(world, relation as RelationDefinition<unknown>)
   const origin: Origin = options.origin ?? 'local'
   bitecs.addComponent(world, subject, relation.$relation(target))
+  if (origin === 'local' && relation.mutationCategory === 'authored') {
+    world.authoredQueue.push({
+      entity: subject,
+      predicate: relation.name,
+      op: 'set',
+      value: { target },
+      origin
+    })
+  }
   world.trace.emit({
     kind: 'relation.add',
     ts: world.clock.now(),
@@ -107,6 +143,15 @@ export const removeRelation = <T>(
 ): void => {
   const origin: Origin = options.origin ?? 'local'
   bitecs.removeComponent(world, subject, relation.$relation(target))
+  if (origin === 'local' && relation.mutationCategory === 'authored') {
+    world.authoredQueue.push({
+      entity: subject,
+      predicate: relation.name,
+      op: 'remove',
+      value: { target },
+      origin
+    })
+  }
   world.trace.emit({
     kind: 'relation.remove',
     ts: world.clock.now(),

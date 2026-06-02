@@ -19,6 +19,7 @@ import { Schema } from './schema'
 import { defineComponent, getComponent, setComponent } from './component'
 import { addRelation, defineRelation } from './relation'
 import type { Entity, World } from './world'
+import type { Origin } from './trace'
 import { createEntity, registerRemoveHook } from './entity'
 
 // ── Built-in component + relation ─────────────────────────────────────────────
@@ -84,6 +85,8 @@ registerRemoveHook(cleanupIdentity)
 
 export interface SetUIDOptions {
   parent?: Entity
+  /** Mutation origin tag — defaults to 'local' (will replicate). Pass 'network' from the receive path. */
+  origin?: Origin
 }
 
 /** Assign UID + optional BelongsTo parent. Maintains caches and enforces uniqueness. */
@@ -103,11 +106,11 @@ export const setUID = (world: World, entity: Entity, uid: string, options: SetUI
   if (previousUid !== undefined) unindexFromBucket(world, previousParent, previousUid)
 
   // Write component (instance store value) and relation
-  setComponent(world, entity, UIDComponent, { value: uid })
+  setComponent(world, entity, UIDComponent, { value: uid }, { origin: options.origin })
   world.uidOf.set(entity, uid)
 
   if (options.parent !== undefined) {
-    addRelation(world, entity, BelongsTo, options.parent)
+    addRelation(world, entity, BelongsTo, options.parent, { origin: options.origin })
     world.parentOf.set(entity, options.parent)
   }
 
