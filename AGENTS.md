@@ -42,10 +42,19 @@ pnpm run test     # vitest unit tests
 The core package wraps [`@colbymchenry/codegraph`](https://github.com/colbymchenry/codegraph) (Tree-sitter under the hood — 79 files / 704 nodes / 1.8k edges in this repo) for cross-package code intelligence.
 
 ```bash
-pnpm --filter @connectionengine/core map   # sync index + print status
+pnpm --filter @connectionengine/core map         # sync index + print status
+pnpm --filter @connectionengine/core map:render  # also emit visualisations
 ```
 
-The graph lives at `.codegraph/codegraph.db` (gitignored, ~1.6 MB). After running `map` once, raw queries work from the repo root:
+`map:render` produces three artifacts under `.codegraph/` (all gitignored):
+
+- **`graph.md`** — Mermaid module-level dependency graph of `packages/core/src/`, grouped into Tier 0–4 subgraphs. Renders inline in GitHub, VS Code, Obsidian.
+- **`graph.html`** — interactive Cytoscape view of all ~490 symbols + their `calls`/`references` edges. Search, kind filters, click-to-inspect with incoming/outgoing edges. Open in any browser; self-contained, CDN-loaded.
+- **`graph.json`** — raw `{nodes, edges}` payload for downstream tooling.
+
+The script (`packages/core/scripts/map-render.ts`) reads `.codegraph/codegraph.db` directly via `node:sqlite` (Node 22+). No npm deps. Re-run any time the codebase changes.
+
+After running `map` once, raw codegraph subcommands work from the repo root:
 
 ```bash
 npx codegraph query "<symbol>"             # search by name

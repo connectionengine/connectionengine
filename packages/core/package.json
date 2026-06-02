@@ -18,7 +18,8 @@
     "build": "rollup -c",
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "map": "codegraph sync ../.. && codegraph status ../.."
+    "map": "codegraph sync ../.. && codegraph status ../..",
+    "map:render": "codegraph sync ../.. && tsx scripts/map-render.ts"
   },
   "dependencies": {
     "@noble/ed25519": "^2.2.3",
