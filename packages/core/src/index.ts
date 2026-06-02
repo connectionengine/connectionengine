@@ -54,3 +54,9 @@ export * from './transport'
 export * from './system'
 export * from './prefab'
 export * from './snapshot'
+
+// ── Tier 4 ────────────────────────────────────────────────────────────────────
+export * from './peer'
+export * from './authority'
+export * from './zcap'
+export * from './governance'

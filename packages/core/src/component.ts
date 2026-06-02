@@ -40,10 +40,6 @@ export interface ComponentDefinition<T extends TSchema = TSchema> {
   readonly $schema: T
   readonly mutationCategory: MutationCategory
   readonly componentSchema: ComponentSchema
-  /** SoA stores keyed by field name. Each value is a typed array or SoA helper instance. */
-  readonly $soa: Record<string, unknown>
-  /** Per-entity instance store for value-typed fields. */
-  readonly $store: Record<Entity, Record<string, unknown>>
   /** Default values per field, applied on first set. */
   readonly $defaults: Record<string, unknown>
   /** Internal: bitECS component ref for query/has/add. */
@@ -52,6 +48,14 @@ export interface ComponentDefinition<T extends TSchema = TSchema> {
   readonly $soaFields: readonly string[]
   /** Internal: value-typed (instance store) field names. */
   readonly $valueFields: readonly string[]
+  /** Internal: factory for the per-world SoA stores (typed arrays + helpers). */
+  readonly $createSoA: () => Record<string, unknown>
+}
+
+/** Per-world storage for one component: SoA stores + per-entity instance values. */
+interface PerWorldStores {
+  soa: Record<string, unknown>
+  store: Record<Entity, Record<string, unknown>>
 }
 
 // ── Schema walking ────────────────────────────────────────────────────────────
@@ -74,21 +78,23 @@ const classifyFields = (schema: TSchema): FieldClassification => {
   return { soaFields, valueFields }
 }
 
-const buildSoAStores = (schema: TSchema): Record<string, unknown> => {
-  const stores: Record<string, unknown> = {}
-  if (schema.type !== 'object' || !schema.properties) return stores
-  for (const key of Object.keys(schema.properties)) {
-    const prop = (schema.properties as Record<string, TSchema>)[key]
-    const kind = prop[Kind]
-    if (kind === 'ArrayBuffer') {
-      const arrayKind = prop as unknown as ArrayBufferKind<unknown>
-      stores[key] = resizableArray(arrayKind.instanceOf)
-    } else if (kind === 'SoAStore') {
-      const storeKind = prop as unknown as SoAStoreKind<never, unknown, unknown>
-      stores[key] = new storeKind.construct(storeKind.instanceOf)
+const makeSoAStoreFactory = (schema: TSchema): (() => Record<string, unknown>) => {
+  return () => {
+    const stores: Record<string, unknown> = {}
+    if (schema.type !== 'object' || !schema.properties) return stores
+    for (const key of Object.keys(schema.properties)) {
+      const prop = (schema.properties as Record<string, TSchema>)[key]
+      const kind = prop[Kind]
+      if (kind === 'ArrayBuffer') {
+        const arrayKind = prop as unknown as ArrayBufferKind<unknown>
+        stores[key] = resizableArray(arrayKind.instanceOf)
+      } else if (kind === 'SoAStore') {
+        const storeKind = prop as unknown as SoAStoreKind<never, unknown, unknown>
+        stores[key] = new storeKind.construct(storeKind.instanceOf)
+      }
     }
+    return stores
   }
-  return stores
 }
 
 const buildDefaults = (schema: TSchema): Record<string, unknown> => {
@@ -148,13 +154,13 @@ export const defineComponent = <T extends TSchema>(options: ComponentOptions<T>)
   if (existing) return existing as ComponentDefinition<T>
   const mutationCategory = options.mutationCategory ?? deriveMutationCategory(schema)
   const { soaFields, valueFields } = classifyFields(schema)
-  const $soa = buildSoAStores(schema)
   const $defaults = buildDefaults(schema)
+  const $createSoA = makeSoAStoreFactory(schema)
 
-  // bitECS component ref — we use $soa as the data ref so query() filters work
-  // identically whether or not the component carries SoA fields. For pure-value
-  // components, an empty object is fine.
-  const $ref: bitecs.ComponentRef = $soa as bitecs.ComponentRef
+  // bitECS component ref — opaque marker object. We use a fresh object per
+  // definition so multiple components have distinct refs even when their
+  // schemas have no fields.
+  const $ref: bitecs.ComponentRef = { __ce: id } as bitecs.ComponentRef
 
   const componentSchema: ComponentSchema = {
     id,
@@ -169,12 +175,11 @@ export const defineComponent = <T extends TSchema>(options: ComponentOptions<T>)
     $schema: schema,
     mutationCategory,
     componentSchema,
-    $soa,
-    $store: {},
     $defaults,
     $ref,
     $soaFields: soaFields,
-    $valueFields: valueFields
+    $valueFields: valueFields,
+    $createSoA
   }
   componentByRef.set($ref, definition as ComponentDefinition)
   componentById.set(id, definition as ComponentDefinition)
@@ -188,7 +193,28 @@ export const getComponentDefinition = (ref: bitecs.ComponentRef): ComponentDefin
 /** Resolve a ComponentDefinition by its id (across worlds). */
 export const getComponentById = (id: string): ComponentDefinition | undefined => componentById.get(id)
 
-// ── Registration on a world ───────────────────────────────────────────────────
+// ── Per-world storage ─────────────────────────────────────────────────────────
+//
+// Storage (SoA typed arrays + per-entity instance maps) MUST be per-world. Two
+// worlds in the same process use the same global ComponentDefinition but their
+// entity ids overlap; collapsing storage onto the definition would corrupt
+// state across worlds. We lazily materialise stores per-world on first use.
+
+const worldStores = new WeakMap<World, WeakMap<ComponentDefinition, PerWorldStores>>()
+
+const getStores = (world: World, component: ComponentDefinition): PerWorldStores => {
+  let perWorld = worldStores.get(world)
+  if (!perWorld) {
+    perWorld = new WeakMap()
+    worldStores.set(world, perWorld)
+  }
+  let stores = perWorld.get(component)
+  if (!stores) {
+    stores = { soa: component.$createSoA(), store: {} }
+    perWorld.set(component, stores)
+  }
+  return stores
+}
 
 const registeredWorldComponents = new WeakMap<World, Set<ComponentDefinition>>()
 
@@ -200,6 +226,9 @@ const ensureRegistered = (world: World, component: ComponentDefinition): void =>
   }
   if (set.has(component)) return
   set.add(component)
+  // Ensure stores exist (so callers iterating world's registered components
+  // can rely on getStores returning real storage).
+  getStores(world, component)
   world.network.schemas.set(component.id, component.componentSchema)
   for (const hook of componentRegisterHooks) hook(world, component)
 }
@@ -209,6 +238,24 @@ export const registerComponentRegisterHook = (hook: (world: World, component: Co
   componentRegisterHooks.push(hook)
 }
 
+/**
+ * Public accessor — exposes a component's per-world SoA stores. Used by
+ * snapshot serialisation, mutation pipeline runtime sampling, and any external
+ * code that needs direct SoA reads (e.g. renderers).
+ */
+export const getSoA = (world: World, component: ComponentDefinition): Record<string, unknown> =>
+  getStores(world, component).soa
+
+/** Public accessor — per-world per-entity instance map (value-typed fields). */
+export const getInstanceStore = (
+  world: World,
+  component: ComponentDefinition
+): Record<Entity, Record<string, unknown>> => getStores(world, component).store
+
+/** Iterate every entity that currently has the component on this world (linear scan of instance map). */
+export const componentEntities = (world: World, component: ComponentDefinition): Entity[] =>
+  Object.keys(getStores(world, component).store).map((k) => Number(k))
+
 // ── set / get / remove ────────────────────────────────────────────────────────
 
 export interface SetComponentOptions {
@@ -216,11 +263,16 @@ export interface SetComponentOptions {
   origin?: Origin
 }
 
-const writeSoA = (component: ComponentDefinition, entity: Entity, value: Record<string, unknown>): void => {
+const writeSoA = (
+  soa: Record<string, unknown>,
+  component: ComponentDefinition,
+  entity: Entity,
+  value: Record<string, unknown>
+): void => {
   for (const field of component.$soaFields) {
     if (!(field in value)) continue
     const v = (value as Record<string, unknown>)[field]
-    const store = component.$soa[field] as
+    const store = soa[field] as
       | { from?: (entity: number, data: unknown) => void; resize?: (n: number) => void }
       | undefined
     if (!store) continue
@@ -228,7 +280,6 @@ const writeSoA = (component: ComponentDefinition, entity: Entity, value: Record<
     if (typeof store.from === 'function') {
       store.from(entity, v)
     } else if (Array.isArray(v) || ArrayBuffer.isView(v)) {
-      // Plain typed-array field (Float32, Int32, …) — write at index `entity`
       ;(store as unknown as { [k: number]: number })[entity] =
         (v as unknown as ArrayLike<number>)[0] ?? (v as unknown as number)
     } else if (typeof v === 'number') {
@@ -237,9 +288,14 @@ const writeSoA = (component: ComponentDefinition, entity: Entity, value: Record<
   }
 }
 
-const readSoA = (component: ComponentDefinition, entity: Entity, into: Record<string, unknown>): void => {
+const readSoA = (
+  soa: Record<string, unknown>,
+  component: ComponentDefinition,
+  entity: Entity,
+  into: Record<string, unknown>
+): void => {
   for (const field of component.$soaFields) {
-    const store = component.$soa[field] as { to?: (entity: number, out?: unknown) => unknown } | undefined
+    const store = soa[field] as { to?: (entity: number, out?: unknown) => unknown } | undefined
     if (!store) continue
     if (typeof store.to === 'function') {
       into[field] = store.to(entity)
@@ -257,37 +313,32 @@ export const setComponent = <T extends TSchema>(
   options: SetComponentOptions = {}
 ): void => {
   ensureRegistered(world, component as ComponentDefinition)
+  const stores = getStores(world, component as ComponentDefinition)
   const origin: Origin = options.origin ?? 'local'
   const wasPresent = bitecs.hasComponent(world, entity, component.$ref)
 
   if (!wasPresent) {
     bitecs.addComponent(world, entity, component.$ref)
-    // Materialise instance from defaults + override
     const merged: Record<string, unknown> = { ...component.$defaults }
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) merged[k] = v
-    // Fill in missing defaults from schema (TypeBox handles nested defaults)
     const initialised = Value.Default(component.$schema, merged) as Record<string, unknown>
-    // Split into SoA writes and instance store
     const instance: Record<string, unknown> = {}
     for (const field of component.$valueFields) {
       if (field in initialised) instance[field] = initialised[field]
     }
-    component.$store[entity] = instance
-    writeSoA(component as ComponentDefinition, entity, initialised)
+    stores.store[entity] = instance
+    writeSoA(stores.soa, component as ComponentDefinition, entity, initialised)
   } else {
-    // Partial shallow merge of instance fields
-    const instance = component.$store[entity] ?? {}
+    const instance = stores.store[entity] ?? {}
     for (const field of component.$valueFields) {
       if (field in (value as Record<string, unknown>)) {
         instance[field] = (value as Record<string, unknown>)[field]
       }
     }
-    component.$store[entity] = instance
-    writeSoA(component as ComponentDefinition, entity, value as Record<string, unknown>)
+    stores.store[entity] = instance
+    writeSoA(stores.soa, component as ComponentDefinition, entity, value as Record<string, unknown>)
   }
 
-  // Mutation pipeline: runtime → dirty flag; authored → enqueue for end-of-tick
-  // Only locally originated mutations propagate; 'network' origin is suppressed.
   if (origin === 'local') {
     if (component.mutationCategory === 'runtime') {
       markRuntimeDirty(world, entity, component.id)
@@ -317,8 +368,9 @@ export const getComponent = <T extends TSchema>(
   component: ComponentDefinition<T>
 ): Static<T> | undefined => {
   if (!bitecs.hasComponent(world, entity, component.$ref)) return undefined
-  const result: Record<string, unknown> = { ...component.$store[entity] }
-  readSoA(component as ComponentDefinition, entity, result)
+  const stores = getStores(world, component as ComponentDefinition)
+  const result: Record<string, unknown> = { ...stores.store[entity] }
+  readSoA(stores.soa, component as ComponentDefinition, entity, result)
   return result as Static<T>
 }
 
@@ -332,9 +384,10 @@ export const removeComponent = <T extends TSchema>(
   options: SetComponentOptions = {}
 ): void => {
   if (!bitecs.hasComponent(world, entity, component.$ref)) return
+  const stores = getStores(world, component as ComponentDefinition)
   const origin: Origin = options.origin ?? 'local'
   bitecs.removeComponent(world, entity, component.$ref)
-  delete component.$store[entity]
+  delete stores.store[entity]
   if (component.mutationCategory === 'runtime') clearRuntimeDirty(world, entity, component.id)
   if (origin === 'local' && component.mutationCategory === 'authored') {
     world.authoredQueue.push({

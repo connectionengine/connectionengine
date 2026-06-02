@@ -19,7 +19,7 @@
 
 import type { Entity, World } from './world'
 import type { ComponentDefinition } from './component'
-import { getComponentById, hasComponent, removeComponent, setComponent } from './component'
+import { getComponentById, getSoA, hasComponent, removeComponent, setComponent } from './component'
 import type { RelationDefinition } from './relation'
 import { addRelation, getRelationByName, removeRelation } from './relation'
 import { ROOT_PARENT, getEntityByUID, getEntityPath, resolveEntityPath, setUID } from './identity'
@@ -155,9 +155,10 @@ export const flushRuntime = (world: World): RuntimePacket | undefined => {
     for (const entity of entities) {
       const path = getEntityPath(world, entity)
       if (path.length === 0) continue
+      const defSoA = getSoA(world, def)
       const soa: Record<string, number | number[]> = {}
       for (const field of def.$soaFields) {
-        const store = def.$soa[field] as { to?: (entity: number) => unknown } & Record<number, number>
+        const store = defSoA[field] as { to?: (entity: number) => unknown } & Record<number, number>
         if (typeof store.to === 'function') soa[field] = store.to(entity) as number | number[]
         else soa[field] = store[entity]
       }
@@ -292,8 +293,9 @@ const receiveRuntime = (world: World, packet: RuntimePacket): void => {
       setComponent(world, entity, component, update.soa as Record<string, unknown>, { origin: 'network' })
     } else {
       // Direct SoA write — bypass setComponent so we don't re-mark dirty
+      const componentSoA = getSoA(world, component)
       for (const [field, value] of Object.entries(update.soa)) {
-        const store = component.$soa[field] as
+        const store = componentSoA[field] as
           | { from?: (entity: number, data: unknown) => void; resize?: (n: number) => void }
           | undefined
         if (!store) continue
