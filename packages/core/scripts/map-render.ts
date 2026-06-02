@@ -219,15 +219,25 @@ const exportNodes: ExportNode[] = nodes
     }
   }))
 
-const nodeIds = new Set(exportNodes.map((n) => n.data.id))
-const exportEdges: ExportEdge[] = edges
+const candidateIds = new Set(exportNodes.map((n) => n.data.id))
+const allExportEdges: ExportEdge[] = edges
   .filter((e) => e.kind !== 'contains') // file→symbol containment is implicit via the `file` field
-  .filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
+  .filter((e) => candidateIds.has(e.source) && candidateIds.has(e.target))
   .map((e, i) => ({
     data: { id: `e${i}`, source: e.source, target: e.target, kind: e.kind }
   }))
 
-const graphJson = JSON.stringify({ nodes: exportNodes, edges: exportEdges })
+// Drop isolated nodes — they form a meaningless wall along the bottom of the
+// canvas. Keep them in graph.json for downstream use (consumers can choose
+// their own pruning policy).
+const connectedIds = new Set<string>()
+for (const e of allExportEdges) {
+  connectedIds.add(e.data.source)
+  connectedIds.add(e.data.target)
+}
+const connectedNodes = exportNodes.filter((n) => connectedIds.has(n.data.id))
+const graphJson = JSON.stringify({ nodes: connectedNodes, edges: allExportEdges })
+const exportEdges = allExportEdges
 
 const html = `<!doctype html>
 <html lang="en">
@@ -235,7 +245,6 @@ const html = `<!doctype html>
 <meta charset="utf-8">
 <title>Connection Engine — Code Graph</title>
 <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
-<script src="https://unpkg.com/cytoscape-cose-bilkent@4.1.0/cytoscape-cose-bilkent.js"></script>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: #0e1116; color: #e6e6e6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
   #cy { position: absolute; top: 56px; left: 0; right: 320px; bottom: 0; background: #0e1116; }
@@ -262,7 +271,7 @@ const html = `<!doctype html>
 <body>
 <div id="toolbar">
   <h1>Connection Engine</h1>
-  <span class="stats">${exportNodes.length} symbols · ${exportEdges.length} edges</span>
+  <span class="stats">${connectedNodes.length} connected symbols · ${exportEdges.length} edges</span>
   <input id="search" placeholder="Search by name…">
 </div>
 <div id="cy"></div>
@@ -320,9 +329,23 @@ const cy = cytoscape({
     { selector: 'node.highlight', style: { 'border-width': 2, 'border-color': '#fff' } },
     { selector: '.faded', style: { 'opacity': 0.08 } }
   ],
-  layout: { name: 'cose-bilkent', animate: false, idealEdgeLength: 80, nodeRepulsion: 4500, randomize: false, fit: true, padding: 30 },
+  layout: {
+    name: 'cose',
+    animate: false,
+    idealEdgeLength: 80,
+    nodeRepulsion: 400000,
+    nodeOverlap: 20,
+    gravity: 80,
+    numIter: 1500,
+    randomize: true,
+    fit: true,
+    padding: 40
+  },
+  minZoom: 0.1,
+  maxZoom: 4,
   wheelSensitivity: 0.2
 });
+window['cy'] = cy;
 
 // Legend + kind filters
 const allKinds = [...new Set(GRAPH.nodes.map(n => n.data.kind))].sort();
@@ -357,21 +380,27 @@ cy.on('tap', 'node', (ev) => {
   n.removeClass('faded').addClass('highlight');
   n.neighborhood().removeClass('faded').addClass('highlight');
 
-  const incoming = n.incomers('edge');
-  const outgoing = n.outgoers('edge');
-  const renderList = (label, edges, dir) => edges.length === 0 ? '' :
-    '<div class="label">' + label + ' (' + edges.length + ')</div>' +
-    edges.map(e => {
+  const dedupe = (edges, dir) => {
+    const seen = new Map();
+    edges.forEach(e => {
       const other = dir === 'in' ? e.source() : e.target();
-      return '<div class="item" data-id="' + other.id() + '">[' + e.data('kind') + '] ' + other.data('label') + '</div>';
-    }).join('');
+      const key = e.data('kind') + ':' + other.id();
+      if (!seen.has(key)) seen.set(key, { id: other.id(), kind: e.data('kind'), label: other.data('label') });
+    });
+    return [...seen.values()];
+  };
+  const incoming = dedupe(n.incomers('edge'), 'in');
+  const outgoing = dedupe(n.outgoers('edge'), 'out');
+  const renderList = (label, items) => items.length === 0 ? '' :
+    '<div class="label">' + label + ' (' + items.length + ')</div>' +
+    items.map(item => '<div class="item" data-id="' + item.id + '">[' + item.kind + '] ' + item.label + '</div>').join('');
 
   document.getElementById('info').className = 'info';
   document.getElementById('info').innerHTML =
     '<div class="kind">' + n.data('kind') + (n.data('exported') ? ' · exported' : '') + '</div>' +
     '<h2>' + n.data('label') + '</h2>' +
     '<div class="file">' + n.data('file') + ':' + n.data('line') + '</div>' +
-    '<div class="list">' + renderList('Incoming', incoming, 'in') + renderList('Outgoing', outgoing, 'out') + '</div>';
+    '<div class="list">' + renderList('Incoming', incoming) + renderList('Outgoing', outgoing) + '</div>';
 
   document.querySelectorAll('.info .item').forEach(el => {
     el.addEventListener('click', () => {
@@ -415,5 +444,7 @@ writeFileSync(
 
 const rel = (p: string) => relative(process.cwd(), p)
 console.log(`✓ Wrote ${rel(resolve(outDir, 'graph.md'))}   (Mermaid module graph, tier-grouped)`)
-console.log(`✓ Wrote ${rel(resolve(outDir, 'graph.html'))} (Interactive ${exportNodes.length}-node Cytoscape view)`)
+console.log(
+  `✓ Wrote ${rel(resolve(outDir, 'graph.html'))} (Interactive ${connectedNodes.length}-node Cytoscape view, ${exportNodes.length - connectedNodes.length} isolated nodes hidden)`
+)
 console.log(`✓ Wrote ${rel(resolve(outDir, 'graph.json'))} (Raw graph data)`)
