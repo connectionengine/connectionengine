@@ -12,6 +12,11 @@ test-results
 
 .certs
 
+# Built docs site — sources live in /docs-src, built into /docs via
+# `pnpm --filter @connectionengine/docs build`. Deploy from CI rather than
+# tracking the generated output.
+/docs
+
 # CodeGraph index — local, per-machine. Built via `pnpm --filter @connectionengine/core map`.
 .codegraph
 

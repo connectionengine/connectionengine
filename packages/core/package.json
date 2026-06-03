@@ -9,11 +9,11 @@
     ".": "./src/index.ts"
   },
   "publishConfig": {
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
     "exports": {
       ".": "./dist/index.js"
-    },
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts"
+    }
   },
   "scripts": {
     "build": "tsdown",
@@ -23,14 +23,12 @@
     "map:render": "codegraph sync ../.. && tsx scripts/map-render.ts"
   },
   "dependencies": {
-    "@noble/ed25519": "^2.2.3",
-    "@noble/hashes": "^1.7.1",
-    "@sinclair/typebox": "^0.34.47",
+    "@sinclair/typebox": "^0.34.49",
     "bitecs": "^0.4.0",
-    "solid-js": "^1.9.3"
+    "solid-js": "^1.9.13"
   },
   "devDependencies": {
-    "@colbymchenry/codegraph": "^0.9.8",
+    "@colbymchenry/codegraph": "^0.9.9",
     "@types/webxr": "^0.5.24",
     "fast-check": "^3.23.2"
   }

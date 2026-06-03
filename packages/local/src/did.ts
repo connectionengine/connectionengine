@@ -10,10 +10,10 @@
  */
 
 import * as ed from '@noble/ed25519'
-import { sha512 } from '@noble/hashes/sha2'
+import { sha512 } from '@noble/hashes/sha2.js'
 
-// @noble/ed25519 v2 needs a sync sha512 hook for sync sign/verify.
-ed.etc.sha512Sync = (...m: Uint8Array[]) => sha512(concat(...m))
+// @noble/ed25519 v3 needs sha512 wired into `ed.hashes.sha512` for sync sign/verify.
+ed.hashes.sha512 = sha512
 
 const concat = (...arrays: Uint8Array[]): Uint8Array => {
   const total = arrays.reduce((s, a) => s + a.length, 0)
@@ -104,7 +104,7 @@ export interface KeyPair {
 }
 
 export const generateKeyPair = (seed?: Uint8Array): KeyPair => {
-  const privateKey = seed ? seed.slice(0, 32) : ed.utils.randomPrivateKey()
+  const privateKey = seed ? seed.slice(0, 32) : ed.utils.randomSecretKey()
   if (privateKey.length !== 32) throw new Error('Ed25519 private key must be 32 bytes')
   const publicKey = ed.getPublicKey(privateKey)
   return {
