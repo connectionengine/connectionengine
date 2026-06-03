@@ -4,7 +4,7 @@
  * Wraps core's `connectInMemory` to add per-event signing on outbound and
  * signature verification on inbound. Runtime binary packets travel unsigned
  * — they're authority-checked at the ECS level via `AuthoritativeFor`, and
- * a signature per 60 Hz packet is too costly. Higher-security flows would
+ * a signature per packet at the simulation tick rate is too costly. Higher-security flows would
  * add a per-packet HMAC at a different layer.
  *
  * Two-peer use:

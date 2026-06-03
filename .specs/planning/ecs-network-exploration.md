@@ -374,7 +374,7 @@ A named, schema-driven component type. Defined via a single options object with 
 | Category | Intent | Transport | Validation | Persistence |
 | --- | --- | --- | --- | --- |
 | **authored** | Deliberate, infrequent, often user-initiated. Scene edits, avatar customisation, inventory changes, entity spawns. | **Reliable transport** - queued per-frame, batched, sent end-of-tick as ordered structured mutations. | **Full governance** - ZCAP capabilities, VC credentials, temporal rate limits, content validation. Validated at the transport layer before propagation. | **Event-sourced** - each mutation is recorded in the authored event log. World state = initial snapshot + replaying all authored mutations. |
-| **runtime** | Continuous, often physics/system-driven. Transform updates, velocity changes, animation weights. | **Binary transport** - SoA binary-packed via bitECS serializers, sent at configurable tick rate (30-60Hz), unreliable/unordered. Delta compression with dirty flags + periodic full state syncs. | **Authority check only** - is this peer authoritative for this entity? No governance validation per packet. Application/context-specific logic for domain validation where needed. | **Ephemeral** - not event-sourced. Periodically snapshotted. Reconstructed from latest snapshot + live streams. |
+| **runtime** | Continuous, often physics/system-driven. Transform updates, velocity changes, animation weights. | **Binary transport** - SoA binary-packed via bitECS serializers, sent at the simulation tick rate (configurable lower per-component), unreliable/unordered. Delta compression with dirty flags + periodic full state syncs. | **Authority check only** - is this peer authoritative for this entity? No governance validation per packet. Application/context-specific logic for domain validation where needed. | **Ephemeral** - not event-sourced. Periodically snapshotted. Reconstructed from latest snapshot + live streams. |
 | **local** | Never leaves the local runtime. Debug info, rendering hints, editor state. | **None** | **None** | **None** |
 
 The mutation category is set at the **component level**, not per-field. A whole component is authored, runtime, or local. This avoids cumbersome per-property flags, odd ontological splits within a single component, and complex component lifecycles. If a piece of data has a different mutation intent, it belongs in a different component - e.g. `Transform` (runtime: continuous position/rotation) vs `SpawnPoint` (authored: a deliberately placed marker with a position).
@@ -1016,7 +1016,7 @@ Both share the same schema (ComponentSchema), the same identity system, and the 
 
 | Mutation Category | Realtime Path | Characteristics |
 | --- | --- | --- |
-| **Runtime** (transforms, IK, physics) | **Binary transport** - bitECS SoA serializer → WebRTC unreliable | High-frequency (30-60Hz), unreliable, unordered. Delta compression with dirty flags + periodic full state syncs. Interpolation on receive. Authority check only - no governance per packet. |
+| **Runtime** (transforms, IK, physics) | **Binary transport** - bitECS SoA serializer → WebRTC unreliable | At the simulation tick rate, unreliable, unordered. Delta compression with dirty flags + periodic full state syncs. Interpolation on receive. Authority check only - no governance per packet. |
 | **Authored** (health, inventory, entity spawns, scene edits) | **Reliable transport** - reliable event delivery | Queued per-frame, batched end-of-tick. Reliable, ordered. Governance-validated at transport layer. Event-sourced. |
 | **Persistent spatial/user data** | **Out of scope here** | Save/load and persistence belong to higher layers. |
 | **Local** (debug, rendering hints) | **No replication** | Never leaves the local runtime. |
@@ -1039,7 +1039,7 @@ Local ECS operation (setComponent / removeComponent / addRelation / removeRelati
   ├─ if component.mutationCategory == 'runtime':
   │     1. Change applied locally (written directly to SoA stores)
   │     2. Dirty flag set on entity+component
-  │     3. At binary transport tick (30-60Hz):
+  │     3. At binary transport tick (the simulation tick rate):
   │        a. Collect all dirty entities for this component
   │        b. Delta-compress against last-sent state
   │        c. Pack into binary buffer via bitECS SoA serializer
@@ -1117,7 +1117,7 @@ The high-frequency transport path packs SoA data into binary buffers and sends v
 
 ### 3.14 Per-Component Transport Configuration
 
-How does the engine know that Transform data should sync at 60Hz unreliably while Health data should sync reliably on change? Through the **mutation category** on the ComponentDefinition and/or runtime configuration for the active session/connections.
+How does the engine know that Transform data should sync at the simulation tick rate unreliably while Health data should sync reliably on change? Through the **mutation category** on the ComponentDefinition and/or runtime configuration for the active session/connections.
 
 The mutation category (authored/runtime/local) determines the transport path. Runtime configuration can tune the parameters of that path - tick rate, delta compression settings, full-sync interval - without changing which path is used.
 
@@ -1130,7 +1130,7 @@ interface RuntimeTransportConfig {
   component: string
   /** Binary transport tick rate in Hz (default: 60) */
   rate?: number
-  /** Interval (in ticks) between full state syncs for convergence (default: 300 = ~5s at 60Hz) */
+  /** Interval (in ticks) between full state syncs for convergence (default: 300 ticks ≈ 5 s at the default simulation tick rate) */
   fullSyncInterval?: number
   /** Whether to apply interpolation on the receiving end (default: true) */
   interpolate?: boolean

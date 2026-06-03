@@ -30,7 +30,7 @@ export type ViewCursor = DataView & {
   shadowMap: Map<TypedArray, TypedArray>
 }
 
-/** Default initial buffer for `createViewCursor`. 100 KiB is plenty for ~60 Hz packets. */
+/** Default initial buffer for `createViewCursor`. 100 KiB is plenty for typical per-tick packets. */
 export const DEFAULT_VIEW_CURSOR_BYTES = 100_000
 
 /** Float comparison tolerance for `writePropIfChanged`. Below this, considered unchanged. */

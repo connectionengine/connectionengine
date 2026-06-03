@@ -92,7 +92,7 @@ But normally you don't — the mutation pipeline handles it.
 
 The `continuous` channel has no governance gate. A binary packet from peer X arrives and updates SoA fields, full stop. Authority is enforced **structurally** via the `AuthoritativeFor` relation: a system that runs locally checks "do I have authority over this entity for this component?" before processing physics or moving things. See [Authority & Ownership](/authority-and-ownership).
 
-This split is intentional. Per-packet signature verification at 60 Hz is too expensive. Per-event signature verification on authored events (sub-Hz cadence) is fine. Authority on `continuous` is a property of the entity graph, not the wire.
+This split is intentional. Per-packet signature verification at the simulation tick rate is too expensive. Per-event signature verification on authored events (sub-Hz cadence) is fine. Authority on `continuous` is a property of the entity graph, not the wire.
 
 ## A complete trace
 

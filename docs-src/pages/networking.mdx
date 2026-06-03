@@ -129,7 +129,7 @@ Core ships the in-memory transport. Real transports compose with the lifecycle. 
 - **WebRTC** — direct peer-to-peer. Open two `RTCDataChannel`s on the peer connection: one ordered+reliable (assign to `events`), one unordered+unreliable (assign to `stream`). Hand the endpoint to `joinWorld`.
 - **WebSocket** — client-server or relay. Wrap one socket; assign it to both `events` and `stream`. You lose the loss-tolerance benefit on `stream` (everything stays reliable + ordered), but the rest of the stack works unchanged.
 - **QUIC** — open a reliable stream for `events`, send `stream` payloads as QUIC datagrams. Best fit on paper; no ecosystem-stable browser API yet.
-- **AD4M Perspective** — `@connectionengine/ad4m-bridge` wraps a Perspective's `addLinks` + `addListener` as the `events` channel. `stream` typically rides a sibling WebRTC channel since Links are too heavy for 60 Hz binary packets.
+- **AD4M Perspective** — `@connectionengine/ad4m-bridge` wraps a Perspective's `addLinks` + `addListener` as the `events` channel. `stream` typically rides a sibling WebRTC channel since Links are too heavy for binary packets at the simulation tick rate.
 - **Signed in-memory** — `@connectionengine/local`'s `connectLocalInMemory` adds Ed25519 signing on the `events` channel; `stream` stays unsigned (authority-checked at ECS level).
 
 Real WebRTC / WebSocket / QUIC implementations aren't yet shipped in core. The integration point is the `TransportEndpoint` interface — once you can satisfy it for your wire, the rest of the stack is reusable.

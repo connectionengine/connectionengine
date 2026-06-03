@@ -83,7 +83,7 @@ defineComponent({
 
 The split is `Transform { position, rotation }` and `Label { text }`. They're logically related but travel different channels with different semantics; making the developer split is the whole point of the strict check. The schema declares intent.
 
-The reason this rule matters: **two components with identical-looking schemas can have very different network behaviour** depending on whether they hold SoA or value fields. A `Vec3 position` on a `Transform` is a 60 Hz binary stream with last-write-wins semantics. A `Vec3` representing a spawn point should be expressed differently — as three numbers in an `event` component, or wrapped in a `SpawnConfig` that's authored — because changes to it are causally meaningful and belong in the event log.
+The reason this rule matters: **two components with identical-looking schemas can have very different network behaviour** depending on whether they hold SoA or value fields. A `Vec3 position` on a `Transform` is a binary stream at the simulation tick rate with last-write-wins semantics. A `Vec3` representing a spawn point should be expressed differently — as three numbers in an `event` component, or wrapped in a `SpawnConfig` that's authored — because changes to it are causally meaningful and belong in the event log.
 
 ## Reading and writing
 

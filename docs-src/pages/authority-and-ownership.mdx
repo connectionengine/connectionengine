@@ -59,7 +59,7 @@ Authority is exclusive — at most one peer holds it for an entity at any time. 
 
 ## What "having authority" means
 
-Connection Engine doesn't enforce authority on the `continuous` channel — there's no per-packet check that says "is this peer authoritative?" That would be too expensive at 60 Hz.
+Connection Engine doesn't enforce authority on the `continuous` channel — there's no per-packet check that says "is this peer authoritative?" That would be too expensive at the simulation tick rate.
 
 Instead, **authority is a property your systems consult**. The convention is:
 

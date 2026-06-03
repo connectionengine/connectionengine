@@ -4,7 +4,7 @@ description: How runtime SoA fields become bytes — change masks, shadow maps, 
 
 # The Binary Wire
 
-The `continuous` channel exists because per-event JSON envelopes at 60 Hz are too expensive for transforms, velocities, and other continuously-moving data. The binary codec is built around three ideas:
+The `continuous` channel exists because per-event JSON envelopes at the simulation tick rate are too expensive for transforms, velocities, and other continuously-moving data. The binary codec is built around three ideas:
 
 1. **No strings on the wire.** Component identity is the wire index (set at handshake). Entity identity is a compact `NetworkId` (also set at handshake). Field identity is a bit position in a change mask.
 2. **Per-field delta encoding.** A per-typed-array shadow map remembers what was last sent; only fields that changed (with float epsilon tolerance) are emitted. An entity with no changes produces zero bytes.
@@ -91,7 +91,7 @@ pipe.write(meta, entries, true) // third arg = forceFullSync
 pipe.resetShadow()              // next write emits everything
 ```
 
-The per-connection channel also schedules periodic full syncs via `RuntimeTransportConfig.fullSyncInterval` — defaults to every 300 ticks (~5 s at 60 Hz). This provides automatic recovery from packet loss without explicit ACKs.
+The per-connection channel also schedules periodic full syncs via `RuntimeTransportConfig.fullSyncInterval` — defaults to every 300 ticks (≈5 s at the default simulation tick rate). This provides automatic recovery from packet loss without explicit ACKs.
 
 ## Optional compression
 
@@ -130,6 +130,6 @@ joinWorld(world, {
 })
 ```
 
-`rate` is a target Hz assuming a 60 Hz tick budget — `rate: 30` means publish every other tick. `fullSyncInterval` is ticks between forced full snapshots. `interpolation` is advisory metadata for receivers.
+`rate` is a target Hz scaled against the simulation tick rate. On a 60 Hz simulation, `rate: 30` means publish every other tick; on a 120 Hz simulation, `rate: 30` skips three out of four. Leaving `rate` unset publishes every tick. `fullSyncInterval` is ticks between forced full snapshots. `interpolation` is advisory metadata for receivers.
 
-Defaults (60 Hz, full sync every 300 ticks, interpolation on) are usually fine. Reach for the config when you have many components with very different cadence requirements.
+Defaults (publish every tick, full sync every 300 ticks, interpolation on) are usually fine. Reach for the config when you have many components with very different cadence requirements.

@@ -36,7 +36,7 @@ Shared SoA stores:
 
 ### Interpolation
 
-The worker runs a fixed timestep (e.g., 60Hz). Main thread runs at variable framerate. To avoid jitter:
+The worker runs a fixed timestep matching the simulation tick rate. Main thread runs at variable framerate. To avoid jitter:
 
 - Worker writes **both current and previous** physics state to the SAB
 - Main thread interpolates between previous and current based on the accumulator fraction

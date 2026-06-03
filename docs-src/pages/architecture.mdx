@@ -48,7 +48,7 @@ This is the single most important mental model in Connection Engine. Every compo
 | `channel`     | Wire shape                       | Cadence       | Use for                                 |
 |---------------|----------------------------------|---------------|-----------------------------------------|
 | `event`       | Authored envelope (JSON-shaped)  | Per-event     | Spawns, ownership, governance, intent   |
-| `continuous`  | Binary delta, per-field mask     | Per-tick      | Transforms, velocities, anything 60 Hz  |
+| `continuous`  | Binary delta, per-field mask     | Per-tick      | Transforms, velocities, anything at the simulation tick rate |
 | `local`       | Never replicated                 | n/a           | Caches, view-state, machine-local data  |
 
 The channel is **derived from the schema** — there is no `mutationCategory` enum to set. Any SoA-tagged field (Vec3, Quat, Float32, …) puts the component on `continuous`; anything else lands on `event`. The only opt-out is `defineComponent({ sync: false })`, which forces `local`.

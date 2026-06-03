@@ -87,8 +87,9 @@ export const createBinaryChannel = (world: World, connection: Connection, option
     resolvedConfig: new Map()
   }
 
+  const simRate = world.fixedTimeStep > 0 ? 1 / world.fixedTimeStep : 60
   for (const component of components) {
-    const cfg = resolveRuntimeConfig(options.configs ?? [], component)
+    const cfg = resolveRuntimeConfig(options.configs ?? [], component, simRate)
     state.resolvedConfig.set(component.id, cfg)
     state.fullSyncCountdown.set(component.id, cfg.fullSyncInterval)
     state.publishCountdown.set(component.id, 0)
@@ -114,9 +115,9 @@ export const createBinaryChannel = (world: World, connection: Connection, option
         state.publishCountdown.set(componentId, countdown - 1)
         continue
       }
-      // Reset publish countdown based on rate. 60Hz = every tick; 30Hz = every other; etc.
-      const baseRate = 60
-      const skipTicks = cfg.rate > 0 ? Math.max(0, Math.floor(baseRate / cfg.rate) - 1) : 0
+      // Reset publish countdown based on rate. A rate equal to (or above) the
+      // simulation tick rate publishes every tick; halving it doubles the skip.
+      const skipTicks = cfg.rate > 0 ? Math.max(0, Math.floor(simRate / cfg.rate) - 1) : 0
       state.publishCountdown.set(componentId, skipTicks)
       // Full-sync countdown — schedule a forced snapshot every N ticks.
       const fsLeft = (state.fullSyncCountdown.get(componentId) ?? cfg.fullSyncInterval) - 1

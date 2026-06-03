@@ -137,26 +137,28 @@ export const createMemoryTransport = (options: MemoryTransportOptions = {}): Mem
 export interface RuntimeTransportConfig {
   /** Component IDs this config applies to. */
   componentIds: string[]
-  /** Target tick rate in Hz (assuming a 60Hz tick budget). Default 60. */
+  /** Target publish rate in Hz. Defaults to the simulation tick rate (no throttle). */
   rate?: number
-  /**
-   * Ticks between full state syncs (vs deltas only). Provides convergence
-   * after packet loss. Default 300 (~5s at 60Hz).
-   */
+  /** Ticks between full state syncs (vs deltas only). Provides convergence after packet loss. Default 300. */
   fullSyncInterval?: number
   /** Whether receivers should interpolate between updates. Default true. */
   interpolation?: boolean
 }
 
-/** Resolve config for a specific component. */
+/**
+ * Resolve config for a specific component. `simRate` is the simulation tick
+ * rate in Hz (`1 / world.fixedTimeStep`) — used as the default for `rate`
+ * when no override is supplied.
+ */
 export const resolveRuntimeConfig = (
   configs: RuntimeTransportConfig[],
-  component: ComponentDefinition
+  component: ComponentDefinition,
+  simRate: number
 ): Required<RuntimeTransportConfig> => {
   const match = configs.find((c) => c.componentIds.includes(component.id))
   return {
     componentIds: [component.id],
-    rate: match?.rate ?? 60,
+    rate: match?.rate ?? simRate,
     fullSyncInterval: match?.fullSyncInterval ?? 300,
     interpolation: match?.interpolation ?? true
   }

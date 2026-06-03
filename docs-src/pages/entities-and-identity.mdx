@@ -42,7 +42,7 @@ Because the data fabric IS the semantic graph. A URI like `scene:arena/avatar:al
 
 Late join works the same way: when a fresh peer applies the host's event log, every event's `entityPath` resolves into the joiner's own world without any ID remapping. The path is the addressing scheme.
 
-The `continuous` channel needs something more compact than a full path on every 60 Hz packet, so there's a `NetworkIdTable` per connection — but that's an optimisation layered on top, not a different identity system. The path is still the truth; the `NetworkId` is just a label for it on a specific wire.
+The `continuous` channel needs something more compact than a full path on every packet at the simulation tick rate, so there's a `NetworkIdTable` per connection — but that's an optimisation layered on top, not a different identity system. The path is still the truth; the `NetworkId` is just a label for it on a specific wire.
 
 ## What's actually under the hood
 

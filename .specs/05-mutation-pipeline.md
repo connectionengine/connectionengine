@@ -712,7 +712,7 @@ interface RuntimeTransportConfig {
    * Interval (in ticks) between full state syncs for convergence.
    * Full syncs send all entity state, not just deltas.
    * Ensures convergence despite packet loss on unreliable transport.
-   * @default 300 (≈5 seconds at 60Hz)
+   * @default 300 ticks (≈5 seconds at the default simulation tick rate)
    */
   fullSyncInterval?: number
 
