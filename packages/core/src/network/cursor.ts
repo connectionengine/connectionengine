@@ -153,6 +153,55 @@ export const readFloat64 = (v: ViewCursor): number => {
   return x
 }
 
+// ── Bulk + string helpers ────────────────────────────────────────────────────-
+
+const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
+
+/** Copy `bytes` into the cursor at the current position. */
+export const writeBytes = (v: ViewCursor, bytes: Uint8Array): ViewCursor => {
+  new Uint8Array(v.buffer).set(bytes, v.cursor)
+  v.cursor += bytes.byteLength
+  return v
+}
+
+/** Read `n` bytes from the cursor as a subarray (zero-copy view onto the buffer). */
+export const readBytes = (v: ViewCursor, n: number): Uint8Array => {
+  const out = new Uint8Array(v.buffer, v.cursor, n)
+  v.cursor += n
+  return out
+}
+
+/**
+ * Encode `s` as UTF-8 prefixed by its byte length as a `uint16` (length cap
+ * 65535 bytes). Sufficient for entity-path segments, predicate URIs, DIDs.
+ */
+export const writeString = (v: ViewCursor, s: string): ViewCursor => {
+  const bytes = textEncoder.encode(s)
+  writeUint16(v, bytes.byteLength)
+  return writeBytes(v, bytes)
+}
+
+/** Inverse of `writeString`. Copies the bytes (TextDecoder does not retain the view). */
+export const readString = (v: ViewCursor): string => {
+  const n = readUint16(v)
+  return textDecoder.decode(readBytes(v, n))
+}
+
+/** Length-prefixed (u16) array of length-prefixed strings. */
+export const writeStringArray = (v: ViewCursor, arr: readonly string[]): ViewCursor => {
+  writeUint16(v, arr.length)
+  for (const s of arr) writeString(v, s)
+  return v
+}
+
+export const readStringArray = (v: ViewCursor): string[] => {
+  const n = readUint16(v)
+  const out: string[] = []
+  for (let i = 0; i < n; i++) out.push(readString(v))
+  return out
+}
+
 // ── Deferred-write space reservation ─────────────────────────────────────────-
 
 /**
@@ -260,6 +309,33 @@ export const writePropIfChanged = (
   writeForCtor(v, source, current)
   shadow[entity] = current
   return true
+}
+
+/**
+ * Test if `source[entity]` differs from its shadowed previous value (with
+ * `PROP_EPSILON` tolerance for floats) — pure, no side effects. Used by
+ * grouped/compressed encoders that need to test multiple arrays before
+ * deciding to emit one packed payload.
+ */
+export const isPropChanged = (v: ViewCursor, source: TypedArray, entity: number): boolean => {
+  const current = source[entity] as number
+  const shadow = getShadow(v, source)
+  const previous = shadow[entity] as number
+  const isFloat = source instanceof Float32Array || source instanceof Float64Array
+  if (isFloat) {
+    return (
+      Number.isNaN(previous) ||
+      Number.isNaN(current) !== Number.isNaN(previous) ||
+      Math.abs(current - previous) > PROP_EPSILON
+    )
+  }
+  return current !== previous
+}
+
+/** Commit `source[entity]` into the shadow map. Pair with `isPropChanged` after writing. */
+export const commitPropShadow = (v: ViewCursor, source: TypedArray, entity: number): void => {
+  const shadow = getShadow(v, source)
+  shadow[entity] = source[entity] as number
 }
 
 /**

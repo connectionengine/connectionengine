@@ -1,9 +1,11 @@
 /**
  * Local in-memory transport with Ed25519 signing.
  *
- * Stacks on top of core's in-memory transport semantics, but adds per-event
- * signing on outbound and signature verification on inbound. This is the
- * solo/local equivalent of what AD4M's Languages do for distributed sessions.
+ * Wraps core's `connectInMemory` to add per-event signing on outbound and
+ * signature verification on inbound. Runtime binary packets travel unsigned
+ * — they're authority-checked at the ECS level via `AuthoritativeFor`, and
+ * a signature per 60 Hz packet is too costly. Higher-security flows would
+ * add a per-packet HMAC at a different layer.
  *
  * Two-peer use:
  *
@@ -14,12 +16,12 @@
  *   connectLocalInMemory(worldA, worldB)
  *
  * After this, any setComponent on worldA → signed → delivered to worldB →
- * verified → applied. Tampered events are silently dropped (and emit a
- * `mutation.reject` trace event with reason `signature`).
+ * verified → applied. Tampered events are dropped (emit a `mutation.reject`
+ * trace event with `reason: 'signature'`).
  */
 
-import type { AuthoredEnvelope, AuthoredEvent, Connection, RuntimeEnvelope, World } from '@connectionengine/core'
-import { applyAuthoredEnvelope, applyRuntimeEnvelope } from '@connectionengine/core'
+import type { AuthoredEnvelope, AuthoredEvent, Connection, World } from '@connectionengine/core'
+import { applyAuthoredEnvelope, connectInMemory, type MemoryConnectionPair } from '@connectionengine/core'
 import { type KeyPair, fromHex, sign, stableStringify, toHex, verifyByDID } from './did'
 import type { LocalAgent } from './agent'
 
@@ -84,11 +86,7 @@ const verifyAndUnwrap = (world: World, signed: SignedAuthoredEnvelope): Authored
 
 // ── Connection pair ───────────────────────────────────────────────────────────
 
-export interface LocalConnectionPair {
-  a: Connection
-  b: Connection
-  close(): void
-}
+export type LocalConnectionPair = MemoryConnectionPair
 
 export interface ConnectLocalOptions {
   /** Optional governance gate per authored event (applied after verification). */
@@ -97,17 +95,17 @@ export interface ConnectLocalOptions {
   latencyMs?: number
 }
 
-type Envelope = SignedAuthoredEnvelope | RuntimeEnvelope
-const isSignedAuthored = (e: Envelope): e is SignedAuthoredEnvelope =>
-  Array.isArray((e as SignedAuthoredEnvelope).signedEvents)
+const isSignedAuthored = (payload: unknown): payload is SignedAuthoredEnvelope =>
+  !!payload && typeof payload === 'object' && Array.isArray((payload as { signedEvents?: unknown }).signedEvents)
 
 /**
- * Wire two worlds together over an in-memory channel with Ed25519 signing.
+ * Wire two worlds together over an in-memory channel with Ed25519 signing on
+ * the authored channel. Runtime SoA deltas flow over the unsigned binary
+ * pipeline (authority-checked at ECS level).
  *
  * Both worlds must have been created with a `LocalAgent` (see
- * `createLocalAgent`). The agent's keypair is used to sign outbound authored
- * events. Inbound events are verified against the event's `author` DID
- * before apply.
+ * `createLocalAgent`). The agent's keypair signs outbound authored envelopes;
+ * inbound envelopes are verified against `event.author` before apply.
  */
 export const connectLocalInMemory = (
   worldA: World,
@@ -117,72 +115,40 @@ export const connectLocalInMemory = (
   const keyA = assertLocalAgent(worldA)
   const keyB = assertLocalAgent(worldB)
 
-  if (options.validate) {
-    const v = options.validate
-    if (!worldA.network.validateAuthored) worldA.network.validateAuthored = (e) => v(worldA, e)
-    if (!worldB.network.validateAuthored) worldB.network.validateAuthored = (e) => v(worldB, e)
-  }
+  // Delegate runtime fanout + memory transport + lifecycle to core. We override
+  // each world's publishAuthored hook to interpose signing.
+  const pair = connectInMemory(worldA, worldB, {
+    validate: options.validate,
+    latencyMs: options.latencyMs
+  })
 
-  const deliver = (target: World, envelope: Envelope): void => {
-    const dispatch = () => {
-      if (isSignedAuthored(envelope)) {
-        const unwrapped = verifyAndUnwrap(target, envelope)
-        if (unwrapped) applyAuthoredEnvelope(target, unwrapped)
-      } else {
-        applyRuntimeEnvelope(target, envelope)
-      }
-    }
-    if (options.latencyMs && options.latencyMs > 0) setTimeout(dispatch, options.latencyMs)
-    else queueMicrotask(dispatch)
-  }
+  installSigningOverride(worldA, keyA)
+  installSigningOverride(worldB, keyB)
 
-  const a: Connection = {
-    peer: 0,
-    backend: 'memory',
-    send: (payload) => deliver(worldB, payload as Envelope),
-    close: () => {
-      worldA.network.connections.delete(a)
-    }
-  }
-  const b: Connection = {
-    peer: 0,
-    backend: 'memory',
-    send: (payload) => deliver(worldA, payload as Envelope),
-    close: () => {
-      worldB.network.connections.delete(b)
-    }
-  }
+  // Add a side-channel listener on each connection that recognises signed
+  // authored envelopes (the only payload shape connectInMemory doesn't
+  // already understand) — verify, unwrap, apply.
+  attachVerifier(worldA, pair.a)
+  attachVerifier(worldB, pair.b)
 
-  worldA.network.connections.add(a)
-  worldB.network.connections.add(b)
-
-  installSigningFanout(worldA, keyA)
-  installSigningFanout(worldB, keyB)
-
-  return {
-    a,
-    b,
-    close: () => {
-      a.close()
-      b.close()
-    }
-  }
+  return pair
 }
 
-const installedSigning = new WeakSet<World>()
-const installSigningFanout = (world: World, kp: KeyPair): void => {
-  if (installedSigning.has(world)) return
-  installedSigning.add(world)
-  world.network.publishAuthored = (envelope) => {
+const installSigningOverride = (world: World, kp: KeyPair): void => {
+  // Replace authored fanout with signing fanout. Runtime hook untouched —
+  // core's installFanout already wired publishRuntime to the binary channel.
+  world.network.publishAuthored = (envelope: AuthoredEnvelope) => {
     const signed = signEnvelope(envelope, kp)
     for (const conn of world.network.connections) conn.send(signed)
   }
-  world.network.publishRuntime = (envelope) => {
-    // Runtime packets currently unsigned — they're authority-checked at the
-    // ECS level (AuthoritativeFor), and a signature per 60Hz packet is wasteful.
-    // Higher security needs would add a per-packet HMAC.
-    for (const conn of world.network.connections) conn.send(envelope)
-  }
+}
+
+const attachVerifier = (world: World, connection: Connection): void => {
+  connection.onMessage((payload) => {
+    if (!isSignedAuthored(payload)) return
+    const unwrapped = verifyAndUnwrap(world, payload)
+    if (unwrapped) applyAuthoredEnvelope(world, unwrapped)
+  })
 }
 
 const assertLocalAgent = (world: World): KeyPair => {

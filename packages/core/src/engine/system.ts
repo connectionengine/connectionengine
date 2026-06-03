@@ -214,9 +214,11 @@ export const runSystems = (world: World, deltaSeconds: number): void => {
       runPhase('Render', deltaSeconds)
     }
   })
-  // End of frame: emit accumulated mutations
-  flushRuntime(world)
+  // End of frame: emit accumulated mutations. Authored first so that any
+  // new entities created this frame are addressable on the receiver before
+  // the binary packet arrives carrying their runtime SoA payloads.
   flushAuthored(world)
+  flushRuntime(world)
 }
 
 /** Dispose all systems on a world (called by destroyWorld via a hook). */

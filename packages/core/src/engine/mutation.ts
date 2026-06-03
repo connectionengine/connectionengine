@@ -3,17 +3,21 @@
  *
  * Two paths share one schema:
  *   AUTHORED — reliable, governance-validated, event-sourced. Local writes
- *              enqueue { entity, predicate, op, value } in world.authoredQueue
- *              (see ecs/component.ts + ecs/relation.ts). flushAuthored
- *              resolves entity paths, stamps {author, timestamp}, calls
- *              world.network.publishAuthored?.(envelope), appends to event log.
+ *              enqueue { entity, predicate, op, value } in world.authoredQueue.
+ *              flushAuthored resolves entity paths, stamps {author, timestamp},
+ *              appends to event log via appendEventLog (idempotent), calls
+ *              world.network.publishAuthored?.(envelope).
  *   RUNTIME  — binary, authority-checked. Local writes set dirty flags;
- *              flushRuntime drains, samples SoA stores, packs per-field
- *              snapshots, calls world.network.publishRuntime?.(envelope).
+ *              flushRuntime drains the dirty map and calls
+ *              world.network.publishRuntime?.(dirty). The network layer
+ *              encodes via the binary pipeline + ships per-connection.
  *
- * Receive: applyAuthoredEnvelope / applyRuntimeEnvelope are called by the
- * runtime mode after the wire has verified + unwrapped. Both apply with
- * origin='network' to suppress re-broadcast.
+ * Receive paths:
+ *   AUTHORED — applyAuthoredEnvelope (here). Runtime mode verifies +
+ *              unwraps before calling. Optional governance gate filters.
+ *   RUNTIME  — the binary pipeline reads directly into SoA stores; no
+ *              applyRuntimeEnvelope is required since the codec is the
+ *              receive path.
  *
  * Signing / verification / wire format are runtime-mode concerns (see
  * @connectionengine/local or @connectionengine/ad4m-bridge). The in-memory
@@ -21,9 +25,9 @@
  * tests + solo mode.
  */
 
-import type { AuthoredEnvelope, AuthoredEvent, Entity, RuntimeEnvelope, World } from '../ecs/world'
+import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
 import type { ComponentDefinition } from '../ecs/component'
-import { getComponentById, getSoA, hasComponent, removeComponent, setComponent } from '../ecs/component'
+import { getComponentById, removeComponent, setComponent } from '../ecs/component'
 import type { RelationDefinition } from '../ecs/relation'
 import { addRelation, getRelationByName, removeRelation } from '../ecs/relation'
 import { ROOT_PARENT, getEntityByUID, getEntityPath, resolveEntityPath, setUID } from '../ecs/identity'
@@ -78,6 +82,34 @@ export const worldComponents = (world: World): ComponentDefinition[] =>
 export const worldRelations = (world: World): RelationDefinition<unknown>[] =>
   Array.from(relationDefs.get(world)?.values() ?? [])
 
+// ── Event log append (idempotent on signature) ───────────────────────────────-
+
+/**
+ * Composite key used to dedup events across all append paths. Two events with
+ * identical (author, ms-timestamp, op, predicate, path, value) are considered
+ * the same event — sufficient in practice and conflict only for events that
+ * are literally indistinguishable.
+ */
+export const eventSignature = (e: AuthoredEvent): string =>
+  `${e.author}|${e.timestamp}|${e.op}|${e.predicate}|${e.entityPath.join('/')}|${JSON.stringify(e.value ?? null)}`
+
+/**
+ * Append an event to the world's event log iff its signature is not already
+ * recorded. Returns true if appended, false if dropped as duplicate. Use this
+ * from every push path: local flush, network apply, replay handler.
+ */
+export const appendEventLog = (world: World, event: AuthoredEvent): boolean => {
+  const sig = eventSignature(event)
+  if (world.eventLogSeen.has(sig)) return false
+  world.eventLog.push(event)
+  world.eventLogSeen.add(sig)
+  return true
+}
+
+/** True iff this exact event has already been recorded on the world. */
+export const hasEventBeenSeen = (world: World, event: AuthoredEvent): boolean =>
+  world.eventLogSeen.has(eventSignature(event))
+
 // ── Flush ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -109,8 +141,8 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
       author,
       timestamp: now
     }
+    if (!appendEventLog(world, event)) continue
     events.push(event)
-    world.eventLog.push(event)
     world.trace.emit({
       kind: 'mutation.emit',
       ts: now,
@@ -128,12 +160,18 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
 }
 
 /**
- * Drain runtime dirty set, sample SoA stores, publish via
- * `world.network.publishRuntime` (if wired).
+ * Drain the runtime dirty set and publish to the network layer.
+ *
+ * Hands the network layer a snapshot of the dirty map (componentId → entities)
+ * — the network layer is responsible for encoding via the binary pipeline and
+ * fanning out per-connection (per-connection shadow maps mean each peer can
+ * have an independent picture of what's been delivered).
+ *
+ * Returns the snapshot for trace / inspection. `undefined` if nothing dirty.
  */
-export const flushRuntime = (world: World): RuntimeEnvelope | undefined => {
+export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined => {
   if (world.runtimeDirty.size === 0) return undefined
-  const updates: RuntimeEnvelope['updates'] = []
+  const snapshot = new Map<string, Set<Entity>>()
   for (const [componentId, entities] of world.runtimeDirty) {
     if (entities.size === 0) continue
     const def = findComponent(world, componentId)
@@ -141,24 +179,12 @@ export const flushRuntime = (world: World): RuntimeEnvelope | undefined => {
       entities.clear()
       continue
     }
-    for (const entity of entities) {
-      const path = getEntityPath(world, entity)
-      if (path.length === 0) continue
-      const defSoA = getSoA(world, def)
-      const soa: Record<string, number | number[]> = {}
-      for (const field of def.$soaFields) {
-        const store = defSoA[field] as { to?: (entity: number) => unknown } & Record<number, number>
-        if (typeof store.to === 'function') soa[field] = store.to(entity) as number | number[]
-        else soa[field] = store[entity]
-      }
-      updates.push({ predicate: componentId, entityPath: path, soa })
-    }
+    snapshot.set(componentId, new Set(entities))
     entities.clear()
   }
-  if (updates.length === 0) return undefined
-  const envelope: RuntimeEnvelope = { updates, fromPeer: world.network.localAgent.did }
-  publishRuntime(world, envelope)
-  return envelope
+  if (snapshot.size === 0) return undefined
+  publishRuntime(world, snapshot)
+  return snapshot
 }
 
 const publishAuthored = (world: World, envelope: AuthoredEnvelope): void => {
@@ -171,13 +197,15 @@ const publishAuthored = (world: World, envelope: AuthoredEnvelope): void => {
   })
 }
 
-const publishRuntime = (world: World, envelope: RuntimeEnvelope): void => {
-  world.network.publishRuntime?.(envelope)
+const publishRuntime = (world: World, dirty: Map<string, Set<Entity>>): void => {
+  world.network.publishRuntime?.(dirty)
+  let count = 0
+  for (const set of dirty.values()) count += set.size
   world.trace.emit({
     kind: 'transport.send',
     ts: world.clock.now(),
-    peer: envelope.fromPeer,
-    detail: { kind: 'runtime', count: envelope.updates.length }
+    peer: world.network.localAgent.did,
+    detail: { kind: 'runtime', count }
   })
 }
 
@@ -207,8 +235,8 @@ export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope):
       })
       continue
     }
+    if (!appendEventLog(world, event)) continue
     applyEvent(world, event)
-    world.eventLog.push(event)
     world.trace.emit({
       kind: 'mutation.receive',
       ts: world.clock.now(),
@@ -216,44 +244,6 @@ export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope):
       predicate: event.predicate,
       detail: { author: event.author }
     })
-  }
-}
-
-/** Apply a runtime envelope (SoA snapshot) received over the wire. */
-export const applyRuntimeEnvelope = (world: World, envelope: RuntimeEnvelope): void => {
-  world.trace.emit({
-    kind: 'transport.receive',
-    ts: world.clock.now(),
-    peer: envelope.fromPeer,
-    detail: { kind: 'runtime', count: envelope.updates.length }
-  })
-  for (const update of envelope.updates) {
-    const component = findComponent(world, update.predicate)
-    if (!component || component.mutationCategory !== 'runtime') continue
-    let entity = resolveEntityPath(world, update.entityPath)
-    if (entity === undefined) entity = ensureEntityPath(world, update.entityPath)
-    if (!hasComponent(world, entity, component)) {
-      setComponent(world, entity, component, update.soa as Record<string, unknown>, { origin: 'network' })
-    } else {
-      // Direct SoA write — bypass setComponent so we don't re-mark dirty
-      const componentSoA = getSoA(world, component)
-      for (const [field, value] of Object.entries(update.soa)) {
-        const store = componentSoA[field] as
-          | { from?: (entity: number, data: unknown) => void; resize?: (n: number) => void }
-          | undefined
-        if (!store) continue
-        if (typeof store.resize === 'function') store.resize(entity + 1)
-        if (typeof store.from === 'function') store.from(entity, value)
-        else (store as unknown as { [k: number]: number })[entity] = value as number
-      }
-      world.trace.emit({
-        kind: 'mutation.receive',
-        ts: world.clock.now(),
-        origin: 'network',
-        predicate: update.predicate,
-        entity
-      })
-    }
   }
 }
 

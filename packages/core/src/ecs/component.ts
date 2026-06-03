@@ -191,6 +191,9 @@ export const getComponentDefinition = (ref: bitecs.ComponentRef): ComponentDefin
 /** Resolve a ComponentDefinition by its id (across worlds). */
 export const getComponentById = (id: string): ComponentDefinition | undefined => componentById.get(id)
 
+/** Iterate every globally-defined ComponentDefinition (shared across worlds). */
+export const allComponents = (): ComponentDefinition[] => Array.from(componentById.values())
+
 // ── Per-world storage ─────────────────────────────────────────────────────────
 //
 // Storage (SoA typed arrays + per-entity instance maps) MUST be per-world. Two

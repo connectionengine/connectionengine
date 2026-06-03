@@ -1,23 +1,27 @@
 /**
  * Governance — engine-native consensus-enforced rules (core subset).
  *
- * Constraints are ECS entities, replicated as data. addConstraint creates a
- * constraint entity, attaches the appropriate ConstraintComponent, and links
- * it to the scope via HasConstraint. All peers receive it via the authored
- * pipeline and enforce it locally.
+ * Constraints are ECS entities, replicated as data. `addConstraint` creates
+ * an entity, attaches the appropriate ConstraintComponent, and links it to
+ * a scope via `HasConstraint`. All peers receive the constraint via the
+ * authored pipeline and enforce it locally.
  *
- * Core ships the engine-level constraint kinds — `credential`, `temporal`,
- * `content` — that need no specific identity provider beyond an opaque DID
- * string. The `capability` (ZCAP) constraint kind lives in
- * @connectionengine/local. AD4M-backed governance lives in
- * @connectionengine/ad4m-bridge.
- *
- * `validateEvent` is suitable as the `validate` hook for `connectInMemory`
- * (or wired into `world.network.validateAuthored` by a runtime mode).
+ * Constraint kinds are a registry — `registerConstraintKind` adds a new kind.
+ * Core ships three kinds (`credential`, `temporal`, `content`); other packages
+ * (e.g. `@connectionengine/local`'s ZCAP capability constraint) compose by
+ * registering their own kinds at module load. `validateEvent` walks the
+ * registry rather than a hardcoded switch — adding a kind requires no edit
+ * to validateEvent.
  */
 
 import { Schema } from '../schema'
-import { componentEntities, defineComponent, getComponent, setComponent } from '../ecs/component'
+import {
+  componentEntities,
+  defineComponent,
+  getComponent,
+  setComponent,
+  type ComponentDefinition
+} from '../ecs/component'
 import { defineRelation, addRelation, getRelationTargets } from '../ecs/relation'
 import { ROOT_PARENT, resolveEntityPath } from '../ecs/identity'
 import { createEntity, entityExists } from '../ecs/entity'
@@ -63,9 +67,134 @@ export const HasConstraint = defineRelation({
   mutationCategory: 'authored'
 })
 
+// ── Constraint kind registry ─────────────────────────────────────────────────-
+
+export interface ValidationContext {
+  /** External oracle — does the author DID hold the named credential? */
+  hasCredential?: (did: string, credential: string) => boolean
+}
+
+export interface ConstraintViolation {
+  kind: string
+  reason: string
+}
+
+export interface ConstraintKindEntry {
+  /** Stable name on the wire + in trace. */
+  kind: string
+  /** The component carrying this kind's data. */
+  component: ComponentDefinition
+  /**
+   * Validate one event against one resolved instance of this constraint kind.
+   * Push any violations. Use `world.eventLog` + `world.clock` for stateful
+   * rules (temporal, rate-limits). The constraint scope is provided in case
+   * a kind cares about it (e.g. ownership-scoped rules).
+   */
+  validate(args: {
+    world: World
+    event: AuthoredEvent
+    data: Record<string, unknown>
+    scope: Entity
+    context: ValidationContext
+    violations: ConstraintViolation[]
+  }): void
+}
+
+const kindRegistry = new Map<string, ConstraintKindEntry>()
+const kindByComponentId = new Map<string, ConstraintKindEntry>()
+
+export const registerConstraintKind = (entry: ConstraintKindEntry): void => {
+  if (kindRegistry.has(entry.kind)) {
+    throw new Error(`registerConstraintKind: kind '${entry.kind}' already registered`)
+  }
+  kindRegistry.set(entry.kind, entry)
+  kindByComponentId.set(entry.component.id, entry)
+}
+
+export const getConstraintKind = (kind: string): ConstraintKindEntry | undefined => kindRegistry.get(kind)
+
+export const listConstraintKinds = (): ConstraintKindEntry[] => Array.from(kindRegistry.values())
+
+// ── Built-in kinds: credential / temporal / content ──────────────────────────-
+
+registerConstraintKind({
+  kind: 'credential',
+  component: CredentialConstraintComponent,
+  validate({ event, data, context, violations }) {
+    const required = data.requiredCredential as string
+    const ops = (data.operations as string).split(',')
+    const opForEvent = event.op === 'set' ? 'modify' : event.op === 'remove' ? 'delete' : event.op
+    if (!ops.includes(opForEvent)) return
+    if (context.hasCredential && !context.hasCredential(event.author, required)) {
+      violations.push({ kind: 'credential', reason: `missing credential '${required}'` })
+    }
+  }
+})
+
+registerConstraintKind({
+  kind: 'temporal',
+  component: TemporalConstraintComponent,
+  validate({ world, event, data, violations }) {
+    const cfg = data as { minIntervalMs: number; maxCountPerWindow: number; windowMs: number; appliesTo: string }
+    const predicates = cfg.appliesTo.split(',').filter(Boolean)
+    if (predicates.length > 0 && !predicates.includes(event.predicate)) return
+    const cutoff = world.clock.now() - cfg.windowMs
+    let count = 0
+    let lastTs: number | undefined
+    for (const entry of world.eventLog) {
+      if (entry.author !== event.author) continue
+      if (predicates.length > 0 && !predicates.includes(entry.predicate)) continue
+      if (entry.timestamp < cutoff) continue
+      count++
+      if (lastTs === undefined || entry.timestamp > lastTs) lastTs = entry.timestamp
+    }
+    if (count >= cfg.maxCountPerWindow) {
+      violations.push({
+        kind: 'temporal',
+        reason: `rate limit exceeded (${count}/${cfg.maxCountPerWindow} per ${cfg.windowMs}ms)`
+      })
+    }
+    if (lastTs !== undefined && event.timestamp - lastTs < cfg.minIntervalMs) {
+      violations.push({ kind: 'temporal', reason: `min interval ${cfg.minIntervalMs}ms not met` })
+    }
+  }
+})
+
+registerConstraintKind({
+  kind: 'content',
+  component: ContentConstraintComponent,
+  validate({ event, data, violations }) {
+    const cfg = data as { componentType: string; fieldConstraints: string }
+    if (cfg.componentType !== event.predicate) return
+    let fields: Record<string, { min?: number; max?: number; pattern?: string; blocklist?: string[] }> = {}
+    try {
+      fields = JSON.parse(cfg.fieldConstraints)
+    } catch {
+      violations.push({ kind: 'content', reason: 'malformed field constraints' })
+      return
+    }
+    const value = (event.value ?? {}) as Record<string, unknown>
+    for (const [field, rule] of Object.entries(fields)) {
+      const v = value[field]
+      if (typeof v === 'number') {
+        if (rule.min !== undefined && v < rule.min)
+          violations.push({ kind: 'content', reason: `${field} < ${rule.min}` })
+        if (rule.max !== undefined && v > rule.max)
+          violations.push({ kind: 'content', reason: `${field} > ${rule.max}` })
+      }
+      if (typeof v === 'string') {
+        if (rule.pattern && !new RegExp(rule.pattern).test(v))
+          violations.push({ kind: 'content', reason: `${field} fails pattern` })
+        if (rule.blocklist?.some((b) => v.includes(b)))
+          violations.push({ kind: 'content', reason: `${field} contains blocked content` })
+      }
+    }
+  }
+})
+
 // ── addConstraint ─────────────────────────────────────────────────────────────
 
-export type ConstraintKind = 'credential' | 'temporal' | 'content'
+export type ConstraintKindName = 'credential' | 'temporal' | 'content' | (string & {})
 
 export interface CredentialConfig {
   requiredCredential: string
@@ -90,47 +219,57 @@ export interface ContentConfig {
   >
 }
 
-export type ConstraintConfig = CredentialConfig | TemporalConfig | ContentConfig
+export type ConstraintConfig = CredentialConfig | TemporalConfig | ContentConfig | Record<string, unknown>
 
-export const addConstraint = (world: World, scope: Entity, kind: ConstraintKind, config: ConstraintConfig): Entity => {
+export const addConstraint = (
+  world: World,
+  scope: Entity,
+  kind: ConstraintKindName,
+  config: ConstraintConfig
+): Entity => {
+  const entry = kindRegistry.get(kind)
+  if (!entry) throw new Error(`addConstraint: unknown constraint kind '${kind}'`)
   const entity = createEntity(world)
+  setComponent(world, entity, entry.component, normaliseConfig(kind, config) as Record<string, unknown>)
+  addRelation(world, entity, HasConstraint, scope)
+  return entity
+}
+
+const normaliseConfig = (kind: string, config: ConstraintConfig): Record<string, unknown> => {
   switch (kind) {
     case 'credential': {
       const c = config as CredentialConfig
-      setComponent(world, entity, CredentialConstraintComponent, {
+      return {
         requiredCredential: c.requiredCredential,
         operations: (c.operations ?? ['spawn', 'modify', 'delete']).join(',')
-      })
-      break
+      }
     }
     case 'temporal': {
       const c = config as TemporalConfig
-      setComponent(world, entity, TemporalConstraintComponent, {
+      return {
         minIntervalMs: c.minIntervalMs ?? 0,
         maxCountPerWindow: c.maxCountPerWindow ?? Number.POSITIVE_INFINITY,
         windowMs: c.windowMs ?? 60_000,
         appliesTo: c.appliesTo.join(',')
-      })
-      break
+      }
     }
     case 'content': {
       const c = config as ContentConfig
-      setComponent(world, entity, ContentConstraintComponent, {
+      return {
         componentType: c.componentType,
         fieldConstraints: JSON.stringify(c.fieldConstraints)
-      })
-      break
+      }
     }
+    default:
+      return config as Record<string, unknown>
   }
-  addRelation(world, entity, HasConstraint, scope)
-  return entity
 }
 
 // ── resolveConstraints ────────────────────────────────────────────────────────
 
 export interface ResolvedConstraint {
   entity: Entity
-  kind: ConstraintKind
+  kind: string
   data: Record<string, unknown>
   scope: Entity
 }
@@ -138,20 +277,17 @@ export interface ResolvedConstraint {
 const constraintKindFor = (
   world: World,
   entity: Entity
-): { kind: ConstraintKind; data: Record<string, unknown> } | undefined => {
-  const cred = getComponent(world, entity, CredentialConstraintComponent)
-  if (cred) return { kind: 'credential', data: cred as Record<string, unknown> }
-  const tem = getComponent(world, entity, TemporalConstraintComponent)
-  if (tem) return { kind: 'temporal', data: tem as Record<string, unknown> }
-  const con = getComponent(world, entity, ContentConstraintComponent)
-  if (con) return { kind: 'content', data: con as Record<string, unknown> }
+): { kind: string; data: Record<string, unknown> } | undefined => {
+  for (const entry of kindRegistry.values()) {
+    const value = getComponent(world, entity, entry.component)
+    if (value) return { kind: entry.kind, data: value as Record<string, unknown> }
+  }
   return undefined
 }
 
 /**
  * Walk the scope hierarchy (entity → BelongsTo parent → ... → world root) and
- * collect every constraint linked via HasConstraint, ordered most-specific
- * first.
+ * collect every constraint linked via HasConstraint, ordered most-specific first.
  */
 export const resolveConstraints = (world: World, entity: Entity): ResolvedConstraint[] => {
   const out: ResolvedConstraint[] = []
@@ -168,33 +304,30 @@ export const resolveConstraints = (world: World, entity: Entity): ResolvedConstr
   return out
 }
 
-/** Enumerate entities on this world carrying any core constraint component. */
+/** Enumerate entities on this world carrying any registered constraint component. */
 const constraintEntities = (world: World): Entity[] => {
   const set = new Set<Entity>()
-  for (const e of componentEntities(world, CredentialConstraintComponent)) if (entityExists(world, e)) set.add(e)
-  for (const e of componentEntities(world, TemporalConstraintComponent)) if (entityExists(world, e)) set.add(e)
-  for (const e of componentEntities(world, ContentConstraintComponent)) if (entityExists(world, e)) set.add(e)
+  for (const entry of kindRegistry.values()) {
+    for (const e of componentEntities(world, entry.component)) {
+      if (entityExists(world, e)) set.add(e)
+    }
+  }
   return Array.from(set)
 }
 
 // ── validateEvent ─────────────────────────────────────────────────────────────
 
-export interface ValidationContext {
-  /** External oracle — does the author DID hold the named credential? */
-  hasCredential?: (did: string, credential: string) => boolean
-}
-
 export interface ValidationResult {
   allowed: boolean
-  violations: Array<{ kind: ConstraintKind; reason: string }>
+  violations: ConstraintViolation[]
 }
 
 /**
- * Validate an incoming authored event against all applicable engine-level
- * constraints. Suitable as `world.network.validateAuthored` or as the
- * `validate` option to `connectInMemory`. Runtime modes that need richer
- * constraint kinds (e.g. ZCAP capabilities) compose their own validators
- * around this one.
+ * Validate an incoming authored event against every applicable constraint —
+ * walks the entity's scope chain, looks up each constraint's kind in the
+ * registry, calls the kind's `validate` function. Suitable as
+ * `world.network.validateAuthored` or as the `validate` option to
+ * `connectInMemory`.
  */
 export const validateEvent = (
   world: World,
@@ -203,68 +336,12 @@ export const validateEvent = (
 ): ValidationResult => {
   const entity = resolveEntityPath(world, event.entityPath) ?? ROOT_PARENT
   const constraints = resolveConstraints(world, entity)
-  const violations: ValidationResult['violations'] = []
-
+  const violations: ConstraintViolation[] = []
   for (const c of constraints) {
-    if (c.kind === 'credential') {
-      const required = (c.data as { requiredCredential: string }).requiredCredential
-      const ops = (c.data as { operations: string }).operations.split(',')
-      const opForEvent = event.op === 'set' ? 'modify' : event.op === 'remove' ? 'delete' : event.op
-      if (ops.includes(opForEvent) && context.hasCredential && !context.hasCredential(event.author, required)) {
-        violations.push({ kind: 'credential', reason: `missing credential '${required}'` })
-      }
-    } else if (c.kind === 'temporal') {
-      const data = c.data as { minIntervalMs: number; maxCountPerWindow: number; windowMs: number; appliesTo: string }
-      const predicates = data.appliesTo.split(',').filter(Boolean)
-      if (predicates.length > 0 && !predicates.includes(event.predicate)) continue
-      const cutoff = world.clock.now() - data.windowMs
-      let count = 0
-      let lastTs: number | undefined
-      for (const entry of world.eventLog) {
-        if (entry.author !== event.author) continue
-        if (predicates.length > 0 && !predicates.includes(entry.predicate)) continue
-        if (entry.timestamp < cutoff) continue
-        count++
-        if (lastTs === undefined || entry.timestamp > lastTs) lastTs = entry.timestamp
-      }
-      if (count >= data.maxCountPerWindow) {
-        violations.push({
-          kind: 'temporal',
-          reason: `rate limit exceeded (${count}/${data.maxCountPerWindow} per ${data.windowMs}ms)`
-        })
-      }
-      if (lastTs !== undefined && event.timestamp - lastTs < data.minIntervalMs) {
-        violations.push({ kind: 'temporal', reason: `min interval ${data.minIntervalMs}ms not met` })
-      }
-    } else if (c.kind === 'content') {
-      const data = c.data as { componentType: string; fieldConstraints: string }
-      if (data.componentType !== event.predicate) continue
-      let fields: Record<string, { min?: number; max?: number; pattern?: string; blocklist?: string[] }> = {}
-      try {
-        fields = JSON.parse(data.fieldConstraints)
-      } catch {
-        violations.push({ kind: 'content', reason: 'malformed field constraints' })
-        continue
-      }
-      const value = (event.value ?? {}) as Record<string, unknown>
-      for (const [field, rule] of Object.entries(fields)) {
-        const v = value[field]
-        if (typeof v === 'number') {
-          if (rule.min !== undefined && v < rule.min)
-            violations.push({ kind: 'content', reason: `${field} < ${rule.min}` })
-          if (rule.max !== undefined && v > rule.max)
-            violations.push({ kind: 'content', reason: `${field} > ${rule.max}` })
-        }
-        if (typeof v === 'string') {
-          if (rule.pattern && !new RegExp(rule.pattern).test(v))
-            violations.push({ kind: 'content', reason: `${field} fails pattern` })
-          if (rule.blocklist?.some((b) => v.includes(b)))
-            violations.push({ kind: 'content', reason: `${field} contains blocked content` })
-        }
-      }
-    }
+    const entry = kindRegistry.get(c.kind)
+    if (!entry) continue
+    entry.validate({ world, event, data: c.data, scope: c.scope, context, violations })
   }
-
   const allowed = violations.length === 0
   if (allowed) world.trace.emit({ kind: 'governance.accept', ts: world.clock.now(), predicate: event.predicate })
   else

@@ -15,7 +15,7 @@ import { getComponent, getComponentById, hasComponent, setComponent } from '../e
 import { ROOT_PARENT, getEntityByUID, getEntityPath, setUID } from '../ecs/identity'
 import { addRelation, getRelationByName, getRelationTargets } from '../ecs/relation'
 import { createEntity, removeEntity } from '../ecs/entity'
-import { worldComponents, worldRelations } from './mutation'
+import { worldComponents, worldRelations } from '../engine/mutation'
 import type { Entity, World } from '../ecs/world'
 
 export interface SnapshotEntity {

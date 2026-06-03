@@ -55,22 +55,9 @@ export interface AuthoredEvent {
   timestamp: number
 }
 
-/** A runtime-category binary update (SoA snapshot for one entity-component). */
-export interface RuntimeUpdate {
-  predicate: string
-  entityPath: string[]
-  soa: Record<string, number | number[]>
-}
-
 /** Wire-shape envelope of authored events from one peer. */
 export interface AuthoredEnvelope {
   events: AuthoredEvent[]
-  fromPeer: string
-}
-
-/** Wire-shape envelope of runtime updates from one peer. */
-export interface RuntimeEnvelope {
-  updates: RuntimeUpdate[]
   fromPeer: string
 }
 
@@ -92,12 +79,23 @@ export interface DirtyKey {
   componentId: string
 }
 
-/** A live transport link to a peer. Full shape (memory/webrtc/websocket) in transport.ts. */
+/**
+ * A live transport link to a peer. A Connection is a `TransportEndpoint` plus
+ * session-level metadata (remoteDID, local peer entity once known).
+ *
+ * Wire payloads are typed by JS shape:
+ *   - `ArrayBuffer`  → binary runtime packet (decoded by the binary pipeline)
+ *   - `{ events }`   → AuthoredEnvelope (low-frequency reliable channel)
+ *   - `{ type: ... }` → control message (handshake, replay, leave, bind)
+ */
 export interface Connection {
   peer: Entity
   backend: 'webrtc' | 'websocket' | 'memory'
-  /** Send a wire payload (envelope shape decided by the runtime mode). */
+  /** Remote agent DID — `'did:unknown:pending'` until the hello is received. */
+  remoteDID: string
   send(payload: unknown): void
+  onMessage(handler: (payload: unknown) => void): () => void
+  onClose(handler: () => void): () => void
   close(): void
 }
 
@@ -126,8 +124,12 @@ export interface NetworkBindings {
    * Engine calls it at end-of-tick.
    */
   publishAuthored?: (envelope: AuthoredEnvelope) => void
-  /** Outbound publish hook for runtime envelopes. */
-  publishRuntime?: (envelope: RuntimeEnvelope) => void
+  /**
+   * Outbound publish hook for runtime mutations — receives the dirty map
+   * directly (componentId → entities that changed). The network layer
+   * encodes via the binary pipeline + ships per-connection.
+   */
+  publishRuntime?: (dirty: Map<string, Set<Entity>>) => void
   /**
    * Inbound governance gate. Runtime mode wires this; called per received
    * authored event before apply. Returning false drops the event.
@@ -158,6 +160,13 @@ export interface World extends bitecs.World {
   authoredQueue: QueuedAuthored[]
   /** Append-only canonical event log — plain AuthoredEvent (no signatures). */
   eventLog: AuthoredEvent[]
+  /**
+   * Composite-key index of events present in `eventLog`. Used by every append
+   * path (local flush, network apply, replay) to make appends idempotent —
+   * duplicates of an already-recorded event are dropped silently. Signature
+   * is composed of (author, timestamp, op, predicate, entityPath, value).
+   */
+  eventLogSeen: Set<string>
   /** Runtime dirty set — written by setComponent on runtime-category components. */
   runtimeDirty: Map<string, Set<Entity>>
 
@@ -198,6 +207,7 @@ export const createWorld = (options: CreateWorldOptions): World => {
   world.uidOf = new Map()
   world.authoredQueue = []
   world.eventLog = []
+  world.eventLogSeen = new Set()
   world.runtimeDirty = new Map()
   world.clock = options.clock ?? wallClock
   world.trace = options.trace ?? createTraceSink()
@@ -216,6 +226,7 @@ export const destroyWorld = (world: World): void => {
   world.uidOf.clear()
   world.authoredQueue.length = 0
   world.eventLog.length = 0
+  world.eventLogSeen.clear()
   world.runtimeDirty.clear()
   bitecs.resetWorld(world)
   bitecs.deleteWorld(world)

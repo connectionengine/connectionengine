@@ -13,12 +13,8 @@
 import { createManualClock, type ManualClock } from '../../src/ecs/clock'
 import { createAnonAgent, createWorld, destroyWorld, type World } from '../../src/ecs/world'
 import { runSystems } from '../../src/engine/system'
-import {
-  connectInMemory,
-  flushAsync,
-  type MemoryConnectionPair,
-  type MemoryTransportOptions
-} from '../../src/network/transport'
+import { connectInMemory, type MemoryConnectionPair } from '../../src/network/lifecycle/connect-memory'
+import { flushAsync, type MemoryTransportOptions } from '../../src/network/transport'
 
 export interface PeerHandle {
   name: string

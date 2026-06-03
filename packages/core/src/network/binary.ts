@@ -1,10 +1,11 @@
 /**
  * Schema-driven binary runtime codec — no strings on the wire.
  *
- * **Primary API: `createBinaryPipeline(world, components)`** returns a paired
- * `{ write, read }` codec that share one schema and persistent shadow-map
- * state. Use the pipeline for both sides of any transport — sender calls
- * `.write(metadata, entries)`, receiver calls `.read(buffer, resolveEntity)`.
+ * **Primary API: `createBinaryPipeline(world, components, options?)`** returns
+ * a paired `{ write, read }` codec that share one schema and persistent
+ * shadow-map state. Use the pipeline for both sides of any transport —
+ * sender calls `.write(metadata, entries)`, receiver calls
+ * `.read(buffer, resolveEntity)`.
  *
  * Wire format:
  *
@@ -12,37 +13,38 @@
  *   for each entity that wrote:
  *     [u32 networkId][u8/u16/u32 componentMask]
  *     for each set bit in componentMask:
- *       [u8/u16/u32 fieldMask]
- *       for each set bit in fieldMask: typed-array value in its native width
+ *       [u8/u16/u32 propMask]
+ *       for each set bit in propMask: prop payload (raw or compressed)
  *
- * Per-component change masks come from the shadow map: floats compared with
- * epsilon tolerance, only changed fields written. An entity with no changes
- * across any component produces zero bytes (rewind kicks in). Force a full
- * send via `pipeline.write(meta, entries, true)` (third arg is
- * `forceFullSync`) or after calling `pipeline.resetShadow()`.
+ * Per-prop change masks come from the shadow map: floats compared with epsilon
+ * tolerance, only changed props written. An entity with no changes across any
+ * component produces zero bytes (rewind kicks in). Force a full send via
+ * `pipeline.write(meta, entries, true)` or after `pipeline.resetShadow()`.
+ *
+ * Optional per-field compression — `Vec3 → 3 × int16`, `Quat → smallest-three`
+ * — is opt-in via the `compression` option (see `compression.ts` and the
+ * `Prop` discriminator below). Compressed fields collapse multi-axis groups
+ * into single props with single mask bits.
  *
  * Schema is **ordered registration**: both sides agree out-of-band on the
  * component order (handshake responsibility). Position in the array = wire
  * index.
  *
- * Components must be stored per-world (typed arrays allocated lazily on
- * `setComponent`); the codec resolves to the world's SoA stores via `getSoA`
- * and keys its shadow map on typed-array identity, so different worlds
- * naturally have independent change-tracking state.
- *
- * Authored events use a separate string-shaped codec in `engine/codec.ts`
+ * Authored events use a separate string-shaped codec in `codec.ts`
  * (low-frequency, value-JSON-dominated payload).
  */
 
 import type { TypedArray } from '../maths/common'
 import type { ComponentDefinition } from '../ecs/component'
-import { getSoA } from '../ecs/component'
+import { getSoA, hasComponent, setComponent } from '../ecs/component'
 import type { World } from '../ecs/world'
 import {
   type ViewCursor,
   checkBitflag,
   clearShadowMap,
+  commitPropShadow,
   createViewCursor,
+  isPropChanged,
   readFloat64,
   readPropInto,
   readUint32,
@@ -57,75 +59,217 @@ import {
   writePropIfChanged,
   writeUint32
 } from './cursor'
+import type { CompressionConfig, FieldCompressionSpec } from './compression'
+import {
+  decodeQuatSmallest3,
+  decodeVec3Int16,
+  encodeQuatSmallest3,
+  encodeVec3Int16,
+  QUAT_SMALLEST3_BYTES,
+  VEC3_INT16_BYTES
+} from './compression'
 
-// ── Internal: flatten SoA + mask helpers ─────────────────────────────────────-
+// ── Prop model ───────────────────────────────────────────────────────────────-
 
 /**
- * Walk a per-world `$soa` record and yield a flat ordered list of every leaf
- * TypedArray. For `{ position: Vec3SoA, rotation: QuatSoA }` we yield
- * `[position.x, .y, .z, rotation.x, .y, .z, .w]`.
- *
- * Cache keyed on (world, component) — per-world stores are independent typed
- * arrays.
+ * A logical wire slot for one component. Either a single typed array OR a
+ * grouped + compressed multi-axis field (Vec3, Quat). Change masks index by
+ * Prop position, not by underlying typed array.
  */
-const flattenCachePerWorld = new WeakMap<World, WeakMap<ComponentDefinition, readonly TypedArray[]>>()
+type Prop =
+  | { kind: 'raw'; array: TypedArray }
+  | { kind: 'vec3-int16'; x: TypedArray; y: TypedArray; z: TypedArray; range: number }
+  | { kind: 'quat-smallest3'; x: TypedArray; y: TypedArray; z: TypedArray; w: TypedArray }
 
-const flattenSoA = (world: World, component: ComponentDefinition): readonly TypedArray[] => {
-  let perWorld = flattenCachePerWorld.get(world)
+// ── flattenProps — per-world + per-compression-spec cache ────────────────────-
+
+const propsCache = new WeakMap<World, WeakMap<ComponentDefinition, Map<string, readonly Prop[]>>>()
+
+const cacheKey = (spec: Record<string, FieldCompressionSpec> | undefined): string => (spec ? JSON.stringify(spec) : '_')
+
+const flattenProps = (
+  world: World,
+  component: ComponentDefinition,
+  compressionForComponent: Record<string, FieldCompressionSpec> | undefined
+): readonly Prop[] => {
+  let perWorld = propsCache.get(world)
   if (!perWorld) {
     perWorld = new WeakMap()
-    flattenCachePerWorld.set(world, perWorld)
+    propsCache.set(world, perWorld)
   }
-  const cached = perWorld.get(component)
+  let perComponent = perWorld.get(component)
+  if (!perComponent) {
+    perComponent = new Map()
+    perWorld.set(component, perComponent)
+  }
+  const key = cacheKey(compressionForComponent)
+  const cached = perComponent.get(key)
   if (cached) return cached
-  const soa = getSoA(world, component)
-  const out: TypedArray[] = []
-  const walk = (node: unknown): void => {
+  const soa = getSoA(world, component) as Record<string, unknown>
+  const out: Prop[] = []
+  const append = (node: unknown): void => {
     if (node === null || typeof node !== 'object') return
     if (ArrayBuffer.isView(node) && !(node instanceof DataView)) {
-      out.push(node as TypedArray)
+      out.push({ kind: 'raw', array: node as TypedArray })
       return
     }
     for (const key of Object.keys(node as Record<string, unknown>)) {
       if (key.startsWith('_')) continue
       const child = (node as Record<string, unknown>)[key]
       if (typeof child === 'function') continue
-      walk(child)
+      append(child)
     }
   }
-  walk(soa)
+  for (const fieldName of Object.keys(soa)) {
+    if (fieldName.startsWith('_')) continue
+    const field = soa[fieldName]
+    const spec = compressionForComponent?.[fieldName]
+    if (spec && isVec3SoA(field)) {
+      out.push({
+        kind: 'vec3-int16',
+        x: field.x,
+        y: field.y,
+        z: field.z,
+        range: (spec as { range: number }).range
+      })
+      continue
+    }
+    if (spec && isQuatSoA(field)) {
+      out.push({ kind: 'quat-smallest3', x: field.x, y: field.y, z: field.z, w: field.w })
+      continue
+    }
+    append(field)
+  }
   Object.freeze(out)
-  perWorld.set(component, out)
+  perComponent.set(key, out)
   return out
 }
+
+const isVec3SoA = (v: unknown): v is { x: TypedArray; y: TypedArray; z: TypedArray } =>
+  !!v &&
+  typeof v === 'object' &&
+  ArrayBuffer.isView((v as { x?: unknown }).x) &&
+  ArrayBuffer.isView((v as { y?: unknown }).y) &&
+  ArrayBuffer.isView((v as { z?: unknown }).z) &&
+  !ArrayBuffer.isView((v as { w?: unknown }).w)
+
+const isQuatSoA = (v: unknown): v is { x: TypedArray; y: TypedArray; z: TypedArray; w: TypedArray } =>
+  !!v &&
+  typeof v === 'object' &&
+  ArrayBuffer.isView((v as { x?: unknown }).x) &&
+  ArrayBuffer.isView((v as { y?: unknown }).y) &&
+  ArrayBuffer.isView((v as { z?: unknown }).z) &&
+  ArrayBuffer.isView((v as { w?: unknown }).w)
+
+// ── Mask helpers ─────────────────────────────────────────────────────────────-
 
 const maskWidthFor = (propCount: number): 1 | 2 | 4 => {
   if (propCount <= 8) return 1
   if (propCount <= 16) return 2
   if (propCount <= 32) return 4
-  throw new Error(`binary: components with >32 leaf props not supported (got ${propCount})`)
+  throw new Error(`binary: components with >32 logical props not supported (got ${propCount})`)
 }
 
 const spaceFor = (width: 1 | 2 | 4) => (width === 1 ? spaceUint8 : width === 2 ? spaceUint16 : spaceUint32)
 const readMaskOf = (width: 1 | 2 | 4) => (width === 1 ? readUint8 : width === 2 ? readUint16 : readUint32)
 
-// ── Per-component write/read primitives ──────────────────────────────────────-
+// ── Per-prop write/read ──────────────────────────────────────────────────────-
+
+/**
+ * Write one prop iff it has changed since the last shadowed value. Returns
+ * whether a write happened. For grouped (compressed) props, "changed" means
+ * any of the underlying typed arrays differs from its shadow — we test
+ * non-destructively, then if any changed write the packed payload + commit
+ * shadow for all axes.
+ */
+const writeProp = (view: ViewCursor, prop: Prop, entity: number, forceFullSync: boolean): boolean => {
+  if (prop.kind === 'raw') return writePropIfChanged(view, prop.array, entity, forceFullSync)
+  if (prop.kind === 'vec3-int16') {
+    const changed =
+      forceFullSync ||
+      isPropChanged(view, prop.x, entity) ||
+      isPropChanged(view, prop.y, entity) ||
+      isPropChanged(view, prop.z, entity)
+    if (!changed) return false
+    const xv = readArray(prop.x, entity, 0)
+    const yv = readArray(prop.y, entity, 0)
+    const zv = readArray(prop.z, entity, 0)
+    encodeVec3Int16(view, xv, yv, zv, prop.range)
+    commitPropShadow(view, prop.x, entity)
+    commitPropShadow(view, prop.y, entity)
+    commitPropShadow(view, prop.z, entity)
+    return true
+  }
+  // quat-smallest3
+  const changed =
+    forceFullSync ||
+    isPropChanged(view, prop.x, entity) ||
+    isPropChanged(view, prop.y, entity) ||
+    isPropChanged(view, prop.z, entity) ||
+    isPropChanged(view, prop.w, entity)
+  if (!changed) return false
+  const xv = readArray(prop.x, entity, 0)
+  const yv = readArray(prop.y, entity, 0)
+  const zv = readArray(prop.z, entity, 0)
+  const wv = readArray(prop.w, entity, 1)
+  encodeQuatSmallest3(view, xv, yv, zv, wv)
+  commitPropShadow(view, prop.x, entity)
+  commitPropShadow(view, prop.y, entity)
+  commitPropShadow(view, prop.z, entity)
+  commitPropShadow(view, prop.w, entity)
+  return true
+}
+
+const readArray = (array: TypedArray, entity: number, fallback: number): number => {
+  const v = (array as unknown as Record<number, number>)[entity]
+  return v === undefined || Number.isNaN(v) ? fallback : v
+}
+
+const readProp = (view: ViewCursor, prop: Prop, entity: number): void => {
+  if (prop.kind === 'raw') {
+    readPropInto(view, prop.array, entity)
+    return
+  }
+  if (prop.kind === 'vec3-int16') {
+    const [x, y, z] = decodeVec3Int16(view, prop.range)
+    writeIntoArray(prop.x, entity, x)
+    writeIntoArray(prop.y, entity, y)
+    writeIntoArray(prop.z, entity, z)
+    return
+  }
+  const [x, y, z, w] = decodeQuatSmallest3(view)
+  writeIntoArray(prop.x, entity, x)
+  writeIntoArray(prop.y, entity, y)
+  writeIntoArray(prop.z, entity, z)
+  writeIntoArray(prop.w, entity, w)
+}
+
+const writeIntoArray = (array: TypedArray, entity: number, value: number): void => {
+  if (entity >= array.length) {
+    const resizable = array as TypedArray & { resize?: (n: number) => void }
+    if (typeof resizable.resize === 'function') resizable.resize(entity + 1)
+  }
+  ;(array as unknown as Record<number, number>)[entity] = value
+}
+
+// ── Per-component write/read ─────────────────────────────────────────────────-
 
 const writeComponent = (
   world: World,
   component: ComponentDefinition,
   view: ViewCursor,
   entity: number,
-  forceFullSync: boolean
+  forceFullSync: boolean,
+  compressionForComponent: Record<string, FieldCompressionSpec> | undefined
 ): boolean => {
-  const props = flattenSoA(world, component)
+  const props = flattenProps(world, component, compressionForComponent)
   if (props.length === 0) return false
   const width = maskWidthFor(props.length)
   const rewind = rewindViewCursor(view)
   const writeMask = spaceFor(width)(view)
   let mask = 0
   for (let i = 0; i < props.length; i++) {
-    if (writePropIfChanged(view, props[i], entity, forceFullSync)) mask |= 1 << i
+    if (writeProp(view, props[i], entity, forceFullSync)) mask |= 1 << i
   }
   if (mask === 0) {
     rewind()
@@ -135,12 +279,24 @@ const writeComponent = (
   return true
 }
 
-const readComponent = (world: World, component: ComponentDefinition, view: ViewCursor, entity: number): void => {
-  const props = flattenSoA(world, component)
+const readComponent = (
+  world: World,
+  component: ComponentDefinition,
+  view: ViewCursor,
+  entity: number,
+  compressionForComponent: Record<string, FieldCompressionSpec> | undefined
+): void => {
+  // Ensure the component is present on the entity. Without this, the SoA store
+  // values are written but `hasComponent` returns false and `getComponent`
+  // returns undefined.
+  if (entity !== 0 && !hasComponent(world, entity, component)) {
+    setComponent(world, entity, component, {}, { origin: 'network' })
+  }
+  const props = flattenProps(world, component, compressionForComponent)
   const width = maskWidthFor(props.length)
   const mask = readMaskOf(width)(view)
   for (let i = 0; i < props.length; i++) {
-    if (checkBitflag(mask, i)) readPropInto(view, props[i], entity)
+    if (checkBitflag(mask, i)) readProp(view, props[i], entity)
   }
 }
 
@@ -161,60 +317,19 @@ export interface BinaryEntry {
 }
 
 export interface BinaryPipeline {
-  /**
-   * Encode the given entities into a binary packet. The shadow map persists
-   * across calls so only changed fields are emitted; pass `forceFullSync: true`
-   * to emit a full snapshot regardless of diff.
-   *
-   * The returned `ArrayBuffer` is a fresh slice of the writer's internal
-   * cursor — safe to send over a wire transport without copying.
-   */
   write(metadata: BinaryPacketMetadata, entries: readonly BinaryEntry[], forceFullSync?: boolean): ArrayBuffer
-
-  /**
-   * Decode a binary packet and apply its entity updates to this world.
-   * `resolveEntity` maps incoming `networkId` to a local entity (typically
-   * via a `Map<networkId, Entity>` maintained by the transport layer); if a
-   * networkId is unknown, the component blocks are still parsed and
-   * discarded so the stream stays in sync.
-   *
-   * Returns the packet header for the caller to inspect (peer index +
-   * timestamp + entity count).
-   */
   read(buffer: ArrayBuffer, resolveEntity: (networkId: number) => number | undefined): BinaryPacketHeader
-
-  /**
-   * Forget all shadowed values. The next `write` call will emit a full
-   * snapshot for every entity it touches. Use this after a peer disconnects +
-   * reconnects, or on a periodic full-sync tick.
-   */
   resetShadow(): void
-
-  /** Ordered list of components in this pipeline (position = wire index). */
   readonly components: readonly ComponentDefinition[]
 }
-
-// ── createBinaryPipeline ─────────────────────────────────────────────────────-
 
 export interface CreateBinaryPipelineOptions {
   /** Initial buffer size for the writer's cursor. Grows on demand. Default 100 KiB. */
   bufferBytes?: number
+  /** Per-component-id → per-field compression spec. Opt-in. */
+  compression?: CompressionConfig
 }
 
-/**
- * Build a paired binary codec for a fixed set of components on a world.
- *
- * The same pipeline owns both `.write` (encoder, with persistent shadow map)
- * and `.read` (decoder). Use the same pipeline factory on both sides of a
- * transport — the only out-of-band agreement required is the component order
- * passed here. Component IDs are not on the wire; position is.
- *
- *   const pipe = createBinaryPipeline(world, [Transform, Velocity])
- *   const buf  = pipe.write({ fromPeerIndex: 7, timestamp: world.clock.now() }, dirtyEntries)
- *   // ... on receiver:
- *   const peerPipe = createBinaryPipeline(peerWorld, [Transform, Velocity])
- *   peerPipe.read(buf, (nid) => entityMap.get(nid))
- */
 export const createBinaryPipeline = (
   world: World,
   components: readonly ComponentDefinition[],
@@ -223,6 +338,7 @@ export const createBinaryPipeline = (
   if (components.length === 0) throw new Error('createBinaryPipeline requires at least one component')
   const entityMaskWidth = maskWidthFor(components.length)
   const writerView = createViewCursor(new ArrayBuffer(options.bufferBytes ?? 100_000))
+  const compression = options.compression ?? {}
 
   const writeEntityBlock = (view: ViewCursor, entry: BinaryEntry, forceFullSync: boolean): boolean => {
     const rewind = rewindViewCursor(view)
@@ -230,7 +346,10 @@ export const createBinaryPipeline = (
     const writeEntityMask = spaceFor(entityMaskWidth)(view)
     let mask = 0
     for (let i = 0; i < components.length; i++) {
-      if (writeComponent(world, components[i], view, entry.entity, forceFullSync)) mask |= 1 << i
+      const componentCompression = compression[components[i].id]
+      if (writeComponent(world, components[i], view, entry.entity, forceFullSync, componentCompression)) {
+        mask |= 1 << i
+      }
     }
     if (mask === 0) {
       rewind()
@@ -246,7 +365,7 @@ export const createBinaryPipeline = (
     const entity = resolveEntity(networkId)
     for (let i = 0; i < components.length; i++) {
       if (!checkBitflag(entityMask, i)) continue
-      readComponent(world, components[i], view, entity ?? 0)
+      readComponent(world, components[i], view, entity ?? 0, compression[components[i].id])
     }
   }
 
@@ -283,3 +402,7 @@ export const createBinaryPipeline = (
     }
   }
 }
+
+// Re-export for external use
+export type { CompressionConfig, FieldCompressionSpec, Vec3Int16Spec, QuatSmallest3Spec } from './compression'
+export { VEC3_INT16_BYTES, QUAT_SMALLEST3_BYTES }

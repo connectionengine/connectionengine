@@ -1,31 +1,30 @@
 /**
- * Transport — abstract endpoint contract + in-memory implementation.
+ * Transport — abstract endpoint contract + in-memory implementation +
+ * per-component runtime config.
  *
  * `TransportEndpoint` is the wire-mechanism abstraction: how bytes get from
  * one peer to another. WebRTC DataChannels, WebSockets, and the in-memory
- * channel below all satisfy it. The session protocol (handshake, event-log
- * replay, peer entity bookkeeping) lives one layer up in `lifecycle.ts`.
+ * channel below all satisfy it. Session protocol (handshake, replay,
+ * bookkeeping) lives in `lifecycle/` one layer up.
  *
- * Existing `connectInMemory(worldA, worldB)` is preserved as a convenience
- * shortcut for tests that want both worlds pre-wired without going through
- * the formal join protocol.
+ * `connectInMemory(a, b)` is the test/solo-mode shortcut: pre-wires two
+ * worlds without going through the formal handshake — useful when you just
+ * want envelope-level fanout between worlds in-process.
  */
 
-import type { AuthoredEnvelope, AuthoredEvent, Connection, RuntimeEnvelope, World } from '../ecs/world'
 import type { ComponentDefinition } from '../ecs/component'
-import { applyAuthoredEnvelope, applyRuntimeEnvelope } from '../engine/mutation'
 
 export type TransportBackend = 'webrtc' | 'websocket' | 'memory'
 
 // ── Endpoint contract ────────────────────────────────────────────────────────-
 
 /**
- * A bi-directional binary channel to one remote peer. Real backends produce
- * one endpoint per remote; the in-memory factory below produces a pair.
+ * A bi-directional channel to one remote peer. Real backends produce one
+ * endpoint per remote; the in-memory factory below produces a pair.
  *
- * Payload type is `unknown` because in-memory channels can pass JS objects
- * directly (no serialisation cost) while wire transports send `ArrayBuffer`
- * — the engine codec (`engine/codec.ts`) is the bridge between them.
+ * Payload type is `unknown`: control + authored envelopes pass as plain JS
+ * objects in-process, runtime packets pass as `ArrayBuffer`. The lifecycle
+ * layer discriminates by shape.
  */
 export interface TransportEndpoint {
   readonly backend: TransportBackend
@@ -49,8 +48,8 @@ export interface MemoryTransportOptions {
 
 /**
  * Create a paired in-memory transport. Each endpoint delivers to the other
- * after a microtask (or the configured `latencyMs`). Use as the wire layer
- * under `joinWorld` for same-process two-peer tests.
+ * after a microtask (or `latencyMs` if set). Use as the wire layer under
+ * `joinWorld` for same-process two-peer tests.
  */
 export const createMemoryTransport = (options: MemoryTransportOptions = {}): MemoryTransportPair => {
   const aListeners = { msg: new Set<(p: unknown) => void>(), close: new Set<() => void>() }
@@ -101,18 +100,14 @@ export const createMemoryTransport = (options: MemoryTransportOptions = {}): Mem
 // ── Per-component runtime transport configuration ────────────────────────────-
 
 /**
- * Per-runtime-component transport tuning. Wire into `world.network.runtimeConfig`
- * (see lifecycle.ts) to control flush cadence + full-sync intervals + receive-side
- * interpolation per component id.
- *
- * The engine itself doesn't currently throttle flushes per-component — every
- * `runSystems` call ships dirty runtime state. This config is the slot where
- * a future bandwidth-aware scheduler hooks in (deferred work).
+ * Per-runtime-component transport tuning. Consumed by per-connection binary
+ * channels (`lifecycle/binary-channel.ts`) to throttle outbound publishes
+ * + schedule periodic full-state snapshots.
  */
 export interface RuntimeTransportConfig {
   /** Component IDs this config applies to. */
   componentIds: string[]
-  /** Target tick rate in Hz. Default 60. */
+  /** Target tick rate in Hz (assuming a 60Hz tick budget). Default 60. */
   rate?: number
   /**
    * Ticks between full state syncs (vs deltas only). Provides convergence
@@ -123,7 +118,7 @@ export interface RuntimeTransportConfig {
   interpolation?: boolean
 }
 
-/** Resolve config for a specific component. Used by transports that throttle. */
+/** Resolve config for a specific component. */
 export const resolveRuntimeConfig = (
   configs: RuntimeTransportConfig[],
   component: ComponentDefinition
@@ -134,92 +129,6 @@ export const resolveRuntimeConfig = (
     rate: match?.rate ?? 60,
     fullSyncInterval: match?.fullSyncInterval ?? 300,
     interpolation: match?.interpolation ?? true
-  }
-}
-
-// ── Convenience shortcut (existing API; lifecycle.ts is the formal path) ──────
-
-export interface MemoryConnectionPair {
-  a: Connection
-  b: Connection
-  close(): void
-}
-
-export interface ConnectInMemoryOptions {
-  validate?: (world: World, event: AuthoredEvent) => boolean
-  latencyMs?: number
-}
-
-type Envelope = AuthoredEnvelope | RuntimeEnvelope
-const isAuthored = (e: Envelope): e is AuthoredEnvelope => Array.isArray((e as AuthoredEnvelope).events)
-
-/**
- * Pre-wire two worlds over an in-memory channel without going through the
- * formal join handshake. Useful for tests that don't need late-join semantics.
- * For real session lifecycle (handshake + event-log replay + disconnect
- * cleanup), use `createMemoryTransport` + `joinWorld` instead.
- */
-export const connectInMemory = (
-  worldA: World,
-  worldB: World,
-  options: ConnectInMemoryOptions = {}
-): MemoryConnectionPair => {
-  if (options.validate) {
-    const v = options.validate
-    if (!worldA.network.validateAuthored) worldA.network.validateAuthored = (e) => v(worldA, e)
-    if (!worldB.network.validateAuthored) worldB.network.validateAuthored = (e) => v(worldB, e)
-  }
-
-  const deliver = (target: World, envelope: Envelope): void => {
-    const dispatch = () => {
-      if (isAuthored(envelope)) applyAuthoredEnvelope(target, envelope)
-      else applyRuntimeEnvelope(target, envelope)
-    }
-    if (options.latencyMs && options.latencyMs > 0) setTimeout(dispatch, options.latencyMs)
-    else queueMicrotask(dispatch)
-  }
-
-  const a: Connection = {
-    peer: 0,
-    backend: 'memory',
-    send: (payload) => deliver(worldB, payload as Envelope),
-    close: () => {
-      worldA.network.connections.delete(a)
-    }
-  }
-  const b: Connection = {
-    peer: 0,
-    backend: 'memory',
-    send: (payload) => deliver(worldA, payload as Envelope),
-    close: () => {
-      worldB.network.connections.delete(b)
-    }
-  }
-
-  worldA.network.connections.add(a)
-  worldB.network.connections.add(b)
-  installFanout(worldA)
-  installFanout(worldB)
-
-  return {
-    a,
-    b,
-    close: () => {
-      a.close()
-      b.close()
-    }
-  }
-}
-
-const installedFanout = new WeakSet<World>()
-const installFanout = (world: World): void => {
-  if (installedFanout.has(world)) return
-  installedFanout.add(world)
-  world.network.publishAuthored = (envelope) => {
-    for (const conn of world.network.connections) conn.send(envelope)
-  }
-  world.network.publishRuntime = (envelope) => {
-    for (const conn of world.network.connections) conn.send(envelope)
   }
 }
 
