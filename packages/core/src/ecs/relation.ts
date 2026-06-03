@@ -6,10 +6,8 @@
  *
  * Built on bitECS's createRelation; we wrap it to:
  *   - carry a stable name (predicate URI) and mutation category
- *   - thread relationship add/remove into the authored mutation queue (tier 3)
+ *   - thread relationship add/remove into the authored mutation queue (engine layer)
  *   - emit trace events
- *
- * Maps to canonical doc §3.7 (RelationDefinition) + §3.8 (RelationshipPair).
  */
 
 import * as bitecs from 'bitecs'

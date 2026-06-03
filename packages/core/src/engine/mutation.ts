@@ -19,8 +19,6 @@
  * @connectionengine/local or @connectionengine/ad4m-bridge). The in-memory
  * transport in network/transport.ts is a no-crypto passthrough useful for
  * tests + solo mode.
- *
- * Maps to canonical doc §3.13 (Realtime Transport & Mutation Pipeline).
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, RuntimeEnvelope, World } from '../ecs/world'

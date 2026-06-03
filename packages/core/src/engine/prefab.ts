@@ -5,8 +5,6 @@
  * schema. Instantiating a prefab on a world ensures all components are
  * registered, then applies defaults + overrides per component. Optionally
  * assigns identity (parent + UID) so the entity is addressable.
- *
- * Maps to canonical doc §3.11.
  */
 
 import type { ComponentDefinition } from '../ecs/component'

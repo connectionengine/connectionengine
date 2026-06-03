@@ -14,8 +14,6 @@
  *
  * `validateEvent` is suitable as the `validate` hook for `connectInMemory`
  * (or wired into `world.network.validateAuthored` by a runtime mode).
- *
- * Maps to canonical doc §3.20.
  */
 
 import { Schema } from '../schema'

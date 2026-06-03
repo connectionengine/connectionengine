@@ -12,7 +12,6 @@
  *
  * This is a deliberately minimal subset of W3C ZCAP-LD — full LD framing,
  * action URIs, and proof chains belong to a higher integration layer.
- * Maps to canonical doc §3.20 (Capability constraints).
  */
 
 import { type DID, type KeyPair, fromHex, signTriple, stableStringify, toHex, verifyByDID } from './did'

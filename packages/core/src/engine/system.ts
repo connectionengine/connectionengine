@@ -13,8 +13,6 @@
  * runSystems(world, deltaSeconds) drives one frame: tickWorld delegates the
  * fixed substeps to Simulation systems and variable steps to the rest.
  * Authored + runtime flushes run at end-of-frame after Render.
- *
- * Maps to canonical doc §3.10.
  */
 
 import { createRoot } from 'solid-js'
@@ -42,8 +40,8 @@ export interface SystemHandle {
   readonly name: string
   readonly phase: Phase
   readonly definition: SystemDefinition
-  /** Solid root disposer (if reactor was mounted). */
-  readonly dispose?: () => void
+  /** Solid root disposer for the currently-mounted reactor (if any). */
+  dispose?: () => void
 }
 
 interface SchedulerState {
@@ -135,6 +133,39 @@ export const removeSystem = (world: World, handle: SystemHandle): void => {
       phaseList.filter((h) => h !== handle)
     )
   handle.dispose?.()
+  handle.dispose = undefined
+}
+
+/**
+ * Inject a previously-defined system into a world.
+ *
+ * Re-attaches a `SystemHandle` (originally produced by `defineSystem` or a
+ * prior `removeSystem` call) into the world's phase scheduler, re-mounting
+ * its reactor under a fresh `createRoot`. Useful for plugin systems that
+ * detach + re-attach with their host lifecycle.
+ *
+ * Throws if a *different* handle with the same `name` is already injected in
+ * this world. Idempotent for the same handle (already-injected → noop).
+ */
+export const injectSystem = (world: World, handle: SystemHandle): void => {
+  const state = getOrCreate(world)
+  if (state.all.has(handle)) return
+  for (const existing of state.all) {
+    if (existing.name === handle.name) {
+      throw new Error(`injectSystem: a different system named "${handle.name}" is already injected on this world`)
+    }
+  }
+  if (handle.definition.reactor) {
+    const reactor = handle.definition.reactor
+    handle.dispose = createRoot((d) => {
+      reactor()
+      return d
+    })
+  }
+  state.all.add(handle)
+  const phaseList = state.byPhase.get(handle.phase) ?? []
+  phaseList.push(handle)
+  state.byPhase.set(handle.phase, sortPhase(phaseList))
 }
 
 export const reorderSystem = (

@@ -5,8 +5,6 @@
  * Re-exports the operator vocabulary (Or/And/Not/Any/All/None/Hierarchy/
  * Cascade) and modifiers (asBuffer/noCommit) verbatim — the bitECS API is
  * already the spec.
- *
- * Maps to canonical doc §3.9.
  */
 
 import * as bitecs from 'bitecs'

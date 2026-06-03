@@ -11,8 +11,6 @@
  *
  * setComponent / getComponent / removeComponent operate against bitECS storage
  * + our instance store, fire observers, and feed the mutation pipeline.
- *
- * Maps to canonical doc §3.4 (ComponentDefinition) + §3.5 (ComponentInstance).
  */
 
 import * as bitecs from 'bitecs'

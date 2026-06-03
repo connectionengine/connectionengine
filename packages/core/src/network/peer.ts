@@ -7,8 +7,6 @@
  * Both are normal entities — nothing special about them at the engine layer
  * beyond two built-in component types and the identity convention. Authority
  * targets Peer; Ownership targets User (see authority.ts).
- *
- * Maps to canonical doc §3.17.
  */
 
 import { Schema } from '../schema'
@@ -41,6 +39,21 @@ export const PeerComponent = defineComponent({
     peerId: Schema.String({ default: '' }),
     latency: Schema.Number({ default: 0 })
   })
+})
+
+/**
+ * Tag component: entities marked with this are swept when their owning user
+ * has no remaining live peer connections. Used for avatars, cursors, and
+ * other presence-bound entities that don't outlive their owner's session.
+ *
+ * Entities WITHOUT this tag survive disconnects (scores, persistent objects,
+ * world-owned content).
+ */
+export const TransientOnDisconnect = defineComponent({
+  id: 'TransientOnDisconnect',
+  label: 'Transient On Disconnect',
+  mutationCategory: 'authored',
+  schema: Schema.Object({}) // empty marker
 })
 
 // ── createUser ────────────────────────────────────────────────────────────────

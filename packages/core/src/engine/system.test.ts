@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createComputed, createSignal, createRoot, onCleanup } from 'solid-js'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
-import { defineSystem, listSystems, removeSystem, reorderSystem, runSystems } from './system'
+import { defineSystem, injectSystem, listSystems, removeSystem, reorderSystem, runSystems } from './system'
 
 describe('System scheduler', () => {
   it('runs systems in phase order: Input → Simulation → Animation → Render', () => {
@@ -112,5 +112,54 @@ describe('System scheduler', () => {
     runSystems(world, 0)
     expect(calls).toEqual(['b', 'a'])
     destroyWorld(world)
+  })
+
+  it('injectSystem re-attaches a removed system, re-mounts its reactor', () => {
+    const world = createWorld({ agent: createAnonAgent() })
+    let executeCalls = 0
+    let mountCount = 0
+    let disposeCount = 0
+    const handle = defineSystem(world, {
+      name: 'plugin',
+      phase: 'Simulation',
+      execute: () => executeCalls++,
+      reactor: () => {
+        mountCount++
+        onCleanup(() => disposeCount++)
+      }
+    })
+    expect(mountCount).toBe(1)
+    runSystems(world, 1 / 60)
+    expect(executeCalls).toBe(1)
+
+    removeSystem(world, handle)
+    expect(disposeCount).toBe(1)
+    runSystems(world, 1 / 60)
+    expect(executeCalls).toBe(1) // no longer running
+
+    injectSystem(world, handle)
+    expect(mountCount).toBe(2) // reactor re-mounted fresh
+    runSystems(world, 1 / 60)
+    expect(executeCalls).toBe(2)
+    destroyWorld(world)
+  })
+
+  it('injectSystem is idempotent for already-injected handles', () => {
+    const world = createWorld({ agent: createAnonAgent() })
+    const handle = defineSystem(world, { name: 'idem', phase: 'Render', execute: () => {} })
+    expect(() => injectSystem(world, handle)).not.toThrow()
+    expect(listSystems(world).filter((h) => h.name === 'idem')).toHaveLength(1)
+    destroyWorld(world)
+  })
+
+  it('injectSystem throws if a different system already uses the name', () => {
+    const world = createWorld({ agent: createAnonAgent() })
+    defineSystem(world, { name: 'duplicate', phase: 'Render', execute: () => {} })
+    const otherWorld = createWorld({ agent: createAnonAgent() })
+    const otherHandle = defineSystem(otherWorld, { name: 'duplicate', phase: 'Render', execute: () => {} })
+    removeSystem(otherWorld, otherHandle)
+    expect(() => injectSystem(world, otherHandle)).toThrow(/already injected/i)
+    destroyWorld(world)
+    destroyWorld(otherWorld)
   })
 })

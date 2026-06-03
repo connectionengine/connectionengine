@@ -9,8 +9,6 @@
  * Authority is an ECS-native relation. Transferring it is just removing the
  * old AuthoritativeFor pair and adding a new one — replicated as authored
  * mutations so all peers converge.
- *
- * Maps to canonical doc §3.18.
  */
 
 import { defineRelation, getRelationTargets, addRelation, removeRelation } from '../ecs/relation'

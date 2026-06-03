@@ -1,37 +1,152 @@
 /**
- * Transport — in-memory passthrough (no crypto).
+ * Transport — abstract endpoint contract + in-memory implementation.
  *
- * Wires two worlds together over an in-memory channel. The engine emits
- * AuthoredEnvelope / RuntimeEnvelope via `world.network.publishAuthored?.()` /
- * `publishRuntime?.()`; this transport routes those envelopes directly to the
- * peer world's `applyAuthoredEnvelope` / `applyRuntimeEnvelope`.
+ * `TransportEndpoint` is the wire-mechanism abstraction: how bytes get from
+ * one peer to another. WebRTC DataChannels, WebSockets, and the in-memory
+ * channel below all satisfy it. The session protocol (handshake, event-log
+ * replay, peer entity bookkeeping) lives one layer up in `lifecycle.ts`.
  *
- * No signing, no verification — that's a runtime-mode concern. This transport
- * is the "trust the local process" baseline for tests and solo mode.
- * @connectionengine/local wraps it with Ed25519 signing on the wire;
- * @connectionengine/ad4m-bridge replaces it entirely with AD4M Languages.
- *
- * Maps to canonical doc §3.16 (Network Topology) — transport semantics.
+ * Existing `connectInMemory(worldA, worldB)` is preserved as a convenience
+ * shortcut for tests that want both worlds pre-wired without going through
+ * the formal join protocol.
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Connection, RuntimeEnvelope, World } from '../ecs/world'
+import type { ComponentDefinition } from '../ecs/component'
 import { applyAuthoredEnvelope, applyRuntimeEnvelope } from '../engine/mutation'
 
 export type TransportBackend = 'webrtc' | 'websocket' | 'memory'
 
-export interface MemoryConnectionPair {
-  /** Connection registered on world A — calling .send delivers to world B's apply path. */
-  a: Connection
-  /** Connection registered on world B — calling .send delivers to world A's apply path. */
-  b: Connection
-  /** Disconnect both ends. */
+// ── Endpoint contract ────────────────────────────────────────────────────────-
+
+/**
+ * A bi-directional binary channel to one remote peer. Real backends produce
+ * one endpoint per remote; the in-memory factory below produces a pair.
+ *
+ * Payload type is `unknown` because in-memory channels can pass JS objects
+ * directly (no serialisation cost) while wire transports send `ArrayBuffer`
+ * — the engine codec (`engine/codec.ts`) is the bridge between them.
+ */
+export interface TransportEndpoint {
+  readonly backend: TransportBackend
+  send(payload: unknown): void
+  onMessage(handler: (payload: unknown) => void): () => void
+  onClose(handler: () => void): () => void
+  close(): void
+}
+
+export interface MemoryTransportPair {
+  a: TransportEndpoint
+  b: TransportEndpoint
+  /** Close both endpoints. */
   close(): void
 }
 
 export interface MemoryTransportOptions {
-  /** Optional governance gate applied per authored event on both directions. */
+  /** Optional simulated latency in ms (default: queueMicrotask). */
+  latencyMs?: number
+}
+
+/**
+ * Create a paired in-memory transport. Each endpoint delivers to the other
+ * after a microtask (or the configured `latencyMs`). Use as the wire layer
+ * under `joinWorld` for same-process two-peer tests.
+ */
+export const createMemoryTransport = (options: MemoryTransportOptions = {}): MemoryTransportPair => {
+  const aListeners = { msg: new Set<(p: unknown) => void>(), close: new Set<() => void>() }
+  const bListeners = { msg: new Set<(p: unknown) => void>(), close: new Set<() => void>() }
+  let closed = false
+
+  const deliver = (to: typeof aListeners, payload: unknown): void => {
+    if (closed) return
+    const dispatch = () => {
+      for (const h of to.msg) h(payload)
+    }
+    if (options.latencyMs && options.latencyMs > 0) setTimeout(dispatch, options.latencyMs)
+    else queueMicrotask(dispatch)
+  }
+
+  const closeAll = (): void => {
+    if (closed) return
+    closed = true
+    for (const h of aListeners.close) h()
+    for (const h of bListeners.close) h()
+    aListeners.msg.clear()
+    bListeners.msg.clear()
+    aListeners.close.clear()
+    bListeners.close.clear()
+  }
+
+  const mkEndpoint = (self: typeof aListeners, peer: typeof aListeners): TransportEndpoint => ({
+    backend: 'memory',
+    send: (payload) => deliver(peer, payload),
+    onMessage: (h) => {
+      self.msg.add(h)
+      return () => self.msg.delete(h)
+    },
+    onClose: (h) => {
+      self.close.add(h)
+      return () => self.close.delete(h)
+    },
+    close: closeAll
+  })
+
+  return {
+    a: mkEndpoint(aListeners, bListeners),
+    b: mkEndpoint(bListeners, aListeners),
+    close: closeAll
+  }
+}
+
+// ── Per-component runtime transport configuration ────────────────────────────-
+
+/**
+ * Per-runtime-component transport tuning. Wire into `world.network.runtimeConfig`
+ * (see lifecycle.ts) to control flush cadence + full-sync intervals + receive-side
+ * interpolation per component id.
+ *
+ * The engine itself doesn't currently throttle flushes per-component — every
+ * `runSystems` call ships dirty runtime state. This config is the slot where
+ * a future bandwidth-aware scheduler hooks in (deferred work).
+ */
+export interface RuntimeTransportConfig {
+  /** Component IDs this config applies to. */
+  componentIds: string[]
+  /** Target tick rate in Hz. Default 60. */
+  rate?: number
+  /**
+   * Ticks between full state syncs (vs deltas only). Provides convergence
+   * after packet loss. Default 300 (~5s at 60Hz).
+   */
+  fullSyncInterval?: number
+  /** Whether receivers should interpolate between updates. Default true. */
+  interpolation?: boolean
+}
+
+/** Resolve config for a specific component. Used by transports that throttle. */
+export const resolveRuntimeConfig = (
+  configs: RuntimeTransportConfig[],
+  component: ComponentDefinition
+): Required<RuntimeTransportConfig> => {
+  const match = configs.find((c) => c.componentIds.includes(component.id))
+  return {
+    componentIds: [component.id],
+    rate: match?.rate ?? 60,
+    fullSyncInterval: match?.fullSyncInterval ?? 300,
+    interpolation: match?.interpolation ?? true
+  }
+}
+
+// ── Convenience shortcut (existing API; lifecycle.ts is the formal path) ──────
+
+export interface MemoryConnectionPair {
+  a: Connection
+  b: Connection
+  close(): void
+}
+
+export interface ConnectInMemoryOptions {
   validate?: (world: World, event: AuthoredEvent) => boolean
-  /** Optional latency simulation in ms (queueMicrotask if undefined or 0). */
   latencyMs?: number
 }
 
@@ -39,19 +154,15 @@ type Envelope = AuthoredEnvelope | RuntimeEnvelope
 const isAuthored = (e: Envelope): e is AuthoredEnvelope => Array.isArray((e as AuthoredEnvelope).events)
 
 /**
- * Wire two worlds together over an in-memory channel.
- *
- * Installs:
- *   - `connections` entries on both worlds
- *   - `publishAuthored` / `publishRuntime` hooks on both worlds (fan-out to
- *     every connection on that world; for the 2-peer case that's just the
- *     sibling)
- *   - per-event `validateAuthored` gate if a `validate` option is provided
+ * Pre-wire two worlds over an in-memory channel without going through the
+ * formal join handshake. Useful for tests that don't need late-join semantics.
+ * For real session lifecycle (handshake + event-log replay + disconnect
+ * cleanup), use `createMemoryTransport` + `joinWorld` instead.
  */
 export const connectInMemory = (
   worldA: World,
   worldB: World,
-  options: MemoryTransportOptions = {}
+  options: ConnectInMemoryOptions = {}
 ): MemoryConnectionPair => {
   if (options.validate) {
     const v = options.validate
@@ -87,8 +198,6 @@ export const connectInMemory = (
 
   worldA.network.connections.add(a)
   worldB.network.connections.add(b)
-
-  // Wire publish hooks on each world: fan-out to every connection.
   installFanout(worldA)
   installFanout(worldB)
 
@@ -114,5 +223,5 @@ const installFanout = (world: World): void => {
   }
 }
 
-/** Test helper: spin the microtask queue so queued receives land. */
+/** Test helper: drain the microtask queue so queued receives land. */
 export const flushAsync = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))

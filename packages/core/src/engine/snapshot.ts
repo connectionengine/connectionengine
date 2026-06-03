@@ -9,8 +9,6 @@
  * components + outgoing relations. Apply rebuilds the entity graph from
  * scratch via ensureEntityPath (resolveEntityPath + setUID chain) so entity
  * IDs are remapped automatically — no idMap parameter required.
- *
- * Maps to canonical doc §3.19.
  */
 
 import { getComponent, getComponentById, hasComponent, setComponent } from '../ecs/component'

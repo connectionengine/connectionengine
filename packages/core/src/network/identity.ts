@@ -11,8 +11,6 @@
  * deliberately direct rather than observer-driven: bitECS relation observers
  * commit lazily, and identity is a hot enough path that synchronous cache
  * maintenance is the simpler, more predictable design.
- *
- * Maps to canonical doc §3.3.
  */
 
 import { Schema } from '../schema'

@@ -1,9 +1,8 @@
 /**
  * Observer API — thin wrapper around bitECS observe + hook constructors.
  *
- * Maps canonical doc §3.6: onAdd / onRemove / onSet / onGet plus the boolean
- * operators (Or / And / Not / Any / All / None). Re-exports verbatim — the
- * bitECS API already matches the spec exactly.
+ * Exposes onAdd / onRemove / onSet / onGet plus the boolean operators
+ * (Or / And / Not / Any / All / None). Re-exports the bitECS API verbatim.
  *
  * Observers vs reactors: observers are immediate synchronous hooks for
  * lightweight side effects (cache maintenance, constraint enforcement).
