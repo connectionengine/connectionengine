@@ -10,7 +10,7 @@
 import type { ComponentDefinition } from '../ecs/component'
 import { setComponent } from '../ecs/component'
 import { createEntity } from '../ecs/entity'
-import { setUID } from '../network/identity'
+import { setUID } from '../ecs/identity'
 import type { Entity, World, ComponentSchema } from '../ecs/world'
 
 export interface PrefabDefinition {

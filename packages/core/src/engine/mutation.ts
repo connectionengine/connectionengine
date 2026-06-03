@@ -26,7 +26,7 @@ import type { ComponentDefinition } from '../ecs/component'
 import { getComponentById, getSoA, hasComponent, removeComponent, setComponent } from '../ecs/component'
 import type { RelationDefinition } from '../ecs/relation'
 import { addRelation, getRelationByName, removeRelation } from '../ecs/relation'
-import { ROOT_PARENT, getEntityByUID, getEntityPath, resolveEntityPath, setUID } from '../network/identity'
+import { ROOT_PARENT, getEntityByUID, getEntityPath, resolveEntityPath, setUID } from '../ecs/identity'
 import { createEntity, removeEntity } from '../ecs/entity'
 
 // ── Component / relation registries (per-world, keyed by id/name) ─────────────

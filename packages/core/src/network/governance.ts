@@ -19,7 +19,7 @@
 import { Schema } from '../schema'
 import { componentEntities, defineComponent, getComponent, setComponent } from '../ecs/component'
 import { defineRelation, addRelation, getRelationTargets } from '../ecs/relation'
-import { ROOT_PARENT, resolveEntityPath } from './identity'
+import { ROOT_PARENT, resolveEntityPath } from '../ecs/identity'
 import { createEntity, entityExists } from '../ecs/entity'
 import type { AuthoredEvent, Entity, World } from '../ecs/world'
 

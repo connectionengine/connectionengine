@@ -11,7 +11,7 @@
 
 import { Schema } from '../schema'
 import { componentEntities, defineComponent, getComponent, setComponent } from '../ecs/component'
-import { BelongsTo, createNamedEntity, setUID } from './identity'
+import { BelongsTo, createNamedEntity, setUID } from '../ecs/identity'
 import { addRelation } from '../ecs/relation'
 import type { Entity, World } from '../ecs/world'
 

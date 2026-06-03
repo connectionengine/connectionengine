@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { createPeer, createUser, findUserByDID, getPeersForUser, PeerComponent, UserComponent } from './peer'
 import { getComponent, hasComponent } from '../ecs/component'
-import { getParent } from './identity'
+import { getParent } from '../ecs/identity'
 
 const mkWorld = () => createWorld({ agent: createAnonAgent('test') })
 const did = (name: string): string => `did:test:${name}`

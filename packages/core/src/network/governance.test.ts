@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { createAnonAgent, createWorld, destroyWorld, type AuthoredEvent } from '../ecs/world'
-import { createNamedEntity, setUID } from './identity'
+import { createNamedEntity, setUID } from '../ecs/identity'
 import { createEntity } from '../ecs/entity'
 import { defineComponent } from '../ecs/component'
 import { addConstraint, resolveConstraints, validateEvent } from './governance'

@@ -28,6 +28,22 @@
           }
         ]
       }
+    },
+    {
+      "files": ["packages/core/src/engine/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../network/*"],
+                "message": "engine/ may depend on ecs/ + schema/ + maths/ but NOT on network/ — wire-format concerns are a layer above. If you need network/identity for entity addressing, that module is now in ecs/identity."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

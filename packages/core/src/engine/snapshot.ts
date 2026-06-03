@@ -12,7 +12,7 @@
  */
 
 import { getComponent, getComponentById, hasComponent, setComponent } from '../ecs/component'
-import { ROOT_PARENT, getEntityByUID, getEntityPath, setUID } from '../network/identity'
+import { ROOT_PARENT, getEntityByUID, getEntityPath, setUID } from '../ecs/identity'
 import { addRelation, getRelationByName, getRelationTargets } from '../ecs/relation'
 import { createEntity, removeEntity } from '../ecs/entity'
 import { worldComponents, worldRelations } from './mutation'

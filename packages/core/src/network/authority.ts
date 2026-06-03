@@ -12,7 +12,7 @@
  */
 
 import { defineRelation, getRelationTargets, addRelation, removeRelation } from '../ecs/relation'
-import { getEntityPath } from './identity'
+import { getEntityPath } from '../ecs/identity'
 import type { Entity, World } from '../ecs/world'
 
 export const OwnedBy = defineRelation({

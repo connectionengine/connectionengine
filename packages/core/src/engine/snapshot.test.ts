@@ -3,7 +3,7 @@ import { Schema } from '../schema'
 import { defineComponent, getComponent, hasComponent, setComponent } from '../ecs/component'
 import { defineRelation, addRelation, getRelationTargets } from '../ecs/relation'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
-import { createNamedEntity, getEntityByUID, setUID } from '../network/identity'
+import { createNamedEntity, getEntityByUID, setUID } from '../ecs/identity'
 import { createEntity } from '../ecs/entity'
 import { applySnapshot, createSnapshot } from './snapshot'
 

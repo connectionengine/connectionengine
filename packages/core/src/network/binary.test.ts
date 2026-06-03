@@ -1,0 +1,191 @@
+import { describe, expect, it } from 'vitest'
+import { Schema } from '../schema'
+import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
+import { createEntity } from '../ecs/entity'
+import { defineComponent, getSoA, setComponent } from '../ecs/component'
+import { createBinaryPipeline } from './binary'
+
+const Transform = defineComponent({
+  id: 'Bin.Transform',
+  schema: Schema.Object({
+    position: Schema.Vec3(),
+    rotation: Schema.Quat()
+  })
+})
+
+const Velocity = defineComponent({
+  id: 'Bin.Velocity',
+  schema: Schema.Object({
+    linear: Schema.Vec3()
+  })
+})
+
+const soaSet = (
+  world: ReturnType<typeof createWorld>,
+  component: { $soaFields: readonly string[]; id: string },
+  entity: number,
+  field: string,
+  channel: string,
+  value: number
+): void => {
+  const soa = getSoA(world, component as never) as Record<string, Record<string, Record<number, number>>>
+  soa[field][channel][entity] = value
+}
+
+const soaGet = (
+  world: ReturnType<typeof createWorld>,
+  component: { id: string },
+  entity: number,
+  field: string,
+  channel: string
+): number => {
+  const soa = getSoA(world, component as never) as Record<string, Record<string, Record<number, number>>>
+  return soa[field][channel][entity]
+}
+
+describe('createBinaryPipeline — paired write + read', () => {
+  it('round-trips multiple entities + components between two worlds', () => {
+    const source = createWorld({ agent: createAnonAgent('pipe-src') })
+    const target = createWorld({ agent: createAnonAgent('pipe-tgt') })
+
+    const sourcePipe = createBinaryPipeline(source, [Transform, Velocity])
+    const targetPipe = createBinaryPipeline(target, [Transform, Velocity])
+
+    const e1 = createEntity(source)
+    const e2 = createEntity(source)
+    setComponent(source, e1, Transform, { position: [1, 2, 3], rotation: [0, 0, 0, 1] })
+    setComponent(source, e1, Velocity, { linear: [0.1, 0.2, 0.3] })
+    setComponent(source, e2, Transform, { position: [10, 20, 30], rotation: [0, 0, 0, 1] })
+
+    const buf = sourcePipe.write({ fromPeerIndex: 7, timestamp: 1700000000 }, [
+      { networkId: 100, entity: e1 },
+      { networkId: 200, entity: e2 }
+    ])
+
+    // Pre-warm target's per-world SoA stores so the codec has somewhere to write
+    const t1 = createEntity(target)
+    const t2 = createEntity(target)
+    setComponent(target, t1, Transform, {})
+    setComponent(target, t1, Velocity, {})
+    setComponent(target, t2, Transform, {})
+
+    const idMap = new Map<number, number>([
+      [100, t1],
+      [200, t2]
+    ])
+    const header = targetPipe.read(buf, (nid) => idMap.get(nid))
+    expect(header.fromPeerIndex).toBe(7)
+    expect(header.timestamp).toBeCloseTo(1700000000)
+    expect(header.entityCount).toBe(2)
+
+    expect(soaGet(target, Transform, t1, 'position', 'x')).toBeCloseTo(1)
+    expect(soaGet(target, Transform, t2, 'position', 'x')).toBeCloseTo(10)
+    expect(soaGet(target, Velocity, t1, 'linear', 'x')).toBeCloseTo(0.1)
+
+    destroyWorld(source)
+    destroyWorld(target)
+  })
+
+  it('persists shadow state across writes so unchanged entities emit zero payload', () => {
+    const world = createWorld({ agent: createAnonAgent('pipe-shadow') })
+    const pipe = createBinaryPipeline(world, [Velocity])
+    const e = createEntity(world)
+    setComponent(world, e, Velocity, { linear: [1, 2, 3] })
+
+    const HEADER = 4 + 8 + 4 // fromPeerIndex + timestamp + entityCount
+    const buf1 = pipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }])
+    expect(buf1.byteLength).toBeGreaterThan(HEADER)
+
+    const buf2 = pipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }])
+    expect(buf2.byteLength).toBe(HEADER) // no entity payload — nothing changed
+
+    soaSet(world, Velocity, e, 'linear', 'x', 99)
+    const buf3 = pipe.write({ fromPeerIndex: 0, timestamp: 3 }, [{ networkId: 1, entity: e }])
+    expect(buf3.byteLength).toBeGreaterThan(buf2.byteLength)
+    expect(buf3.byteLength).toBeLessThan(buf1.byteLength) // delta, not full
+    destroyWorld(world)
+  })
+
+  it('forceFullSync re-sends all fields regardless of shadow', () => {
+    const world = createWorld({ agent: createAnonAgent('pipe-full') })
+    const pipe = createBinaryPipeline(world, [Velocity])
+    const e = createEntity(world)
+    setComponent(world, e, Velocity, { linear: [1, 2, 3] })
+
+    const full1 = pipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }])
+    const empty = pipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }])
+    const full2 = pipe.write({ fromPeerIndex: 0, timestamp: 3 }, [{ networkId: 1, entity: e }], true)
+    expect(empty.byteLength).toBeLessThan(full1.byteLength)
+    expect(full2.byteLength).toBe(full1.byteLength)
+    destroyWorld(world)
+  })
+
+  it('resetShadow forces a full snapshot on the next write', () => {
+    const world = createWorld({ agent: createAnonAgent('pipe-reset') })
+    const pipe = createBinaryPipeline(world, [Velocity])
+    const e = createEntity(world)
+    setComponent(world, e, Velocity, { linear: [1, 2, 3] })
+
+    const full = pipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }])
+    pipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }]) // shadow up to date
+    pipe.resetShadow()
+    const afterReset = pipe.write({ fromPeerIndex: 0, timestamp: 3 }, [{ networkId: 1, entity: e }])
+    expect(afterReset.byteLength).toBe(full.byteLength)
+    destroyWorld(world)
+  })
+
+  it('unknown networkId on read still parses cleanly (cursor stays in sync)', () => {
+    const source = createWorld({ agent: createAnonAgent('pipe-unknown-src') })
+    const target = createWorld({ agent: createAnonAgent('pipe-unknown-tgt') })
+    const sourcePipe = createBinaryPipeline(source, [Velocity])
+    const targetPipe = createBinaryPipeline(target, [Velocity])
+    const t = createEntity(target)
+    setComponent(target, t, Velocity, {})
+
+    const e1 = createEntity(source)
+    const e2 = createEntity(source)
+    setComponent(source, e1, Velocity, { linear: [1, 1, 1] })
+    setComponent(source, e2, Velocity, { linear: [9, 9, 9] })
+
+    const buf = sourcePipe.write({ fromPeerIndex: 0, timestamp: 1 }, [
+      { networkId: 100, entity: e1 },
+      { networkId: 200, entity: e2 }
+    ])
+    // Resolver only knows network ID 200 (mapped to t); 100 is unknown.
+    const header = targetPipe.read(buf, (nid: number) => (nid === 200 ? t : undefined))
+    expect(header.entityCount).toBe(2)
+    expect(soaGet(target, Velocity, t, 'linear', 'x')).toBeCloseTo(9)
+    destroyWorld(source)
+    destroyWorld(target)
+  })
+
+  it('Transform with one changed field emits ~6 bytes per entity (mask + 1 float)', () => {
+    const world = createWorld({ agent: createAnonAgent('pipe-delta-size') })
+    const pipe = createBinaryPipeline(world, [Transform])
+    const e = createEntity(world)
+    setComponent(world, e, Transform, { position: [1, 1, 1], rotation: [0, 0, 0, 1] })
+
+    pipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }]) // populate shadow
+    soaSet(world, Transform, e, 'position', 'x', 99)
+
+    const HEADER = 4 + 8 + 4
+    const ENTITY_PREFIX = 4 + 1 // networkId + entityMask
+    const COMPONENT_BLOCK = 1 + 4 // componentMask + 1 Float32
+    const buf = pipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }])
+    expect(buf.byteLength).toBe(HEADER + ENTITY_PREFIX + COMPONENT_BLOCK)
+    destroyWorld(world)
+  })
+
+  it('throws if constructed with empty components list', () => {
+    const world = createWorld({ agent: createAnonAgent('pipe-empty') })
+    expect(() => createBinaryPipeline(world, [])).toThrow(/at least one component/i)
+    destroyWorld(world)
+  })
+
+  it('exposes the components list in registration order', () => {
+    const world = createWorld({ agent: createAnonAgent('pipe-order') })
+    const pipe = createBinaryPipeline(world, [Transform, Velocity])
+    expect(pipe.components).toEqual([Transform, Velocity])
+    destroyWorld(world)
+  })
+})

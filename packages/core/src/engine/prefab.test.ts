@@ -3,7 +3,7 @@ import { Schema } from '../schema'
 import { defineComponent, getComponent, hasComponent } from '../ecs/component'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { definePrefab, instantiatePrefab } from './prefab'
-import { createNamedEntity, getEntityByUID, getUID } from '../network/identity'
+import { createNamedEntity, getEntityByUID, getUID } from '../ecs/identity'
 
 const Transform = defineComponent({
   id: 'Transform-prefab',
