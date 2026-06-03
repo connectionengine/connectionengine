@@ -1,0 +1,110 @@
+---
+description: OwnedBy is provenance. AuthoritativeFor is who's allowed to write. Two relations, two jobs.
+---
+
+# Authority & Ownership
+
+Multiplayer engines that conflate "who created this thing" with "who's allowed to update this thing" end up with weird edge cases. Connection Engine splits them cleanly.
+
+| Relation             | Target  | Transferable? | Meaning                                     |
+|----------------------|---------|---------------|---------------------------------------------|
+| `OwnedBy`            | User    | No            | Provenance. Who made this. Permanent.        |
+| `AuthoritativeFor`   | Peer    | Yes           | Runtime authority. Who's allowed to update. |
+
+A user can own many things across many sessions. A peer is one device — one engine instance — one browser tab. A user can have multiple live peers (desktop + phone); authority over a given entity is on exactly one of them at a time.
+
+## OwnedBy
+
+Provenance. Doesn't move:
+
+```ts
+import { createUser, setOwner, getOwner } from '@connectionengine/core'
+
+const alice = createUser(world, { did: 'did:key:z6Mk...' })
+const avatar = createEntity(world)
+setUID(world, avatar, 'avatar:alice', { parent: scene })
+setOwner(world, avatar, alice)
+
+getOwner(world, avatar) // → alice
+```
+
+Used for:
+
+- Disconnect cleanup — `TransientOnDisconnect` entities are swept by owner-user, not by authority.
+- Permission inference — "is this requester one of the owner's peers?" → grants are common.
+- Display — "made by Alice" UX.
+
+You don't change `OwnedBy`. It's set on creation and stays. Transferring ownership is a different gesture (a delete + recreate, or an explicit transfer-of-ownership event in your app's semantics).
+
+## AuthoritativeFor
+
+Authority. Does move:
+
+```ts
+import { createPeer, setAuthority, getAuthority, transferAuthority } from '@connectionengine/core'
+
+const aliceDesktop = createPeer(world, { user: alice, peerId: 'desktop', asLocal: true })
+const alicePhone   = createPeer(world, { user: alice, peerId: 'phone' })
+
+const vehicle = createEntity(world)
+setUID(world, vehicle, 'vehicle:1', { parent: scene })
+setOwner(world, vehicle, alice)
+setAuthority(world, vehicle, aliceDesktop)
+
+// User picks up their phone, drops their laptop:
+transferAuthority(world, vehicle, alicePhone)
+```
+
+Authority is exclusive — at most one peer holds it for an entity at any time. The relation is `exclusive: true`, so adding a new authoritative peer atomically removes the previous one.
+
+## What "having authority" means
+
+Connection Engine doesn't enforce authority on the runtime channel — there's no per-packet check that says "is this peer authoritative?" That would be too expensive at 60 Hz.
+
+Instead, **authority is a property your systems consult**. The convention is:
+
+```ts
+defineSystem(world, {
+  name: 'PhysicsStep',
+  phase: 'Simulation',
+  execute: (world, dt) => {
+    for (const e of physicsQuery(world)) {
+      if (getAuthority(world, e) !== world.network.localPeer) continue
+      // ...integrate physics, write to Transform...
+    }
+  }
+})
+```
+
+The local peer steps physics for entities it has authority over. Other peers receive the resulting binary packets and write into their SoA stores without running physics themselves. State stays convergent because exactly one peer is the source of truth at a time.
+
+This is also why **runtime binary packets aren't signed** — authority is structural, not cryptographic. If a non-authoritative peer were to inject a binary packet for an entity it doesn't own, every other peer's authoritative peer for that entity would overwrite it on the next tick. The lie gets corrected automatically.
+
+## Authority transfer
+
+`transferAuthority` is just `setAuthority` with a trace event. The actual replication happens via the authored channel — the `AuthoritativeFor` relation is `authored`, so the change ships as a signed event everyone applies.
+
+For mid-session handoff (handing the car to your phone, host migration, etc.) the flow is:
+
+1. Current authority pauses (stops writing the entity).
+2. Authority transfer event ships and converges.
+3. New authority resumes (starts writing the entity).
+
+The brief window where nobody's writing is usually fine — receivers continue interpolating from the last good state. If it isn't fine (high-precision physics, fast motion), apply a fade or a brief authority-hold by exchanging extra control messages.
+
+## Recovery on disconnect
+
+`recoverAuthority(world, entity, disconnectedPeer)` automatically transfers authority of an entity to the owner-user's next available peer when the current holder drops. By default it picks the owner's lowest-id peer that isn't the disconnected one — adjust if your app has a different rule.
+
+You wire this into the disconnect path yourself; it's not automatic at lifecycle level because the right policy varies per app (some games want host migration; some want the entity to despawn entirely; some want it frozen until reconnect).
+
+## Request / grant
+
+Sometimes a non-owner-peer wants authority — a moderator picking up a stuck NPC, a co-op partner driving the host's vehicle. `requestAuthority(world, entity, requester)` returns a result shaped for your governance hook:
+
+```ts
+const result = await requestAuthority(world, vehicle, modPeer)
+// → { status: 'granted' | 'denied' | 'pending', reason?: string }
+```
+
+The default policy: owner's user-peer auto-grants; everyone else denies. Higher layers (governance constraints, app-specific rules) can interpose.

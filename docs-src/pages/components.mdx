@@ -1,0 +1,115 @@
+---
+description: Schema-driven components, mutation categories, and why your schema decides your wire format.
+---
+
+# Components
+
+## A component is a schema
+
+```ts
+import { Schema, defineComponent } from '@connectionengine/core'
+
+const Transform = defineComponent({
+  id: 'Transform',
+  schema: Schema.Object({
+    position: Schema.Vec3(),
+    rotation: Schema.Quat()
+  })
+})
+
+const Health = defineComponent({
+  id: 'Health',
+  schema: Schema.Object({
+    current: Schema.Number({ default: 100 }),
+    max: Schema.Number({ default: 100 })
+  })
+})
+```
+
+Two things to internalise about `defineComponent`:
+
+1. **Definitions are global, storage is per-world.** `defineComponent({ id: 'Foo', ... })` registers `Foo` in a global registry keyed on `id`. Calling it again with the same id returns the same definition. But the typed arrays + per-entity instance store backing `Foo` are materialised lazily per world — two worlds in the same process don't share storage.
+
+2. **The schema drives the wire.** SoA-tagged fields (`Schema.Vec3`, `Schema.Quat`, `Schema.ArrayBuffer`, `Schema.SoAStore`) get structure-of-arrays storage and travel the binary runtime channel. Everything else lives in a per-entity instance map and travels the authored channel.
+
+## Mutation categories
+
+Every component has a `mutationCategory`. It decides which replication path the component uses:
+
+| Category    | Default for                              | How it travels                                      |
+|-------------|------------------------------------------|-----------------------------------------------------|
+| `runtime`   | Components with any SoA-tagged field     | Binary, per-field change masks, per-connection state |
+| `authored`  | Everything else                          | JS-object envelope, event-sourced, governance-validated |
+| `local`     | Never (opt-in only)                      | Doesn't replicate. Caches, UI state.                |
+
+You can override:
+
+```ts
+const Score = defineComponent({
+  id: 'Score',
+  // No SoA fields, so default would be 'authored'. Make it explicit.
+  mutationCategory: 'authored',
+  schema: Schema.Object({ points: Schema.Number({ default: 0 }) })
+})
+
+const RenderCache = defineComponent({
+  id: 'RenderCache',
+  mutationCategory: 'local', // pure derived state, don't ship
+  schema: Schema.Object({ lastDrawTime: Schema.Number({ default: 0 }) })
+})
+```
+
+The reason this matters: **two components with identical-looking schemas can have very different network behaviour** depending on the category. A `Vec3 position` on a Transform is a 60 Hz binary stream. A `Vec3 spawnPoint` on a `SpawnerConfig` should be `authored` — it changes rarely, and the consensus + signed-history cost is worth it for that low frequency.
+
+## Reading and writing
+
+```ts
+import { setComponent, getComponent, hasComponent, removeComponent } from '@connectionengine/core'
+
+setComponent(world, entity, Health, { current: 50 })
+// → addComponent in bitECS, fills defaults, writes SoA + instance store,
+//   marks dirty (runtime) or queues authored event (authored)
+
+getComponent(world, entity, Health)
+// → { current: 50, max: 100 }  — defaults merged in, SoA + instance unified
+
+hasComponent(world, entity, Health) // → true
+
+removeComponent(world, entity, Health)
+// → bitECS removeComponent, drops instance, clears runtime dirty,
+//   queues authored remove event if authored
+```
+
+`getComponent` returns a fresh object combining the SoA snapshot (`position`, `rotation`) with the instance fields (`current`, `max`). It does not return a live reference — mutating the returned object doesn't change the store. Use `setComponent` to write.
+
+## The `{ origin }` option
+
+Every mutating call accepts `{ origin: 'local' | 'network' }`:
+
+```ts
+setComponent(world, entity, Health, { current: 50 }, { origin: 'network' })
+```
+
+- `'local'` (default) means "this came from local code, replicate it." The mutation pipeline picks it up and ships it.
+- `'network'` means "this came from a received envelope, do NOT re-broadcast." Otherwise envelopes would echo forever between peers.
+
+You almost never write `origin: 'network'` yourself — the receive path (`applyAuthoredEnvelope`, the binary pipeline) does it for you. It's surfaced because it's central to the no-loop invariant: the receive side stamps `network`, the dirty-flag / authored-queue path skips anything stamped `network`.
+
+## Defaults and `Value.Default`
+
+The schema's `default: ...` is the source of truth. On first `setComponent`, the engine fills any field you didn't provide from the defaults via TypeBox's `Value.Default`. Subsequent `setComponent` calls do partial updates — only fields you provide are written.
+
+This means it's safe to:
+
+```ts
+setComponent(world, e, Health, {}) // creates with current: 100, max: 100
+setComponent(world, e, Health, { current: 25 }) // current: 25, max: 100
+```
+
+…which is a frequent pattern when receiving a binary-channel snapshot: the binary path calls `setComponent(world, entity, component, {})` to ensure bitECS presence, then the codec writes the actual SoA values directly.
+
+## When you have a lot of components
+
+Components are cheap. Don't make them godlike. A `Stats` component with twenty fields is harder to reason about than five focused components — `Health`, `Mana`, `Stamina`, `Combat`, `Movement`. Smaller components also play better with queries: `query(world, [Health, Damaged])` is more selective than `query(world, [Stats])` plus a manual filter.
+
+The exception is when fields move together at the same cadence — `position` and `rotation` on `Transform` belong together because they're written and replicated as one logical unit. Co-locate when behaviour is correlated; split when it isn't.

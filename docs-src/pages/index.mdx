@@ -1,0 +1,55 @@
+---
+description: A semantic spatial web engine — multiplayer-first, schema-driven, built on web standards.
+---
+
+# Connection Engine
+
+**Connection Engine is a TypeScript engine for real-time spatial experiences with a semantic, multiplayer-first foundation.** It treats the runtime ECS as a live graph of signed events — the same shape as the decentralised semantic web — so the world your users move through and the data fabric they share are the same fabric.
+
+If you've built game-engine code in C# or C++, the ECS pattern is familiar — bitECS, with schema-tagged components. If you've built semantic-web or RDF systems, the shape is familiar — `(entity, predicate, value)` triples with cryptographic provenance. Connection Engine is both.
+
+## The thesis
+
+Every existing "spatial multiplayer engine" assumes its data lives inside its world: a transform belongs to an actor, an inventory belongs to a player, scores belong to a save file. The world is a closed box you write code against.
+
+Every existing "semantic web" stack assumes its data lives outside any particular app: triples on a server somewhere, queryable, signed, portable. The data is the substrate; apps are views.
+
+Connection Engine is the first observation that **these are the same architecture** if you let the ECS *be* the semantic graph. A component set on an entity is a triple. A relation between entities is a triple. An authored mutation is a signed event. A snapshot is a graph dump. Multiplayer convergence is event-sourcing.
+
+Once you accept the equivalence, a lot of complexity disappears:
+
+- No separate "networking layer" tacked onto the ECS — components ARE the wire schema.
+- No separate "persistence layer" — the event log IS the durable form.
+- No separate "identity system" — DIDs and signed events are already in scope because the data is already a semantic graph.
+- No separate "scripting language" — the same component model drives logic, replication, and validation.
+
+## What you get
+
+- **bitECS-based runtime** with schema-driven components (TypeBox), structure-of-arrays storage for hot fields (Vec3/Quat/Float32/...).
+- **Two replication channels** that share one schema:
+  - **Authored** — reliable, event-sourced, governance-validated. Spawns, deletes, ownership transfers, anything causal.
+  - **Runtime** — binary, per-field delta encoding, per-peer shadow maps. Transforms, velocities, anything 60 Hz.
+- **Pure event-sourced late join** — no snapshot protocol. A new peer catches up by replaying the host's signed event log. Idempotent on top of itself.
+- **Three runtime modes** that share the same core:
+  - **Solo** — anonymous agent, no transport, runs offline.
+  - **Local** — `@connectionengine/local` adds Ed25519 / ZCAP / `did:key` signing.
+  - **AD4M** — `@connectionengine/ad4m-bridge` wraps a running [AD4M](https://github.com/coasys/ad4m) instance as the agent + transport + persistence.
+- **Governance constraints as data** — credential, temporal, content, capability rules live as ECS entities, replicated like anything else, enforced locally.
+
+## What it isn't (yet)
+
+The current scope is the **ECS + real-time transport foundation**. Higher layers are spec'd but deliberately deferred:
+
+- No spatial layer (transforms, WebXR, zones, bounding trees) yet — components are domain-agnostic at the moment.
+- No renderer. The engine doesn't draw; it manages the data the renderer reads.
+- No high-frequency authoring/persistence beyond the event log itself.
+- No WebRTC / WebSocket transports shipped (only the in-memory test transport and the AD4M-perspective transport).
+
+What IS done is the part underneath all of those — the ECS, the schema model, the mutation pipeline, the binary wire, the session protocol, identity, authority, and governance. That's the foundation everything else stands on.
+
+## Where to start
+
+- New to the concepts? Read [Architecture at a Glance](/architecture) — five-minute orientation to the layers.
+- Want to feel it? [Installation](/installation) → [Entities & Identity](/entities-and-identity) → [The Mutation Pipeline](/mutations).
+- Just want to ship multiplayer? Skip ahead to [Peers & Sessions](/networking).
+- Curious about the bigger picture? [Vision & Convergence](/vision) covers the convergence path with AD4M / WE / the Living Web.

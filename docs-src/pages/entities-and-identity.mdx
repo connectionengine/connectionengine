@@ -1,0 +1,74 @@
+---
+description: Entities, UIDs, BelongsTo, and why paths — not IDs — are the unit of identity.
+---
+
+# Entities & Identity
+
+## Two kinds of "id"
+
+An entity in Connection Engine has two identifiers, and confusing them is the most common early mistake:
+
+- **The integer ID** (`Entity = number`) is a bitECS handle, valid only inside one world. The same integer means different entities on different worlds. It's not stable across reconnects. Do not put it on the wire. Do not store it in user data.
+- **The UID path** is the entity's identity. It's the list of UIDs walked from a root entity through `BelongsTo` relations. It's stable, addressable, comparable across worlds.
+
+```ts
+import { createNamedEntity, createEntity, setUID, getEntityPath } from '@connectionengine/core'
+
+const scene = createNamedEntity(world, 'scene:arena')
+const alice = createEntity(world)
+setUID(world, alice, 'avatar:alice', { parent: scene })
+
+getEntityPath(world, alice) // → ['scene:arena', 'avatar:alice']
+```
+
+This pattern — `setUID` with a parent — is how you build any addressable structure. The path becomes the entity's URI on the wire and in the semantic-graph view.
+
+## BelongsTo is a relation, not a special case
+
+`BelongsTo` is just an exclusive ECS relation, defined in `ecs/identity.ts`:
+
+```ts
+export const BelongsTo = defineRelation({
+  name: 'BelongsTo',
+  exclusive: true,
+  mutationCategory: 'authored'
+})
+```
+
+There is nothing magical about it. The identity caches (`world.nameCache`, `world.parentOf`, `world.uidOf`) are maintenance bookkeeping that `setUID` writes inline, so path lookups are O(1) instead of a relation walk. But conceptually, *identity composes from existing primitives* — a component (UID) plus a relation (BelongsTo). The engine doesn't grow a separate "namespace system."
+
+## Why paths, not IDs
+
+Because the data fabric IS the semantic graph. A URI like `scene:arena/avatar:alice` is meaningful across the entire network — every peer can resolve it to its local entity (or instantiate the path on demand). An integer like `42` is meaningless the moment it leaves the world it was allocated in.
+
+Late join works the same way: when a fresh peer applies the host's event log, every event's `entityPath` resolves into the joiner's own world without any ID remapping. The path is the addressing scheme.
+
+The binary runtime channel needs something more compact than a full path on every 60 Hz packet, so there's a `NetworkIdTable` per connection — but that's an optimisation layered on top, not a different identity system. The path is still the truth; the `NetworkId` is just a label for it on a specific wire.
+
+## What's actually under the hood
+
+Three caches on the world keep path operations O(1):
+
+| Cache          | Type                                 | Direction                  |
+|----------------|--------------------------------------|----------------------------|
+| `nameCache`    | `Map<parent, Map<uid, entity>>`      | `(parent, uid) → entity`   |
+| `parentOf`     | `Map<entity, parent>`                | child → parent              |
+| `uidOf`        | `Map<entity, uid>`                   | entity → uid                |
+
+`setUID` maintains all three. Entity removal (`removeEntity`) calls `cleanupIdentity` via a hook so the caches stay tight. You don't normally touch the caches directly; use `getEntityByUID`, `getEntityPath`, `resolveEntityPath`.
+
+## Conventions for UIDs
+
+UIDs are opaque strings — Connection Engine assigns no meaning to them. But a few patterns have proven useful:
+
+- **Type prefix** — `scene:arena`, `user:did:key:z6Mk...`, `avatar:bob`, `item:sword-of-truth`. Makes path debugging readable and avoids accidental collisions between kinds.
+- **DID-as-UID for users** — store the user's DID directly as the UID under a `users` root. Then `users/did:key:z6Mk...` is both the path AND the identity proof source.
+- **Random suffixes for spawned things** — `bullet:9f3a2c1` works fine; don't strain to make every UID meaningful.
+
+The one hard rule the engine enforces: **UIDs must be unique under a given parent.** Two children of the same parent can't share a UID — `setUID` throws on collision.
+
+## Anonymous entities still work
+
+You can `createEntity` without ever calling `setUID`. The entity exists, has bitECS storage, can carry components, can be queried. It just can't travel the authored wire — `flushAuthored` checks `getEntityPath(world, entity)` and skips entities with an empty path (no UID chain to a root).
+
+That's intentional. Bullets, particles, transient cursor state, debug entities — things that live for a tick or two — don't need identity. They have it for free if you give them a UID; they cost nothing extra if you don't.

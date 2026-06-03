@@ -1,0 +1,24 @@
+{
+  "name": "@connectionengine/docs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Documentation for Connection Engine",
+  "homepage": "./",
+  "license": "CAL-1.0",
+  "scripts": {
+    "dev": "next dev",
+    "start": "next start",
+    "build": "next build && rm -rf ../docs && mv out ../docs"
+  },
+  "dependencies": {
+    "next": "^13.5.11",
+    "nextra": "^2.13.4",
+    "nextra-theme-docs": "^2.13.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "18.11.10",
+    "typescript": "^4.9.5"
+  }
+}

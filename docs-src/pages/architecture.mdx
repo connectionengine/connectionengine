@@ -1,0 +1,94 @@
+---
+description: The five-minute orientation. What lives in core, what lives above it, how the pieces talk.
+---
+
+# Architecture at a Glance
+
+Connection Engine is one core package and two adapter packages, organised by domain rather than by tier:
+
+```
+@connectionengine/core
+├── schema/    — TypeBox + SoA tag kinds (Vec3, Quat, ArrayBuffer, …)
+├── maths/     — Vec/Quat structure-of-arrays types
+├── ecs/       — World, Entity, Component, Relation, Observer, Identity, Query
+├── engine/    — System scheduler, Mutation pipeline, Prefab
+└── network/   — Transport, Lifecycle, Binary codec, Snapshot, Peer,
+                Authority, Governance, Compression
+```
+
+Three rules govern the dependency graph, and oxlint enforces them mechanically:
+
+1. **`ecs/` is the foundation.** It must not import from `engine/` or `network/`.
+2. **`engine/` may depend on `ecs/`** but not on `network/`.
+3. **`network/` may depend on both**, since wire-format concerns sit on top.
+
+That's why, for example, identity (`UIDComponent` + `BelongsTo`) lives in `ecs/` even though peers and DIDs feel network-ish — entity addressing is foundational to how the ECS works, not a wire concern. Conversely, snapshot serialisation lives in `network/snapshot.ts` because it's how state crosses a wire, even though it walks ECS structures.
+
+## The two adapter packages
+
+Both packages compose with core — they don't fork it.
+
+**`@connectionengine/local`** adds:
+- Ed25519 keypairs + `did:key` agents
+- ZCAP-LD capability chains
+- A `capability` governance constraint registered with core's constraint registry
+- A signing in-memory transport (`connectLocalInMemory`)
+
+**`@connectionengine/ad4m-bridge`** adds:
+- An `Ad4mAgent` that wraps a running AD4M instance's `Ad4mClient.agent`
+- A transport that encodes authored events as AD4M Links inside a Perspective
+- Lifecycle plumbing that subscribes to Perspective changes for inbound
+
+A consumer chooses one (or none) at the edge. Core itself remains identity- and crypto-agnostic — its `Agent` interface is just `{ did: string; sign?: (bytes) => Uint8Array | Promise<Uint8Array> }`.
+
+## The two replication channels
+
+This is the single most important mental model in Connection Engine. Every component picks one of two **mutation categories**, and that choice decides everything about how it travels.
+
+| Category    | Wire shape                       | Cadence       | Use for                                 |
+|-------------|----------------------------------|---------------|-----------------------------------------|
+| `authored`  | Signed JSON-shaped events        | Per-event     | Spawns, ownership, governance, intent   |
+| `runtime`   | Binary delta, per-field mask     | Per-tick      | Transforms, velocities, anything 60 Hz  |
+| `local`     | Never replicated                 | n/a           | Caches, view-state, machine-local data  |
+
+The category is derived from the schema: any SoA-tagged field (Vec3, Quat, Float32, …) makes the component `runtime` by default; everything else defaults to `authored`. You can override per component.
+
+The two channels share one schema. That's the central design move — you don't write the same component twice. The same `Transform` component is binary on the wire when its position changes, authored when its parent BelongsTo changes.
+
+## The session protocol
+
+Two peers connect over a `TransportEndpoint` (the abstraction over WebRTC / WebSocket / in-memory). The lifecycle layer wraps the endpoint as a `Connection` and runs a three-step session:
+
+```
+1. HELLO    — exchange { agentDID, knownEventCount, networkId bindings }
+2. REPLAY   — host streams authored events from joiner's cursor (idempotent)
+3. LIVE     — both sides forward authored envelopes + binary runtime packets
+```
+
+Late join is **purely event-sourced**. There is no snapshot in the join protocol — the joiner brings itself up to date by replaying signed events. Each event has a composite signature, and `appendEventLog` is idempotent on that signature, so the same event delivered twice is dropped silently. Two peers reconnecting after a long disconnect just send each other their missing events.
+
+## Identity is a path
+
+Entities have integer IDs internal to a world, but those IDs are meaningless across worlds. **Entity identity is a UID path** — a list of strings walking the `BelongsTo` chain from a root.
+
+```
+['scene:main', 'avatar:alice'] → entity 42 on world A
+['scene:main', 'avatar:alice'] → entity 17 on world B
+```
+
+The path is what travels the wire. Receivers look it up (or create the chain on demand) in their own world. This is also how the semantic graph view emerges — every path is a stable URI you can refer to from other events.
+
+For the high-frequency binary channel, paths would be too verbose, so there's a `NetworkIdTable` per connection — a compact `u32` mapping exchanged at handshake and updated lazily as new entities appear.
+
+## Where the code maps to the docs
+
+| You want to learn about…   | Read…                       | Look at…                                          |
+|----------------------------|-----------------------------|---------------------------------------------------|
+| Defining data shapes       | [Components](/components)       | `packages/core/src/ecs/component.ts`               |
+| Connecting entities        | [Relations](/relations)         | `packages/core/src/ecs/relation.ts`                |
+| Addressing entities        | [Entities & Identity](/entities-and-identity) | `packages/core/src/ecs/identity.ts` |
+| Driving frames             | [Worlds & Systems](/worlds-and-systems) | `packages/core/src/engine/system.ts`     |
+| How writes propagate       | [The Mutation Pipeline](/mutations) | `packages/core/src/engine/mutation.ts`     |
+| Peer-to-peer sessions      | [Peers & Sessions](/networking) | `packages/core/src/network/lifecycle/`              |
+| The binary wire            | [The Binary Wire](/binary-codec) | `packages/core/src/network/binary.ts`             |
+| Constraint enforcement     | [Governance](/governance)       | `packages/core/src/network/governance.ts`          |

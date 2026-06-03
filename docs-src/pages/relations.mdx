@@ -1,0 +1,83 @@
+---
+description: Relations are predicates between entities — the second half of the (subject, predicate, object) shape.
+---
+
+# Relations
+
+## A relation is a predicate
+
+A component attaches data TO an entity. A relation links one entity TO another:
+
+```ts
+import { defineRelation, addRelation, getRelationTargets, removeRelation } from '@connectionengine/core'
+
+const ChildOf = defineRelation({
+  name: 'ChildOf',
+  exclusive: true, // a child has at most one parent
+  mutationCategory: 'authored'
+})
+
+const Likes = defineRelation({
+  name: 'Likes',
+  exclusive: false, // an agent can like many things
+  mutationCategory: 'authored'
+})
+
+addRelation(world, child, ChildOf, parent)
+addRelation(world, alice, Likes, post1)
+addRelation(world, alice, Likes, post2)
+
+getRelationTargets(world, alice, Likes) // → [post1, post2]
+removeRelation(world, alice, Likes, post1)
+```
+
+Combined with components, you get the third side of the semantic-graph triple:
+
+```
+subject (entity)  ── predicate (component or relation) ── object (value or entity)
+
+entity:42  ──  Health  ──  { current: 75, max: 100 }      // component triple
+entity:42  ──  Likes   ──  entity:99                       // relation triple
+```
+
+This is why Connection Engine can be read as both an ECS and an RDF-shaped graph — the same write produces both views simultaneously.
+
+## Exclusive vs. non-exclusive
+
+- **Exclusive** (`exclusive: true`) — at most one target per source. Adding a second target replaces the first. `ChildOf`, `OwnedBy`, `AuthoritativeFor` are exclusive.
+- **Non-exclusive** (default) — many targets per source. `Likes`, `Tagged`, `HasConstraint` are non-exclusive.
+
+The choice is structural, not policy. If having two parents is meaningless, mark it exclusive and the engine enforces it. If it could legitimately mean two, don't.
+
+## Relations are wire-mode aware
+
+Relations have the same `mutationCategory` system as components. Almost always `authored` — relations carry causal meaning (who owns what, who follows whom) and benefit from event-sourcing. `runtime` relations exist but are unusual.
+
+On the wire, a relation event looks like `(sourcePath, relationName, op, { targetPath })`. The receiver walks both paths in its own world, creates the chain if necessary, and applies the relation. Identity is path-based on both ends — there are no entity IDs in the envelope.
+
+## Built-in relations
+
+A small set of relations come with core because they're load-bearing for the rest of the system:
+
+| Relation                | Where                    | Purpose                                            |
+|-------------------------|--------------------------|----------------------------------------------------|
+| `BelongsTo`             | `ecs/identity.ts`        | Identity chain — see [Entities & Identity](/entities-and-identity) |
+| `OwnedBy`               | `network/authority.ts`   | Provenance — who created this entity               |
+| `AuthoritativeFor`      | `network/authority.ts`   | Who controls runtime mutations for this entity     |
+| `HasConstraint`         | `network/governance.ts`  | Attaches governance constraints to a scope         |
+
+You can define any number more. Conventionally, name them as English-readable predicates (`Likes`, `MemberOf`, `Targets`) — they read better in trace logs and they match the RDF vibe.
+
+## Observers
+
+The observer system in `ecs/observer.ts` lets you react to relation changes:
+
+```ts
+import { observe, onAdd, onRemove } from '@connectionengine/core'
+
+observe(world, ChildOf, onAdd, (parent, child) => {
+  console.log(`new parent-child: ${parent} → ${child}`)
+})
+```
+
+This is how the identity system stays consistent across `addRelation(BelongsTo)` calls — but again, you can use it for anything. Reactions to ownership transfers, governance attachments, social-graph edges; whatever needs to fire on a relation change.

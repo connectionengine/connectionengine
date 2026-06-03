@@ -1,0 +1,122 @@
+---
+description: Worlds are the unit of isolation. Systems are how time and logic flow through them.
+---
+
+# Worlds & Systems
+
+## A world is the unit of isolation
+
+A `World` holds everything — time state, network bindings, identity caches, the authored queue, the runtime dirty set, the event log, the trace sink, plus the bitECS storage. Two worlds in the same process share nothing. Two worlds in different processes are connected only through transports.
+
+This isolation is what makes Connection Engine viable for multiplayer tests: spin up two `createWorld` calls, wire them with `connectInMemory`, and you have a two-peer scenario in microseconds. It's also what enables server-side multi-tenant hosting — a server process can hold many worlds, each scoped to a different room or session.
+
+```ts
+import { createWorld, destroyWorld, createAnonAgent } from '@connectionengine/core'
+
+const world = createWorld({
+  agent: createAnonAgent(),
+  fixedTimeStep: 1 / 60,          // simulation tick rate (seconds). Default 1/60.
+  clock: customClock,             // optional. Defaults to wall-clock.
+  trace: customTraceSink          // optional. Defaults to in-memory recording.
+})
+
+// ...
+
+destroyWorld(world) // tears down everything, releases bitECS, closes connections
+```
+
+The `agent` is the only required option. Everything else is sensible defaults.
+
+## Time has two scales
+
+Per frame, time advances on two scales:
+
+- **Variable step** — for `Input`, `Animation`, `Render` phases. The exact wall-clock delta since the last frame.
+- **Fixed step** — for `Simulation` phase. Always exactly `fixedTimeStep` seconds. The frame loop may run zero, one, or many simulation substeps depending on the variable delta — the accumulator pattern.
+
+This is the same dual-rate trick most game engines use, and for the same reason: physics + game logic want determinism; rendering + input want frame-tight responsiveness.
+
+`tickWorld(world, deltaSeconds, { fixed, variable })` is the low-level primitive. `runSystems(world, deltaSeconds)` is the convenience wrapper that runs every registered system in its phase, then flushes mutations.
+
+## Systems
+
+A system is a phase-scoped function the scheduler runs every tick. You define them per-world:
+
+```ts
+import { defineSystem } from '@connectionengine/core'
+
+defineSystem(world, {
+  name: 'ApplyVelocity',
+  phase: 'Simulation', // runs at fixed dt
+  execute: (world, dt) => {
+    for (const e of velocityQuery(world)) {
+      // ...
+    }
+  }
+})
+
+defineSystem(world, {
+  name: 'RenderAvatars',
+  phase: 'Render', // runs at variable dt
+  execute: (world, dt) => {
+    // ...
+  }
+})
+```
+
+Four phases run in this order each frame:
+
+```
+Input (variable) → Simulation (fixed, may repeat) → Animation (variable) → Render (variable)
+                                                                ↓
+                                                  flushAuthored → flushRuntime
+```
+
+Mutation flushes happen at end-of-frame, after every system has run. That's important — it means a single frame's writes coalesce into one outbound packet (per channel, per peer) rather than racing as systems execute. **Authored flushes first, runtime second** so that new entities created this frame are addressable on the receiver before the binary packet carrying their SoA values arrives.
+
+## Ordering systems
+
+If system order matters within a phase, use `before` / `after`:
+
+```ts
+defineSystem(world, {
+  name: 'Damage',
+  phase: 'Simulation',
+  before: ['ApplyHealing'],
+  execute: (world, dt) => { /* ... */ }
+})
+```
+
+The scheduler topologically sorts each phase. Cycles fall back to insertion order with a trace warning. You can also `reorderSystem(world, handle, { before, after })` to change ordering at runtime.
+
+## Reactors
+
+Each system can optionally have a `reactor` — a DOMless Solid component (logic only) mounted via `createRoot` at registration:
+
+```ts
+defineSystem(world, {
+  name: 'PresenceCounter',
+  phase: 'Render',
+  reactor: () => {
+    const peers = useTrackedPeers()
+    createEffect(() => console.log(`peers: ${peers().length}`))
+  }
+})
+```
+
+Reactors are useful for systems whose work is "react to changes" rather than "iterate entities" — UI bindings, telemetry, anything that wants Solid's signal graph. The reactor is disposed when the system is removed or the world is destroyed.
+
+If you don't need reactivity, just provide `execute` and skip `reactor`.
+
+## Injecting and removing
+
+Systems are values you can move around:
+
+```ts
+const handle = defineSystem(world, { name: 'Foo', phase: 'Render', execute: ... })
+removeSystem(world, handle)
+// later:
+injectSystem(world, handle) // re-attach + re-mount reactor
+```
+
+This matters for plugin systems and hot-reload flows: keep a `SystemHandle` reference, detach during reload, re-inject after. The reactor gets a fresh `createRoot` each time it's injected.

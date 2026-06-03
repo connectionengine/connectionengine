@@ -1,0 +1,118 @@
+---
+description: Constraints are ECS entities. Validation is data-driven. New kinds plug into a registry, not into the engine.
+---
+
+# Governance
+
+## Constraints are data
+
+A "rule" in Connection Engine isn't engine code — it's an entity with a constraint component plus a `HasConstraint` relation pointing at a scope:
+
+```ts
+import { addConstraint } from '@connectionengine/core'
+
+const scene = createNamedEntity(world, 'scene:guarded')
+
+addConstraint(world, scene, 'credential', {
+  requiredCredential: 'builder',
+  operations: ['modify']
+})
+```
+
+Because constraints are entities with authored components, they replicate exactly like everything else. Every peer receives them through the normal mutation pipeline and enforces them locally. There's no separate "config sync" channel; rules ARE the data.
+
+This is the design move that makes governance composable. You can govern a scene, an inventory, a single object. Constraints walk the `BelongsTo` chain — anything inside a constrained scope inherits the rule.
+
+## Built-in constraint kinds
+
+Core ships three engine-level kinds. None of them require a specific identity provider beyond an opaque DID string:
+
+| Kind         | What it does                                                            |
+|--------------|-------------------------------------------------------------------------|
+| `credential` | Requires the event author to hold a named credential (oracle-supplied).  |
+| `temporal`   | Rate-limits writes per author (min interval, max count per window).      |
+| `content`    | Validates field shape — number ranges, string patterns, blocklists.      |
+
+For ZCAP capability-based authorisation, install `@connectionengine/local` — it registers a `capability` kind. For AD4M-perspective-based rules, `@connectionengine/ad4m-bridge` adds its own.
+
+## The validator gate
+
+You wire a validator into a world by setting `world.network.validateAuthored`:
+
+```ts
+import { validateEvent } from '@connectionengine/core'
+
+world.network.validateAuthored = (event) =>
+  validateEvent(world, event, {
+    hasCredential: (did, cred) => myOracle.holds(did, cred)
+  }).allowed
+```
+
+`validateEvent` walks the scope hierarchy starting at the event's entity, collects every applicable constraint, runs each one's `validate` function, returns `{ allowed, violations }`. Inbound `applyAuthoredEnvelope` consults the gate before applying — failures emit `mutation.reject` trace events with the reason.
+
+The gate runs on **received** events. Local writes go through the authored queue and are emitted optimistically. If you want pre-commit validation of local writes, call `validateEvent` yourself before `setComponent` — but it's almost always cheaper to let the network enforce convergence: bad writes from peers are rejected on apply, your own bad writes will fail the next round-trip review.
+
+## The registry
+
+The `credential` / `temporal` / `content` kinds aren't a hardcoded switch in `validateEvent`. They're registered with a registry:
+
+```ts
+import { registerConstraintKind } from '@connectionengine/core'
+
+registerConstraintKind({
+  kind: 'my-custom-rule',
+  component: MyCustomConstraintComponent,
+  validate({ world, event, data, scope, context, violations }) {
+    if (somethingIsWrong(event, data)) {
+      violations.push({ kind: 'my-custom-rule', reason: '...' })
+    }
+  }
+})
+```
+
+Now `addConstraint(world, scope, 'my-custom-rule', { ... })` works, `resolveConstraints` picks them up, `validateEvent` runs them. Zero changes to the engine.
+
+This is how `@connectionengine/local` adds the `capability` kind without forking core:
+
+```ts
+// in @connectionengine/local/src/governance.ts
+registerConstraintKind({
+  kind: 'capability',
+  component: CapabilityConstraintComponent,
+  validate({ world, event, data, context, violations }) {
+    // ZCAP verification ...
+  }
+})
+```
+
+## Resolving constraints
+
+`resolveConstraints(world, entity)` walks `entity → BelongsTo parent → ... → root`, collecting every constraint attached via `HasConstraint`. Most-specific (closest to entity) first. Useful for debugging — "what governs this entity?":
+
+```ts
+import { resolveConstraints } from '@connectionengine/core'
+
+resolveConstraints(world, avatar)
+// → [{ entity: 17, kind: 'credential', data: { ... }, scope: scene }]
+```
+
+You'd rarely call this from app code. It's primarily a tool for engine-level governance and for showing users why a write was rejected.
+
+## Trace integration
+
+Every governance decision emits a structured trace event:
+
+```ts
+world.trace.byKind('governance.accept') // [{ ts, predicate }, ...]
+world.trace.byKind('governance.reject') // [{ ts, predicate, detail: { violations } }, ...]
+```
+
+Use this in tests to assert which constraints fired and why, in dev tooling to surface rejected mutations to UI, in production telemetry to detect abuse patterns.
+
+## What governance is NOT
+
+- It's not a permissions API for local-only writes. Local mutations go through the queue and emit. If you don't want a write to leave this world, mark the component `local` — that's the right tool.
+- It's not transport-level auth. Whether a peer is allowed to *connect* is a different concern (the transport handles it). Governance kicks in once a peer is already in the session.
+- It's not authority enforcement. See [Authority & Ownership](/authority-and-ownership) — runtime authority is structural, not signed.
+
+Governance specifically gates **authored events on apply** — the moment a signed semantic mutation tries to land on a world.

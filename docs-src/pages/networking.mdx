@@ -1,0 +1,123 @@
+---
+description: Transports, sessions, late join — how two worlds become one shared world.
+---
+
+# Peers & Sessions
+
+## The two layers
+
+The network stack is deliberately split:
+
+- **`TransportEndpoint`** — the mechanism. "How do bytes get from here to there?" WebRTC, WebSocket, in-memory, AD4M Perspective — all satisfy the same tiny interface.
+- **`Connection` + lifecycle** — the protocol. "What do those bytes mean? When does a peer count as connected? What happens at disconnect?"
+
+You can write a new transport without touching the protocol. You can change the protocol without rewriting transports. They're orthogonal.
+
+## TransportEndpoint
+
+```ts
+interface TransportEndpoint {
+  readonly backend: 'webrtc' | 'websocket' | 'memory'
+  send(payload: unknown): void
+  onMessage(handler: (payload: unknown) => void): () => void
+  onClose(handler: () => void): () => void
+  close(): void
+}
+```
+
+Payloads pass as `unknown`. The lifecycle layer discriminates by shape:
+
+- `ArrayBuffer` → binary runtime packet (decoded by the binary pipeline)
+- `{ events: [...] }` → authored envelope
+- `{ type: '...' }` → control message (hello, replay-chunk, replay-end, leave, bind)
+
+In-process transports (memory, AD4M-bridge) pass JS objects directly. Wire transports serialise authored envelopes and control messages — usually via the authored codec (`network/codec.ts`).
+
+## The session protocol
+
+`joinWorld(world, { endpoint })` runs a three-step session:
+
+```
+1. HELLO   — both sides send { agentDID, knownEventCount, networkId bindings }
+2. REPLAY  — each host streams its eventLog from joiner's cursor as chunks
+3. LIVE    — authored envelopes + binary packets flow over the same endpoint
+```
+
+```ts
+import { createMemoryTransport, joinWorld } from '@connectionengine/core'
+
+const link = createMemoryTransport()
+
+const [hostResult, joinerResult] = await Promise.all([
+  joinWorld(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
+  joinWorld(joiner, { endpoint: link.b, knownEventCount: 0 })
+])
+
+console.log(joinerResult.replayedEventCount) // number of events caught up
+```
+
+`joinWorld` resolves once replay-end fires. After that, the same endpoint carries live envelopes — no further setup.
+
+## Pure event-sourced late join
+
+There's deliberately **no snapshot in the join protocol**. The joiner sends `knownEventCount: 0` (or whatever cursor it has from a previous session) and the host streams the missing events. The joiner applies each via the normal mutation pipeline.
+
+This works because:
+
+- The event log is **canonical** — all causally-meaningful state changes pass through it.
+- `appendEventLog` is **idempotent** on event signature — events the joiner already has are dropped silently on apply.
+- Apply itself is **convergent** — `setComponent` with the same value twice is a no-op; `addRelation` of an existing pair is a no-op.
+
+Two peers reconnecting after a disconnect just exchange whatever they each missed. No special "diff" protocol needed.
+
+There's still a `Snapshot` API in `network/snapshot.ts` — but it's a tool you can use for bootstrap optimisations, debugging, persistence, or hot-reload. The session protocol doesn't need it.
+
+## Deep disconnect cleanup
+
+When a connection closes (graceful `leave` or otherwise), the lifecycle layer runs `sweepDisconnectedPeer`. It walks the closed connection's `remoteDID`, finds the corresponding user entity in this world, checks whether any other connection still represents that user (a user can have multiple peers — desktop + phone), and if not, removes every entity tagged `TransientOnDisconnect` that the user owns.
+
+```ts
+import { TransientOnDisconnect, createPeer, createUser } from '@connectionengine/core'
+
+const user = createUser(world, { did: 'did:key:...' })
+const avatar = createEntity(world)
+setUID(world, avatar, 'avatar:alice', { parent: scene })
+setOwner(world, avatar, user)
+setComponent(world, avatar, TransientOnDisconnect, {})
+// when the user's last peer disconnects → avatar is swept
+```
+
+Tag avatars, cursors, presence indicators. Don't tag persistent objects (scores, world content). Disconnect cleanup is a tag-driven policy, not a special-case in the engine.
+
+## Mesh propagation
+
+The lifecycle layer also handles re-broadcast for multi-peer meshes. When an authored envelope arrives from connection X, `rebroadcastAuthored` forwards it to every other connection — but filters out events that have already been seen via `hasEventBeenSeen`. So in a 3+ peer mesh, an event reaches every peer at most once, even with redundant paths.
+
+This is the simplest possible gossip: "I forward what I haven't seen." It works because the event log signature is the dedup key, and applying the same event twice is a no-op.
+
+## connectInMemory
+
+For tests and solo-mode scenarios that don't need the full handshake:
+
+```ts
+import { connectInMemory } from '@connectionengine/core'
+
+const link = connectInMemory(worldA, worldB)
+// later:
+link.close()
+```
+
+It's a shortcut over `createMemoryTransport` + `joinWorld` that skips the replay phase. Authored envelopes propagate. Runtime binary packets flow (a `BinaryChannel` is built lazily on first publish). Disconnect cleanup runs.
+
+For the production-shaped flow including late-join replay, use `joinWorld`.
+
+## Picking a transport
+
+Core ships the in-memory transport. Real transports compose with the lifecycle:
+
+- **WebRTC** — for direct peer-to-peer. Build a `TransportEndpoint` over an `RTCDataChannel`. Pass it to `joinWorld`. Done.
+- **WebSocket** — for client-server or relay flows. Wrap the socket. Pass to `joinWorld`. Done.
+- **AD4M Perspective** — `@connectionengine/ad4m-bridge` wraps a Perspective's `addLinks` + `addListener` as a `TransportEndpoint`. The Perspective IS the wire.
+- **Signed in-memory** — `@connectionengine/local`'s `connectLocalInMemory` adds Ed25519 signing on the authored channel; runtime binary stays unsigned (authority-checked at ECS level).
+
+WebRTC and WebSocket implementations aren't yet shipped in core. The integration point is the `TransportEndpoint` interface — once you can satisfy it, the rest of the stack is reusable.

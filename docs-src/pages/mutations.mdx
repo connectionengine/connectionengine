@@ -1,0 +1,139 @@
+---
+description: One schema, two channels. How writes become packets, packets become writes, and nothing loops forever.
+---
+
+# The Mutation Pipeline
+
+## The shape
+
+A local write goes through one of two queues, depending on the component's `mutationCategory`:
+
+```
+setComponent(world, e, Health, { current: 50 })
+        │
+        ▼
+authored?  →  push into world.authoredQueue (carries entity, predicate, op, value, origin)
+runtime?   →  mark world.runtimeDirty[componentId].add(entity)
+local?     →  no-op (never replicated)
+```
+
+At end-of-frame:
+
+```
+flushAuthored(world)
+        │
+        ▼
+for each queued mutation where origin === 'local':
+    resolve entityPath, stamp { author, timestamp }
+    appendEventLog(world, event)         // idempotent on signature
+    world.network.publishAuthored?(envelope)
+
+flushRuntime(world)
+        │
+        ▼
+snapshot world.runtimeDirty into Map<componentId, Set<entity>>
+clear the dirty set
+world.network.publishRuntime?(snapshot)
+```
+
+The two `publish*` callbacks are hooks the network layer fills in. Core never decides how data goes on a wire — it hands an envelope to whoever's listening.
+
+## Receive paths
+
+```
+applyAuthoredEnvelope(world, envelope)
+        │
+        ├─ for each event:
+        │    governance gate via world.network.validateAuthored?(event)
+        │    if appendEventLog(world, event) returned true:
+        │        applyEvent — setComponent / addRelation / etc. with origin: 'network'
+```
+
+For runtime, **there is no separate "apply runtime envelope" function**. The binary pipeline (`network/binary.ts`) is the receive path — it reads packets and writes directly into SoA storage, calling `setComponent(world, entity, component, {}, { origin: 'network' })` only as needed to register bitECS presence.
+
+This is one of the simplifications that justifies the dual channels. The authored side gets a proper apply pipeline because events are first-class semantic things. The runtime side is pure data: arrays in, arrays out, no event objects to construct.
+
+## The origin tag, and why it exists
+
+Every mutating call tags itself `origin: 'local' | 'network'`. The mutation pipeline only publishes mutations stamped `local`. If you stamp `network`, the write happens but nothing is queued for outbound.
+
+Why this matters: when peer A's authored envelope arrives at peer B, the receive path applies each event with `setComponent(..., { origin: 'network' })`. Without the tag, peer B would queue those writes for outbound and re-broadcast them, and peer A would receive its own writes back, and re-broadcast them again. Forever.
+
+So the rule is: **the receive path stamps `network`, the local path stamps `local` (the default)**. You almost never write `origin: 'network'` yourself — that's the network layer's job.
+
+There's a subtlety worth knowing: `origin` is not the same as "where this came from." It's "should this be re-broadcast." A locally-applied write that you don't want to ship can be tagged `network`. It's a control flag, not a provenance flag.
+
+## Idempotent event log
+
+The world has two parallel structures:
+
+```ts
+eventLog: AuthoredEvent[]      // ordered append-only canonical log
+eventLogSeen: Set<string>      // composite signature index
+```
+
+Every push goes through `appendEventLog(world, event)` which computes a signature `${author}|${timestamp}|${op}|${predicate}|${entityPath}|${JSON(value)}` and skips if seen. This makes late-join replay safe — a peer reconnecting with `knownEventCount: 0` re-receives events it already has, and each is dropped on append.
+
+It also makes mesh re-broadcast (3+ peer scenarios) safe. Peer B receiving a fresh event from peer A applies it, then forwards to peer C, who already received it from A independently, and skips it.
+
+You can read this directly if you need it:
+
+```ts
+import { eventSignature, hasEventBeenSeen, appendEventLog } from '@connectionengine/core'
+
+if (!hasEventBeenSeen(world, event)) {
+  appendEventLog(world, event)
+}
+```
+
+But normally you don't — the mutation pipeline handles it.
+
+## What about authority on the runtime channel?
+
+The runtime channel has no governance gate. A binary packet from peer X arrives and updates SoA fields, full stop. Authority is enforced **structurally** via the `AuthoritativeFor` relation: a system that runs locally checks "do I have authority over this entity for this component?" before processing physics or moving things. See [Authority & Ownership](/authority-and-ownership).
+
+This split is intentional. Per-packet signature verification at 60 Hz is too expensive. Per-event signature verification on authored events (sub-Hz cadence) is fine. Authority on runtime is a property of the entity graph, not the wire.
+
+## A complete trace
+
+```
+peer A:                                          peer B:
+
+setComponent(world, e, Health, { current: 50 })
+  → world.authoredQueue.push({ ..., origin: 'local' })
+
+setComponent(world, e, Transform, { position: [1,2,3] })
+  → world.runtimeDirty.get('Transform').add(e)
+
+runSystems(world, 1/60)
+  → ...systems...
+  → flushAuthored(world)
+       eventLog.push(event)
+       publishAuthored({ events: [...], fromPeer: did })
+       → connection.send(envelope)
+                                                 ── microtask ──→
+                                                 endpoint.onMessage(envelope)
+                                                 isAuthoredEnvelope? yes
+                                                 applyAuthoredEnvelope(world, envelope)
+                                                   for event:
+                                                     governance.validate? ok
+                                                     appendEventLog (new)
+                                                     applyEvent → setComponent(..., { origin: 'network' })
+                                                   B's authoredQueue: no entries (origin: network skipped)
+  → flushRuntime(world)
+       publishRuntime(dirty)
+       → ensureChannel(connection)
+       → channel.publish(dirty)
+            sendBindingsControl({ networkId, entityPath })
+            pipeline.write(...) → ArrayBuffer
+            connection.send(buffer)
+                                                 ── microtask ──→
+                                                 endpoint.onMessage(buffer)
+                                                 ArrayBuffer? yes
+                                                 channel.applyBuffer(buffer)
+                                                   pipeline.read → SoA stores updated
+                                                   setComponent(..., {}, { origin: 'network' })
+                                                     (only to register bitECS presence on first packet)
+```
+
+That's the whole flow, end to end.

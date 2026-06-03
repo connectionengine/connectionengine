@@ -1,0 +1,103 @@
+---
+description: Install Connection Engine, pick a runtime mode, and create your first world.
+---
+
+# Installation
+
+Connection Engine is a TypeScript pnpm workspace. The three published packages are:
+
+| Package                            | What it gives you                                                   |
+|------------------------------------|---------------------------------------------------------------------|
+| `@connectionengine/core`           | The ECS, schema, mutation pipeline, transports, governance. Required. |
+| `@connectionengine/local`          | Ed25519 / `did:key` identity + ZCAP capability constraints.         |
+| `@connectionengine/ad4m-bridge`    | Wraps a running [AD4M](https://github.com/coasys/ad4m) instance.    |
+
+You only ever need `core`. The other two are opt-in based on what identity / transport story you want.
+
+## Install
+
+```bash
+pnpm add @connectionengine/core
+# optional:
+pnpm add @connectionengine/local
+pnpm add @connectionengine/ad4m-bridge
+```
+
+## A minimal world
+
+The smallest interesting Connection Engine program — one world, one entity, one component:
+
+```ts
+import {
+  Schema,
+  createAnonAgent,
+  createWorld,
+  createEntity,
+  defineComponent,
+  setComponent,
+  getComponent
+} from '@connectionengine/core'
+
+const Health = defineComponent({
+  id: 'Health',
+  schema: Schema.Object({
+    current: Schema.Number({ default: 100 }),
+    max: Schema.Number({ default: 100 })
+  })
+})
+
+const world = createWorld({ agent: createAnonAgent('me') })
+const player = createEntity(world)
+setComponent(world, player, Health, { current: 75 })
+
+console.log(getComponent(world, player, Health)) // { current: 75, max: 100 }
+```
+
+A few things to notice:
+
+- `defineComponent` is **global** — once defined, the same component is referenced from every world. Storage (the typed arrays + per-entity instance) is **per-world**.
+- The schema (`Schema.Object({ ... })`) is the source of truth. It drives field defaults, SoA storage decisions, network encoding, and SHACL emission.
+- `createAnonAgent` is the simplest agent — fine for solo mode or tests. For signing-aware identity use `@connectionengine/local`, for AD4M-backed identity use `@connectionengine/ad4m-bridge`.
+
+## Two worlds talking
+
+A world isn't very interesting alone. Wire two together with the in-memory transport:
+
+```ts
+import { connectInMemory, flushAsync } from '@connectionengine/core'
+
+const a = createWorld({ agent: createAnonAgent('alice') })
+const b = createWorld({ agent: createAnonAgent('bob') })
+
+connectInMemory(a, b)
+
+// On 'a':
+const scene = createNamedEntity(a, 'scene:main')
+const alicePlayer = createEntity(a)
+setUID(a, alicePlayer, 'alice', { parent: scene })
+setComponent(a, alicePlayer, Health, { current: 80 })
+
+await flushAsync() // drain the microtask delivery queue
+
+// On 'b':
+const bScene = getEntityByUID(b, 0, 'scene:main')!
+const bAlice = getEntityByUID(b, bScene, 'alice')!
+console.log(getComponent(b, bAlice, Health)) // { current: 80, max: 100 }
+```
+
+That's the whole multiplayer story in eight lines: entities created on one world materialise on the other, with the same UID path, the same components, the same values.
+
+For the real session protocol (handshake, event-log replay on late join, disconnect cleanup), see [Peers & Sessions](/networking).
+
+## Running the tests
+
+To verify the install works locally:
+
+```bash
+git clone https://github.com/connectionengine/connectionengine
+cd connectionengine
+pnpm install
+pnpm --filter @connectionengine/core test
+```
+
+You should see 150+ passing tests across the ECS, mutation pipeline, binary codec, governance, and lifecycle.
