@@ -1,21 +1,18 @@
 /**
  * @connectionengine/core — public API surface.
  *
- * Mirrors the canonical exploration doc structure
- * (`.specs/planning/ecs-network-exploration.md`):
- *   Tier 0 — World, Entity, DID
- *   Tier 1 — Components, Relations, Observers
- *   Tier 2 — Identity, Query
- *   Tier 3 — Systems, Mutation, Prefabs, Snapshots
- *   Tier 4 — Peers, Authority, Governance
+ * Organised by domain (matching the on-disk structure):
+ *   schema/  — unified Schema namespace (TypeBox + SoA tags)
+ *   maths/   — Vec/Quat SoA classes
+ *   ecs/     — World, Entity, Components, Relations, Observers, plus clock/trace
+ *   engine/  — System scheduler, Mutation pipeline, Prefab, Snapshot
+ *   network/ — Identity addressing, Query, Transport, Peer, Authority,
+ *              engine-level governance (credential + temporal + content)
+ *
+ * Core is identity- and crypto-agnostic. For Ed25519 / did:key identity + ZCAP
+ * capabilities, depend on @connectionengine/local. For AD4M-backed identity,
+ * transport, and persistence, depend on @connectionengine/ad4m-bridge.
  */
-
-// ── Tier 0 ────────────────────────────────────────────────────────────────────
-export * from './world'
-export * from './entity'
-export * from './clock'
-export * from './trace'
-export * from './did'
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 export { Schema } from './schema'
@@ -35,28 +32,29 @@ export type { Vec4 } from './maths/vec4'
 export type { Quat } from './maths/quat'
 export type { Quat2 } from './maths/quat2'
 
-// ── Tier 1 ────────────────────────────────────────────────────────────────────
-export * from './component'
-export * from './relation'
+// ── ECS ───────────────────────────────────────────────────────────────────────
+export * from './ecs/world'
+export * from './ecs/entity'
+export * from './ecs/clock'
+export * from './ecs/trace'
+export * from './ecs/component'
+export * from './ecs/relation'
 // Observers: re-export only the unique hook constructors. The operator
-// vocabulary (Or/And/Not/Any/All/None) lives in ./query for the canonical
-// import path; observers compose them via the same names.
-export { observe, onAdd, onRemove, onSet, onGet } from './observer'
-export type { ObserverTerm } from './observer'
+// vocabulary (Or/And/Not/Any/All/None) lives in ./network/query for the
+// canonical import path; observers compose them via the same names.
+export { observe, onAdd, onRemove, onSet, onGet } from './ecs/observer'
+export type { ObserverTerm } from './ecs/observer'
 
-// ── Tier 2 ────────────────────────────────────────────────────────────────────
-export * from './identity'
-export * from './query'
+// ── Engine ────────────────────────────────────────────────────────────────────
+export * from './engine/system'
+export * from './engine/mutation'
+export * from './engine/prefab'
+export * from './engine/snapshot'
 
-// ── Tier 3 ────────────────────────────────────────────────────────────────────
-export * from './mutation'
-export * from './transport'
-export * from './system'
-export * from './prefab'
-export * from './snapshot'
-
-// ── Tier 4 ────────────────────────────────────────────────────────────────────
-export * from './peer'
-export * from './authority'
-export * from './zcap'
-export * from './governance'
+// ── Network ───────────────────────────────────────────────────────────────────
+export * from './network/identity'
+export * from './network/query'
+export * from './network/transport'
+export * from './network/peer'
+export * from './network/authority'
+export * from './network/governance'

@@ -1,2 +1,11 @@
 packages:
-  - 'packages/*'
+  # Connection Engine packages
+  - 'packages/client'
+  - 'packages/core'
+  - 'packages/local'
+  - 'packages/ad4m-bridge'
+  - 'packages/server'
+  # AD4M submodule — only the core JS SDK is picked up as a workspace member.
+  # The rest of the AD4M monorepo (rust executor, languages, CLI, ...) is
+  # built independently via its own pnpm-workspace.yaml inside `packages/ad4m`.
+  - 'packages/ad4m/core'

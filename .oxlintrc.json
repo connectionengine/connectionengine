@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "ignorePatterns": ["packages/ad4m/**", "**/node_modules/**", "**/dist/**", "**/lib/**", ".codegraph/**"],
+  "plugins": ["import", "typescript"],
+  "rules": {
+    "import/no-cycle": [
+      "error",
+      {
+        "maxDepth": 10,
+        "ignoreExternal": true
+      }
+    ],
+    "import/namespace": "off"
+  },
+  "overrides": [
+    {
+      "files": ["packages/core/src/ecs/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../engine/*", "../network/*"],
+                "message": "ecs/ is the foundation layer — it cannot depend on engine/ or network/. Move the shared concept down into ecs/, or invert the dependency via a hook (see ecs/entity.ts → registerRemoveHook)."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
