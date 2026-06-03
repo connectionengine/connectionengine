@@ -7,8 +7,8 @@ This is a modern, full-stack TypeScript monorepo template managed with **pnpm wo
 The monorepo is organized into the following packages:
 
 - **`packages/client`**: A frontend application built with **SolidJS**, **Vite**, and **Tailwind CSS**. It includes **Storybook** for component development and **Playwright** for end-to-end testing.
-- **`packages/server`**: A backend server built with **Express**. It uses **tsx** for fast development execution.
-- **`packages/core`**: A shared library containing common logic, types, or utilities used by both the client and server. It is bundled using **Rollup**.
+- **`packages/server`**: A backend server built with **Express**. It uses **tsx** for fast development execution and **tsdown** for production builds.
+- **`packages/core`**: A shared library containing common logic, types, or utilities used by both the client and server. It is bundled using **tsdown**.
 
 ## 🚀 Getting Started
 
@@ -56,7 +56,7 @@ Run these scripts from the root directory:
 
 - **Language**: [TypeScript](https://www.typescriptlang.org/)
 - **Package Manager**: [pnpm](https://pnpm.io/) (Workspaces)
-- **Build Tools**: [Vite](https://vitejs.dev/) (Client), [Rollup](https://rollupjs.org/) (Core)
+- **Build Tools**: [Vite](https://vitejs.dev/) (Client), [tsdown](https://tsdown.dev/) (Core + Server)
 
 ### Frontend (`packages/client`)
 
