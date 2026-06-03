@@ -1,15 +1,17 @@
 /**
- * Outbound fanout — wire `world.network.publish{Authored,Runtime}` to fan
- * across every live connection.
+ * Outbound fanout — wire each Network's `publishAuthored` / `publishRuntime`
+ * to fan across its own connection set.
  *
- * Authored envelopes are passed through as-is (in-process JS objects);
- * runtime mutations delegate to each connection's BinaryChannel for binary
- * encoding + per-peer shadow tracking.
+ * Mutations are routed to networks by `routeNetworks(world, entity)` in
+ * `mutation.ts` (today: broadcast-to-all). Each network's hook receives only
+ * the events / dirty entries routed to it; this module just fans within a
+ * network's connections.
  */
 
 import type { AuthoredEnvelope, Connection, Entity, World } from '../../ecs/world'
 import { allComponents } from '../../ecs/component'
 import { hasEventBeenSeen } from '../../engine/mutation'
+import type { Network } from '../network'
 import { createBinaryChannel, type BinaryChannel } from './binary-channel'
 
 const channels = new WeakMap<Connection, BinaryChannel>()
@@ -22,49 +24,50 @@ export const getConnectionChannel = (connection: Connection): BinaryChannel | un
 
 /**
  * Get-or-create the binary channel for a connection. Lazy auto-build draws
- * from every globally-defined runtime ComponentDefinition (sorted by id for
- * deterministic peer-agnostic order) — the global registry guarantees both
- * sides arrive at the same list as long as both packages have imported the
- * same component modules.
+ * from every continuous-channel ComponentDefinition on the world's engine
+ * (sorted by id for deterministic peer-agnostic order) — the engine registry
+ * guarantees both sides arrive at the same list as long as both packages have
+ * imported the same component modules.
  */
 export const ensureChannel = (world: World, connection: Connection): BinaryChannel | undefined => {
   let channel = channels.get(connection)
   if (channel) return channel
-  const components = allComponents()
-    .filter((c) => c.isBinary)
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  const components = allComponents(world.engine)
+    .filter((c) => c.$isBinary)
+    .sort((a, b) => (a.$id < b.$id ? -1 : a.$id > b.$id ? 1 : 0))
   if (components.length === 0) return undefined
   channel = createBinaryChannel(world, connection, { components })
   channels.set(connection, channel)
   return channel
 }
 
-const installed = new WeakSet<World>()
-
 /**
- * Install the world-level publish hooks. Idempotent per-world: first call wires;
- * subsequent calls noop. The hooks themselves iterate `world.network.connections`
- * each tick so connections added later participate automatically.
+ * Install fanout on a network. Idempotent. `publishAuthored` and
+ * `publishRuntime` are wired to fan across this network's connections; the
+ * binary path for runtime uses each connection's `BinaryChannel`.
  */
-export const installFanout = (world: World): void => {
-  if (installed.has(world)) return
-  installed.add(world)
-  world.network.publishAuthored = (envelope: AuthoredEnvelope) => {
-    for (const conn of world.network.connections) conn.events.send(envelope)
+export const installFanout = (world: World, network: Network): void => {
+  if (network.publishAuthored && network.publishRuntime) return
+  if (!network.publishAuthored) {
+    network.publishAuthored = (envelope: AuthoredEnvelope) => {
+      for (const conn of network.connections) conn.events.send(envelope)
+    }
   }
-  world.network.publishRuntime = (dirty: Map<string, Set<Entity>>) => {
-    for (const conn of world.network.connections) {
-      const channel = ensureChannel(world, conn)
-      if (!channel) continue
-      channel.publish(dirty)
+  if (!network.publishRuntime) {
+    network.publishRuntime = (dirty: Map<string, Set<Entity>>) => {
+      for (const conn of network.connections) {
+        const channel = ensureChannel(world, conn)
+        if (!channel) continue
+        channel.publish(dirty)
+      }
     }
   }
 }
 
 /**
- * Receive-side gate: an authored envelope just arrived from `connection`.
- * Re-broadcast its events to every OTHER connection that hasn't already seen
- * them — implements simple flood-fill propagation across the mesh. The
+ * Receive-side gate: an authored envelope just arrived from `connection` on
+ * `network`. Re-broadcast its events to every OTHER connection across every
+ * network on the world that hasn't already seen them — mesh flood. The
  * incoming events themselves are then applied via `applyAuthoredEnvelope`
  * by the caller.
  */
@@ -72,8 +75,10 @@ export const rebroadcastAuthored = (world: World, source: Connection, envelope: 
   const fresh = envelope.events.filter((e) => !hasEventBeenSeen(world, e))
   if (fresh.length === 0) return
   const out: AuthoredEnvelope = { fromPeer: envelope.fromPeer, events: fresh }
-  for (const conn of world.network.connections) {
-    if (conn === source) continue
-    conn.events.send(out)
+  for (const network of world.networks.values()) {
+    for (const conn of network.connections) {
+      if (conn === source) continue
+      conn.events.send(out)
+    }
   }
 }

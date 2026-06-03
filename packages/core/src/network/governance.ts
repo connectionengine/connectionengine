@@ -23,7 +23,7 @@ import {
   type ComponentDefinition
 } from '../ecs/component'
 import { defineRelation, addRelation, getRelationTargets } from '../ecs/relation'
-import { ROOT_PARENT, resolveEntityPath } from '../ecs/identity'
+import { resolveEntityPath } from '../ecs/identity'
 import { createEntity, entityExists } from '../ecs/entity'
 import type { AuthoredEvent, Entity, World } from '../ecs/world'
 
@@ -104,7 +104,7 @@ export const registerConstraintKind = (entry: ConstraintKindEntry): void => {
     throw new Error(`registerConstraintKind: kind '${entry.kind}' already registered`)
   }
   kindRegistry.set(entry.kind, entry)
-  kindByComponentId.set(entry.component.id, entry)
+  kindByComponentId.set(entry.component.$id, entry)
 }
 
 export const getConstraintKind = (kind: string): ConstraintKindEntry | undefined => kindRegistry.get(kind)
@@ -322,7 +322,7 @@ export interface ValidationResult {
  * Validate an incoming authored event against every applicable constraint —
  * walks the entity's scope chain, looks up each constraint's kind in the
  * registry, calls the kind's `validate` function. Suitable as
- * `world.network.validateAuthored` or as the `validate` option to
+ * `network.validateAuthored` or as the `validate` option to
  * `connectInMemory`.
  */
 export const validateEvent = (
@@ -330,7 +330,7 @@ export const validateEvent = (
   event: AuthoredEvent,
   context: ValidationContext = {}
 ): ValidationResult => {
-  const entity = resolveEntityPath(world, event.entityPath) ?? ROOT_PARENT
+  const entity = resolveEntityPath(world, event.entityPath) ?? world.worldRoot
   const constraints = resolveConstraints(world, entity)
   const violations: ConstraintViolation[] = []
   for (const c of constraints) {

@@ -89,7 +89,7 @@ export interface CreatePeerOptions {
   user: Entity
   peerId?: string
   uid?: string
-  /** If true, sets world.network.localPeer to this entity. */
+  /** If true, sets world.localPeer to this entity. */
   asLocal?: boolean
 }
 
@@ -106,7 +106,7 @@ export const createPeer = (world: World, options: CreatePeerOptions): Entity => 
   // BelongsTo(user) is already set by setUID's parent handling
   // (it adds the BelongsTo relation under the hood).
   void addRelation // satisfies lint
-  if (options.asLocal) world.network.localPeer = entity
+  if (options.asLocal) world.localPeer = entity
   return entity
 }
 

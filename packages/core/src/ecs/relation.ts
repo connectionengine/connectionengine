@@ -13,6 +13,8 @@
 
 import * as bitecs from 'bitecs'
 import type { Entity, World } from './world'
+import type { Engine } from './engine'
+import { getDefaultEngine } from './engine'
 import type { Origin } from './trace'
 
 export interface RelationOptions<T = void> {
@@ -31,6 +33,8 @@ export interface RelationOptions<T = void> {
   store?: () => T
   /** Hook fired when the target entity is removed. */
   onTargetRemoved?: (subject: Entity, target: Entity) => void
+  /** Engine to register against. Defaults to the ambient engine. */
+  engine?: Engine
 }
 
 export interface RelationDefinition<T = void> {
@@ -43,12 +47,10 @@ export interface RelationDefinition<T = void> {
   readonly $relation: bitecs.Relation<T>
 }
 
-const relationByRef = new WeakMap<bitecs.Relation<unknown>, RelationDefinition<unknown>>()
-const relationByName = new Map<string, RelationDefinition<unknown>>()
-
 export const defineRelation = <T = void>(options: RelationOptions<T>): RelationDefinition<T> => {
+  const engine = options.engine ?? getDefaultEngine()
   const { name, sync = true, exclusive = false, autoRemoveSubject = false, store, onTargetRemoved } = options
-  const existing = relationByName.get(name)
+  const existing = engine.relations.get(name)
   if (existing) return existing as RelationDefinition<T>
   const $relation = bitecs.createRelation<T>({
     exclusive,
@@ -63,40 +65,26 @@ export const defineRelation = <T = void>(options: RelationOptions<T>): RelationD
     autoRemoveSubject,
     $relation
   }
-  relationByRef.set($relation as bitecs.Relation<unknown>, def as RelationDefinition<unknown>)
-  relationByName.set(name, def as RelationDefinition<unknown>)
+  engine.relationsByRef.set($relation as bitecs.Relation<unknown>, def as RelationDefinition<unknown>)
+  engine.relations.set(name, def as RelationDefinition<unknown>)
   return def
 }
 
-export const getRelationDefinition = (relation: bitecs.Relation<unknown>): RelationDefinition<unknown> | undefined =>
-  relationByRef.get(relation)
+export const getRelationDefinition = (
+  worldOrEngine: World | Engine,
+  relation: bitecs.Relation<unknown>
+): RelationDefinition<unknown> | undefined => {
+  const engine = 'bitECS' in worldOrEngine ? worldOrEngine : worldOrEngine.engine
+  return engine.relationsByRef.get(relation)
+}
 
-export const getRelationByName = (name: string): RelationDefinition<unknown> | undefined => relationByName.get(name)
+export const getRelationByName = (name: string, engine?: Engine): RelationDefinition<unknown> | undefined =>
+  (engine ?? getDefaultEngine()).relations.get(name)
 
 // ── add / remove pair ────────────────────────────────────────────────────────-
 
 export interface RelationMutationOptions {
   origin?: Origin
-}
-
-// Tier 3 mutation pipeline registers a hook so relations are pipeline-resolvable.
-const relationRegisterHooks: Array<(world: World, relation: RelationDefinition<unknown>) => void> = []
-export const registerRelationRegisterHook = (
-  hook: (world: World, relation: RelationDefinition<unknown>) => void
-): void => {
-  relationRegisterHooks.push(hook)
-}
-
-const seenRelations = new WeakMap<World, Set<RelationDefinition<unknown>>>()
-const ensureRelationRegistered = (world: World, relation: RelationDefinition<unknown>): void => {
-  let set = seenRelations.get(world)
-  if (!set) {
-    set = new Set()
-    seenRelations.set(world, set)
-  }
-  if (set.has(relation)) return
-  set.add(relation)
-  for (const hook of relationRegisterHooks) hook(world, relation)
 }
 
 export const addRelation = <T>(
@@ -106,9 +94,8 @@ export const addRelation = <T>(
   target: Entity,
   options: RelationMutationOptions = {}
 ): void => {
-  ensureRelationRegistered(world, relation as RelationDefinition<unknown>)
   const origin: Origin = options.origin ?? 'local'
-  bitecs.addComponent(world, subject, relation.$relation(target))
+  bitecs.addComponent(world.engine.bitECS, subject, relation.$relation(target))
   if (origin === 'local' && relation.sync) {
     world.authoredQueue.push({
       entity: subject,
@@ -136,7 +123,7 @@ export const removeRelation = <T>(
   options: RelationMutationOptions = {}
 ): void => {
   const origin: Origin = options.origin ?? 'local'
-  bitecs.removeComponent(world, subject, relation.$relation(target))
+  bitecs.removeComponent(world.engine.bitECS, subject, relation.$relation(target))
   if (origin === 'local' && relation.sync) {
     world.authoredQueue.push({
       entity: subject,
@@ -157,14 +144,14 @@ export const removeRelation = <T>(
 }
 
 export const getRelationTargets = <T>(world: World, subject: Entity, relation: RelationDefinition<T>): Entity[] =>
-  bitecs.getRelationTargets(world, subject, relation.$relation)
+  bitecs.getRelationTargets(world.engine.bitECS, subject, relation.$relation)
 
 export const hasRelation = <T>(
   world: World,
   subject: Entity,
   relation: RelationDefinition<T>,
   target: Entity
-): boolean => bitecs.hasComponent(world, subject, relation.$relation(target))
+): boolean => bitecs.hasComponent(world.engine.bitECS, subject, relation.$relation(target))
 
 // ── bitECS re-exports (for advanced query composition) ────────────────────────
 

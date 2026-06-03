@@ -36,6 +36,7 @@ export type { Quat } from './maths/quat'
 export type { Quat2 } from './maths/quat2'
 
 // ── ECS ───────────────────────────────────────────────────────────────────────
+export * from './ecs/engine'
 export * from './ecs/world'
 export * from './ecs/entity'
 export * from './ecs/clock'
@@ -57,6 +58,8 @@ export * from './engine/prefab'
 
 // ── Network ───────────────────────────────────────────────────────────────────
 export * from './network/transport'
+export * from './network/network'
+export * from './network/peers'
 export * from './network/lifecycle/index'
 export * from './network/cursor'
 export * from './network/codec'

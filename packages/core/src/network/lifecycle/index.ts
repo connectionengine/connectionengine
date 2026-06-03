@@ -10,8 +10,8 @@
  * - `sweep.ts`    — TransientOnDisconnect cleanup on disconnect
  */
 
-export type { JoinWorldOptions, JoinResult } from './session'
-export { joinWorld, leaveWorld } from './session'
+export type { JoinNetworkOptions, JoinResult, JoinWorldOptions } from './session'
+export { joinNetwork, joinWorld, leaveWorld } from './session'
 export type { NetworkIdBinding, NetworkIdTable, RemoteBindingTable } from './network-id'
 export { createRemoteBindingTable, getNetworkIdTable } from './network-id'
 export type { BinaryChannel, BindControlMessage, ChannelOptions } from './binary-channel'

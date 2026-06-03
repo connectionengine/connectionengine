@@ -43,11 +43,11 @@ describe('User + Peer', () => {
     destroyWorld(world)
   })
 
-  it('asLocal sets world.network.localPeer', () => {
+  it('asLocal sets world.localPeer', () => {
     const world = mkWorld()
     const user = createUser(world, { did: did('u') })
     const peer = createPeer(world, { user, asLocal: true })
-    expect(world.network.localPeer).toBe(peer)
+    expect(world.localPeer).toBe(peer)
     destroyWorld(world)
   })
 

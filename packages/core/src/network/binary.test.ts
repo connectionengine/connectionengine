@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { createEntity } from '../ecs/entity'
-import { defineComponent, getSoA, setComponent } from '../ecs/component'
+import { defineComponent, setComponent } from '../ecs/component'
 import { createBinaryPipeline } from './binary'
 
 const Transform = defineComponent({
@@ -21,26 +21,19 @@ const Velocity = defineComponent({
 })
 
 const soaSet = (
-  world: ReturnType<typeof createWorld>,
-  component: { $soaFields: readonly string[]; id: string },
+  component: Record<string, unknown>,
   entity: number,
   field: string,
   channel: string,
   value: number
 ): void => {
-  const soa = getSoA(world, component as never) as Record<string, Record<string, Record<number, number>>>
-  soa[field][channel][entity] = value
+  const soa = component[field] as Record<string, Record<number, number>>
+  soa[channel][entity] = value
 }
 
-const soaGet = (
-  world: ReturnType<typeof createWorld>,
-  component: { id: string },
-  entity: number,
-  field: string,
-  channel: string
-): number => {
-  const soa = getSoA(world, component as never) as Record<string, Record<string, Record<number, number>>>
-  return soa[field][channel][entity]
+const soaGet = (component: Record<string, unknown>, entity: number, field: string, channel: string): number => {
+  const soa = component[field] as Record<string, Record<number, number>>
+  return soa[channel][entity]
 }
 
 describe('createBinaryPipeline — paired write + read', () => {
@@ -78,9 +71,9 @@ describe('createBinaryPipeline — paired write + read', () => {
     expect(header.timestamp).toBeCloseTo(1700000000)
     expect(header.entityCount).toBe(2)
 
-    expect(soaGet(target, Transform, t1, 'position', 'x')).toBeCloseTo(1)
-    expect(soaGet(target, Transform, t2, 'position', 'x')).toBeCloseTo(10)
-    expect(soaGet(target, Velocity, t1, 'linear', 'x')).toBeCloseTo(0.1)
+    expect(soaGet(Transform, t1, 'position', 'x')).toBeCloseTo(1)
+    expect(soaGet(Transform, t2, 'position', 'x')).toBeCloseTo(10)
+    expect(soaGet(Velocity, t1, 'linear', 'x')).toBeCloseTo(0.1)
 
     destroyWorld(source)
     destroyWorld(target)
@@ -99,7 +92,7 @@ describe('createBinaryPipeline — paired write + read', () => {
     const buf2 = pipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }])
     expect(buf2.byteLength).toBe(HEADER) // no entity payload — nothing changed
 
-    soaSet(world, Velocity, e, 'linear', 'x', 99)
+    soaSet(Velocity, e, 'linear', 'x', 99)
     const buf3 = pipe.write({ fromPeerIndex: 0, timestamp: 3 }, [{ networkId: 1, entity: e }])
     expect(buf3.byteLength).toBeGreaterThan(buf2.byteLength)
     expect(buf3.byteLength).toBeLessThan(buf1.byteLength) // delta, not full
@@ -154,7 +147,7 @@ describe('createBinaryPipeline — paired write + read', () => {
     // Resolver only knows network ID 200 (mapped to t); 100 is unknown.
     const header = targetPipe.read(buf, (nid: number) => (nid === 200 ? t : undefined))
     expect(header.entityCount).toBe(2)
-    expect(soaGet(target, Velocity, t, 'linear', 'x')).toBeCloseTo(9)
+    expect(soaGet(Velocity, t, 'linear', 'x')).toBeCloseTo(9)
     destroyWorld(source)
     destroyWorld(target)
   })
@@ -166,7 +159,7 @@ describe('createBinaryPipeline — paired write + read', () => {
     setComponent(world, e, Transform, { position: [1, 1, 1], rotation: [0, 0, 0, 1] })
 
     pipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }]) // populate shadow
-    soaSet(world, Transform, e, 'position', 'x', 99)
+    soaSet(Transform, e, 'position', 'x', 99)
 
     const HEADER = 4 + 8 + 4
     const ENTITY_PREFIX = 4 + 1 // networkId + entityMask

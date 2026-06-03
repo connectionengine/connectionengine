@@ -15,6 +15,7 @@ import {
   addRelation,
   createEntity,
   defineComponent,
+  ensureDefaultNetwork,
   HasConstraint,
   registerConstraintKind,
   setComponent,
@@ -92,5 +93,6 @@ export const validateLocalEvent = (
  * just wires it as the inbound governance hook.
  */
 export const installCapabilityValidator = (world: World, context: CapabilityValidationContext = {}): void => {
-  world.network.validateAuthored = (event) => coreValidateEvent(world, event, context).allowed
+  const network = ensureDefaultNetwork(world)
+  network.validateAuthored = (event: AuthoredEvent) => coreValidateEvent(world, event, context).allowed
 }

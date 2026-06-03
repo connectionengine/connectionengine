@@ -1,32 +1,64 @@
 ---
-description: The five-minute orientation. What lives in core, what lives above it, how the pieces talk.
+description: The five-minute orientation. Engine → Worlds → Networks; what lives where and why.
 ---
 
 # Architecture at a Glance
 
-Connection Engine is one core package and two adapter packages, organised by domain rather than by tier:
+Connection Engine has three nested scopes:
+
+```
+Engine (one per process — global runtime container)
+│
+├── bitECS storage (entity ID space, archetype tables, component storage)
+├── Component / relation / constraint type registries
+├── ComponentSchema registry (shareable replication metadata)
+├── PeerTransportRegistry (one physical transport per remote DID)
+│
+└── World (many per engine — logical scopes inside the engine)
+    │
+    ├── worldRoot (sentinel entity; anchors this world's BelongsTo subtree)
+    ├── localAgent (one identity per world)
+    ├── entities (Set of entities created in this world)
+    ├── nameCache / parentOf / uidOf (identity caches, scoped to this world)
+    ├── eventLog (canonical history for this world — networks are sync topology, not data space)
+    ├── time, clock, trace, mutation pipeline, system scheduler
+    │
+    └── Networks (many per world — sync topology)
+        ├── connections (peer connections on this network)
+        ├── publishAuthored / publishRuntime hooks
+        └── validateAuthored governance gate
+```
+
+Three rules govern the dependency graph:
+
+1. **`Engine` is global.** One per process (the ambient default), or many isolated via `createEngine()`. Registries live here.
+2. **`World` is many per engine.** A logical scope: its own root entity, its own identity, its own event log, its own networks.
+3. **`Network` is many per world.** Sync topology — different networks ship the same events through different connections. Spatial segmentation, voice / video, admin overlays.
+
+The on-disk layout follows:
 
 ```
 @connectionengine/core
 ├── schema/    — TypeBox + SoA tag kinds (Vec3, Quat, ArrayBuffer, …)
 ├── maths/     — Vec/Quat structure-of-arrays types
-├── ecs/       — World, Entity, Component, Relation, Observer, Identity, Query
+├── ecs/       — Engine, World, Entity, Component, Relation, Observer,
+│                Identity, Query  (foundation layer)
 ├── engine/    — System scheduler, Mutation pipeline, Prefab
-└── network/   — Transport, Lifecycle, Binary codec, Snapshot, Peer,
-                Authority, Governance, Compression
+└── network/   — Transport, Network helpers, Peers, Lifecycle, Binary codec,
+                 Snapshot, Peer / Authority / Governance, Compression
 ```
 
-Three rules govern the dependency graph, and oxlint enforces them mechanically:
+Layering enforced mechanically by oxlint:
 
-1. **`ecs/` is the foundation.** It must not import from `engine/` or `network/`.
-2. **`engine/` may depend on `ecs/`** but not on `network/`.
-3. **`network/` may depend on both**, since wire-format concerns sit on top.
+- **`ecs/`** is foundational. No imports from `engine/` or `network/`.
+- **`engine/`** may import `ecs/` + `schema/` + `maths/`. No `network/`.
+- **`network/`** may import any of them.
 
-That's why, for example, identity (`UIDComponent` + `BelongsTo`) lives in `ecs/` even though peers and DIDs feel network-ish — entity addressing is foundational to how the ECS works, not a wire concern. Conversely, snapshot serialisation lives in `network/snapshot.ts` because it's how state crosses a wire, even though it walks ECS structures.
+Identity (`UIDComponent` + `BelongsTo`) lives in `ecs/` because entity addressing is foundational, not a wire concern. The `Network` *type* lives in `ecs/world.ts` so `engine/mutation.ts` can reference it without crossing layers; the *construction helpers* (`addNetwork`, `ensureDefaultNetwork`) live in `network/network.ts`.
 
 ## The two adapter packages
 
-Both packages compose with core — they don't fork it.
+Both compose with core — they don't fork it.
 
 **`@connectionengine/local`** adds:
 - Ed25519 keypairs + `did:key` agents
@@ -39,11 +71,11 @@ Both packages compose with core — they don't fork it.
 - A transport that encodes authored events as AD4M Links inside a Perspective
 - Lifecycle plumbing that subscribes to Perspective changes for inbound
 
-A consumer chooses one (or none) at the edge. Core itself remains identity- and crypto-agnostic — its `Agent` interface is just `{ did: string; sign?: (bytes) => Uint8Array | Promise<Uint8Array> }`.
+A consumer picks one (or none) at the edge. Core itself stays identity- and crypto-agnostic — its `Agent` interface is just `{ did: string; sign?: (bytes) => Uint8Array | Promise<Uint8Array> }`.
 
 ## The two replication channels
 
-This is the single most important mental model in Connection Engine. Every component lands on exactly one **replication channel**, derived from its schema at definition time. The channel decides everything about how the component travels.
+The single most important mental model in Connection Engine. Every component lands on exactly one **replication channel**, derived from its schema at definition time. The channel decides everything about how the component travels.
 
 | `channel`     | Wire shape                       | Cadence       | Use for                                 |
 |---------------|----------------------------------|---------------|-----------------------------------------|
@@ -55,9 +87,15 @@ The channel is **derived from the schema** — there is no `mutationCategory` en
 
 Mixing SoA and non-SoA fields in one component throws at definition time. You split into two components — one continuous, one event — because they have different replication contracts. See [Components](/components) for the rationale.
 
+## Mutation routing across networks
+
+A write to a component on an entity goes to the world's event log (for `event` channel) or marks the entity dirty (for `continuous` channel). At flush time the mutation pipeline runs `routeNetworks(world, entity)` to decide which networks receive the mutation. Today this is a hardcoded broadcast-to-all; tomorrow, a spatial layer will replace it with proximity-based routing without touching `mutation.ts`.
+
+Same event log; many sync topologies on top.
+
 ## The session protocol
 
-Two peers connect over a `TransportEndpoint` (the abstraction over WebRTC / WebSocket / in-memory). The lifecycle layer wraps the endpoint as a `Connection` and runs a three-step session:
+Two peers connect over a `TransportEndpoint` (dual-channel: `events` for reliable control + authored envelopes, `stream` for binary `ArrayBuffer` packets). The lifecycle layer wraps the endpoint as a `Connection`, attaches it to a Network on the local World, and runs a three-step session:
 
 ```
 1. HELLO    — exchange { agentDID, knownEventCount, networkId bindings }
@@ -65,30 +103,31 @@ Two peers connect over a `TransportEndpoint` (the abstraction over WebRTC / WebS
 3. LIVE     — both sides forward authored envelopes + binary runtime packets
 ```
 
-Late join is **purely event-sourced**. There is no snapshot in the join protocol — the joiner brings itself up to date by replaying signed events. Each event has a composite signature, and `appendEventLog` is idempotent on that signature, so the same event delivered twice is dropped silently. Two peers reconnecting after a long disconnect just send each other their missing events.
+Late join is **purely event-sourced**. There is no snapshot in the join protocol — the joiner brings itself up to date by replaying signed events. Each event has a composite signature, and `appendEventLog` is idempotent on that signature, so the same event delivered twice is dropped silently.
 
 ## Identity is a path
 
-Entities have integer IDs internal to a world, but those IDs are meaningless across worlds. **Entity identity is a UID path** — a list of strings walking the `BelongsTo` chain from a root.
+Entities have integer IDs allocated from the engine's bitECS world — globally unique within an engine, but meaningless across processes. **Entity identity on the wire is a UID path** — a list of strings walking the `BelongsTo` chain from a world's `worldRoot`.
 
 ```
 ['scene:main', 'avatar:alice'] → entity 42 on world A
 ['scene:main', 'avatar:alice'] → entity 17 on world B
 ```
 
-The path is what travels the wire. Receivers look it up (or create the chain on demand) in their own world. This is also how the semantic graph view emerges — every path is a stable URI you can refer to from other events.
+The path is what travels. Receivers look it up (or create the chain on demand) in their own world. This is also how the semantic graph view emerges — every path is a stable URI other events can reference.
 
-For the high-frequency binary channel, paths would be too verbose, so there's a `NetworkIdTable` per connection — a compact `u32` mapping exchanged at handshake and updated lazily as new entities appear.
+For the `continuous` channel, paths would be too verbose, so each connection maintains a `NetworkIdTable` — a compact `u32` mapping exchanged at handshake and updated lazily as new entities appear.
 
 ## Where the code maps to the docs
 
-| You want to learn about…   | Read…                       | Look at…                                          |
-|----------------------------|-----------------------------|---------------------------------------------------|
-| Defining data shapes       | [Components](/components)       | `packages/core/src/ecs/component.ts`               |
-| Connecting entities        | [Relations](/relations)         | `packages/core/src/ecs/relation.ts`                |
-| Addressing entities        | [Entities & Identity](/entities-and-identity) | `packages/core/src/ecs/identity.ts` |
-| Driving frames             | [Worlds & Systems](/worlds-and-systems) | `packages/core/src/engine/system.ts`     |
-| How writes propagate       | [The Mutation Pipeline](/mutations) | `packages/core/src/engine/mutation.ts`     |
-| Peer-to-peer sessions      | [Peers & Sessions](/networking) | `packages/core/src/network/lifecycle/`              |
-| The binary wire            | [The Binary Wire](/binary-codec) | `packages/core/src/network/binary.ts`             |
-| Constraint enforcement     | [Governance](/governance)       | `packages/core/src/network/governance.ts`          |
+| You want to learn about…       | Read…                                            | Look at…                                                |
+|--------------------------------|--------------------------------------------------|---------------------------------------------------------|
+| The runtime container          | [Engine](/engine)                                | `packages/core/src/ecs/engine.ts`                       |
+| Logical scopes inside an engine | [Worlds & Systems](/worlds-and-systems)         | `packages/core/src/ecs/world.ts`                        |
+| Defining data shapes           | [Components](/components)                        | `packages/core/src/ecs/component.ts`                    |
+| Connecting entities            | [Relations](/relations)                          | `packages/core/src/ecs/relation.ts`                     |
+| Addressing entities            | [Entities & Identity](/entities-and-identity)    | `packages/core/src/ecs/identity.ts`                     |
+| How writes propagate           | [The Mutation Pipeline](/mutations)              | `packages/core/src/engine/mutation.ts`                  |
+| Peer-to-peer sessions          | [Peers & Sessions](/networking)                  | `packages/core/src/network/lifecycle/`                  |
+| The binary wire                | [The Binary Wire](/binary-codec)                 | `packages/core/src/network/binary.ts`                   |
+| Constraint enforcement         | [Governance](/governance)                        | `packages/core/src/network/governance.ts`               |

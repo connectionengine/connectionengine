@@ -90,9 +90,9 @@ export const createBinaryChannel = (world: World, connection: Connection, option
   const simRate = world.fixedTimeStep > 0 ? 1 / world.fixedTimeStep : 60
   for (const component of components) {
     const cfg = resolveRuntimeConfig(options.configs ?? [], component, simRate)
-    state.resolvedConfig.set(component.id, cfg)
-    state.fullSyncCountdown.set(component.id, cfg.fullSyncInterval)
-    state.publishCountdown.set(component.id, 0)
+    state.resolvedConfig.set(component.$id, cfg)
+    state.fullSyncCountdown.set(component.$id, cfg.fullSyncInterval)
+    state.publishCountdown.set(component.$id, 0)
   }
 
   /**

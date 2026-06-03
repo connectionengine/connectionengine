@@ -10,8 +10,7 @@ describe('World', () => {
     expect(world.fixedTimeStep).toBeCloseTo(1 / 60)
     expect(world.deltaSeconds).toBe(0)
     expect(world.accumulator).toBe(0)
-    expect(world.network.connections.size).toBe(0)
-    expect(world.network.schemas.size).toBe(0)
+    expect(world.networks.size).toBe(0)
     expect(world.eventLog).toEqual([])
     expect(world.authoredQueue).toEqual([])
     expect(world.runtimeDirty.size).toBe(0)
@@ -40,11 +39,10 @@ describe('World', () => {
     destroyWorld(b)
   })
 
-  it('destroyWorld is idempotent and clears bindings', () => {
+  it('destroyWorld is idempotent and clears networks', () => {
     const world = createWorld({ agent: createAnonAgent() })
-    world.network.schemas.set('X', { id: 'X', jsonSchema: {}, shaclShape: {}, channel: 'event' })
     destroyWorld(world)
-    expect(world.network.schemas.size).toBe(0)
+    expect(world.networks.size).toBe(0)
     expect(Worlds.has(world)).toBe(false)
     // calling again is a noop
     destroyWorld(world)

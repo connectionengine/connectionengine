@@ -36,7 +36,7 @@
 
 import type { TypedArray } from '../maths/common'
 import type { ComponentDefinition } from '../ecs/component'
-import { getSoA, hasComponent, setComponent } from '../ecs/component'
+import { hasComponent, setComponent } from '../ecs/component'
 import type { World } from '../ecs/world'
 import {
   type ViewCursor,
@@ -105,7 +105,6 @@ const flattenProps = (
   const key = cacheKey(compressionForComponent)
   const cached = perComponent.get(key)
   if (cached) return cached
-  const soa = getSoA(world, component) as Record<string, unknown>
   const out: Prop[] = []
   const append = (node: unknown): void => {
     if (node === null || typeof node !== 'object') return
@@ -120,9 +119,8 @@ const flattenProps = (
       append(child)
     }
   }
-  for (const fieldName of Object.keys(soa)) {
-    if (fieldName.startsWith('_')) continue
-    const field = soa[fieldName]
+  for (const fieldName of component.$soaFields) {
+    const field = component[fieldName]
     const spec = compressionForComponent?.[fieldName]
     if (spec && isVec3SoA(field)) {
       out.push({
@@ -346,7 +344,7 @@ export const createBinaryPipeline = (
     const writeEntityMask = spaceFor(entityMaskWidth)(view)
     let mask = 0
     for (let i = 0; i < components.length; i++) {
-      const componentCompression = compression[components[i].id]
+      const componentCompression = compression[components[i].$id]
       if (writeComponent(world, components[i], view, entry.entity, forceFullSync, componentCompression)) {
         mask |= 1 << i
       }
@@ -365,7 +363,7 @@ export const createBinaryPipeline = (
     const entity = resolveEntity(networkId)
     for (let i = 0; i < components.length; i++) {
       if (!checkBitflag(entityMask, i)) continue
-      readComponent(world, components[i], view, entity ?? 0, compression[components[i].id])
+      readComponent(world, components[i], view, entity ?? 0, compression[components[i].$id])
     }
   }
 

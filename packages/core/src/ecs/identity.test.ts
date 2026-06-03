@@ -18,7 +18,7 @@ describe('Identity — UID + BelongsTo', () => {
     const world = createWorld({ agent: createAnonAgent() })
     const scene = createNamedEntity(world, 'scene:main')
     expect(getUID(world, scene)).toBe('scene:main')
-    expect(getEntityByUID(world, 0, 'scene:main')).toBe(scene)
+    expect(getEntityByUID(world, world.worldRoot, 'scene:main')).toBe(scene)
     expect(hasComponent(world, scene, UIDComponent)).toBe(true)
     destroyWorld(world)
   })

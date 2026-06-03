@@ -1,20 +1,22 @@
 /**
- * Pre-wire two worlds over an in-memory `TransportEndpoint` pair without going
- * through the formal `joinWorld` handshake.
+ * Pre-wire two worlds over an in-memory `TransportEndpoint` pair without
+ * going through the formal `joinNetwork` handshake.
  *
  * Authored envelopes fan out via `installFanout`. If `runtimeComponents` are
  * supplied, a `BinaryChannel` is attached to each Connection so runtime SoA
- * deltas flow over a per-peer binary pipeline. Without `runtimeComponents`,
- * only authored replication happens.
+ * deltas flow over a per-peer binary pipeline.
  *
- * Use this when you want envelope-level integration tests; use `joinWorld`
+ * Use this when you want envelope-level integration tests; use `joinNetwork`
  * for the production-shaped late-join + event-log replay path.
+ *
+ * The connection joins each side's `'default'` network (auto-created).
  */
 
 import type { AuthoredEvent, Connection, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
 import { applyAuthoredEnvelope } from '../../engine/mutation'
 import { createMemoryTransport, type RuntimeTransportConfig, type TransportEndpoint } from '../transport'
+import { ensureDefaultNetwork, type Network } from '../network'
 import { createBinaryChannel, isBindControl, type BindControlMessage } from './binary-channel'
 import { ensureChannel, installFanout, rebroadcastAuthored, setConnectionChannel } from './fanout'
 import { sweepDisconnectedPeer } from './sweep'
@@ -37,6 +39,7 @@ const isAuthoredEnvelope = (payload: unknown): payload is { fromPeer: string; ev
 
 const wireSide = (
   world: World,
+  network: Network,
   remoteDID: string,
   endpoint: TransportEndpoint,
   options: ConnectInMemoryOptions
@@ -48,7 +51,7 @@ const wireSide = (
     stream: endpoint.stream,
     onClose: (h) => endpoint.onClose(h),
     close: () => {
-      world.network.connections.delete(connection)
+      network.connections.delete(connection)
       endpoint.close()
     }
   }
@@ -67,7 +70,7 @@ const wireSide = (
       return
     }
     if (isAuthoredEnvelope(payload)) {
-      applyAuthoredEnvelope(world, payload)
+      applyAuthoredEnvelope(world, payload, network)
       rebroadcastAuthored(world, connection, payload)
       return
     }
@@ -77,9 +80,9 @@ const wireSide = (
   })
   endpoint.onClose(() => {
     sweepDisconnectedPeer(world, connection)
-    world.network.connections.delete(connection)
+    network.connections.delete(connection)
   })
-  world.network.connections.add(connection)
+  network.connections.add(connection)
   return connection
 }
 
@@ -88,16 +91,18 @@ export const connectInMemory = (
   worldB: World,
   options: ConnectInMemoryOptions = {}
 ): MemoryConnectionPair => {
+  const networkA = ensureDefaultNetwork(worldA)
+  const networkB = ensureDefaultNetwork(worldB)
   if (options.validate) {
     const v = options.validate
-    if (!worldA.network.validateAuthored) worldA.network.validateAuthored = (e) => v(worldA, e)
-    if (!worldB.network.validateAuthored) worldB.network.validateAuthored = (e) => v(worldB, e)
+    if (!networkA.validateAuthored) networkA.validateAuthored = (e) => v(worldA, e)
+    if (!networkB.validateAuthored) networkB.validateAuthored = (e) => v(worldB, e)
   }
-  installFanout(worldA)
-  installFanout(worldB)
+  installFanout(worldA, networkA)
+  installFanout(worldB, networkB)
   const transport = createMemoryTransport({ latencyMs: options.latencyMs })
-  const a = wireSide(worldA, worldB.network.localAgent.did, transport.a, options)
-  const b = wireSide(worldB, worldA.network.localAgent.did, transport.b, options)
+  const a = wireSide(worldA, networkA, worldB.localAgent.did, transport.a, options)
+  const b = wireSide(worldB, networkB, worldA.localAgent.did, transport.b, options)
   return {
     a,
     b,

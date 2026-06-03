@@ -30,7 +30,7 @@ export const definePrefab = (name: string, options: DefinePrefabOptions): Prefab
   // A prefab is a composition — its constituent components each carry their
   // own channel. We surface the broadest channel for SHACL metadata only:
   // continuous > event > local.
-  const channels = new Set(options.components.map((c) => c.channel))
+  const channels = new Set(options.components.map((c) => c.$channel))
   const channel: ComponentSchema['channel'] = channels.has('continuous')
     ? 'continuous'
     : channels.has('event')
@@ -40,13 +40,13 @@ export const definePrefab = (name: string, options: DefinePrefabOptions): Prefab
     id: `prefab:${name}`,
     jsonSchema: {
       type: 'object',
-      properties: Object.fromEntries(options.components.map((c) => [c.id, c.componentSchema.jsonSchema]))
+      properties: Object.fromEntries(options.components.map((c) => [c.$id, c.$componentSchema.jsonSchema]))
     },
     shaclShape: {
       '@id': `https://connectionengine.dev/prefabs#${name}`,
       '@type': 'sh:NodeShape',
       targetClass: `prefab:${name}`,
-      components: options.components.map((c) => c.componentSchema.shaclShape)
+      components: options.components.map((c) => c.$componentSchema.shaclShape)
     },
     channel
   }
@@ -69,8 +69,8 @@ export const instantiatePrefab = (world: World, prefab: PrefabDefinition, option
   const entity = createEntity(world)
   if (options.uid !== undefined) setUID(world, entity, options.uid, { parent: options.parent })
   for (const component of prefab.components) {
-    const defaults = prefab.defaults[component.id] ?? {}
-    const overrides = options.overrides?.[component.id] ?? {}
+    const defaults = prefab.defaults[component.$id] ?? {}
+    const overrides = options.overrides?.[component.$id] ?? {}
     setComponent(world, entity, component, { ...defaults, ...overrides } as Record<string, unknown>)
   }
   return entity

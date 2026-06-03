@@ -96,7 +96,7 @@ export const createRemoteBindingTable = (): RemoteBindingTable => {
       if (!path) return undefined
       // Walk path through the world's identity cache. We do NOT auto-create —
       // the entity must exist (typically established via prior authored event).
-      let parent = 0 as Entity
+      let parent: Entity = world.worldRoot
       let cursor: Entity | undefined = undefined
       for (const uid of path) {
         cursor = world.nameCache.get(parent)?.get(uid)

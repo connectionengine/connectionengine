@@ -73,7 +73,7 @@ describe('joinWorld — handshake + event-log replay', () => {
     expect(joiner.eventLog.length).toBe(hostLogLen)
 
     // State is convergent: every named entity from host exists on joiner with same data
-    const joinerScene = getEntityByUID(joiner, 0, 'scene:replay')
+    const joinerScene = getEntityByUID(joiner, joiner.worldRoot, 'scene:replay')
     expect(joinerScene).toBeDefined()
     for (const name of ['a', 'b', 'c']) {
       const je = getEntityByUID(joiner, joinerScene!, name)
@@ -130,12 +130,12 @@ describe('joinWorld — handshake + event-log replay', () => {
     // After join, host updates state; joiner should pick it up via live stream
     setComponent(host, e, Health, { current: 99 })
     // Manually invoke publishAuthored by emulating flush — the lifecycle wires it
-    // (joinWorld calls installLifecycleFanout)
-    host.network.publishAuthored?.({
-      fromPeer: host.network.localAgent.did,
+    // (joinWorld calls installFanout on the default network)
+    host.networks.get('default')?.publishAuthored?.({
+      fromPeer: host.localAgent.did,
       events: [
         {
-          author: host.network.localAgent.did,
+          author: host.localAgent.did,
           timestamp: host.clock.now(),
           op: 'set',
           predicate: 'LC.Health',
@@ -146,7 +146,7 @@ describe('joinWorld — handshake + event-log replay', () => {
     })
     await flushAsync()
 
-    const jScene = getEntityByUID(joiner, 0, 'scene:live')!
+    const jScene = getEntityByUID(joiner, joiner.worldRoot, 'scene:live')!
     const jThing = getEntityByUID(joiner, jScene, 'thing')!
     expect(getComponent(joiner, jThing, Health)?.current).toBe(99)
 
@@ -162,12 +162,12 @@ describe('leaveWorld — graceful disconnect + TransientOnDisconnect cleanup', (
     const joiner = createWorld({ agent: createAnonAgent('cleanup-joiner') })
 
     // Joiner registers a user + peer with its own DID
-    const joinerUser = createUser(joiner, { did: joiner.network.localAgent.did, uid: 'user:joiner' })
+    const joinerUser = createUser(joiner, { did: joiner.localAgent.did, uid: 'user:joiner' })
     createPeer(joiner, { user: joinerUser, peerId: 'p1', uid: 'peer:joiner-p1', asLocal: true })
 
     // Host also has a record of the joiner user (replicated via authored events
     // in real life; here we set up directly for the test)
-    const hostJoinerUser = createUser(host, { did: joiner.network.localAgent.did, uid: 'user:joiner' })
+    const hostJoinerUser = createUser(host, { did: joiner.localAgent.did, uid: 'user:joiner' })
 
     // Host creates an avatar OWNED BY the joiner user, tagged TransientOnDisconnect
     const avatar = createEntity(host)
@@ -186,7 +186,7 @@ describe('leaveWorld — graceful disconnect + TransientOnDisconnect cleanup', (
     expect(hasComponent(host, avatar, TransientOnDisconnect)).toBe(true)
 
     // Joiner leaves
-    await leaveWorld(joiner, joiner.network.connections.values().next().value!)
+    await leaveWorld(joiner, joiner.networks.get('default')!.connections.values().next().value!)
     await flushAsync()
 
     // Host received the leave signal → swept the joiner's transient entities
@@ -204,8 +204,8 @@ describe('leaveWorld — graceful disconnect + TransientOnDisconnect cleanup', (
 
     // Force agent DIDs to match (same user, two devices)
     const userDID = 'did:test:multi-user'
-    ;(joinerA.network.localAgent as { did: string }).did = userDID
-    ;(joinerB.network.localAgent as { did: string }).did = userDID
+    ;(joinerA.localAgent as { did: string }).did = userDID
+    ;(joinerB.localAgent as { did: string }).did = userDID
 
     // Host knows the user + the avatar
     const user = createUser(host, { did: userDID, uid: 'user:multi' })
@@ -220,14 +220,14 @@ describe('leaveWorld — graceful disconnect + TransientOnDisconnect cleanup', (
     await Promise.all([joinWorld(host, { endpoint: link2.a }), joinWorld(joinerB, { endpoint: link2.b })])
 
     // Joiner A leaves
-    await leaveWorld(joinerA, joinerA.network.connections.values().next().value!)
+    await leaveWorld(joinerA, joinerA.networks.get('default')!.connections.values().next().value!)
     await flushAsync()
 
     // Avatar should SURVIVE because joiner B still connected for the same user
     expect(hasComponent(host, avatar, TransientOnDisconnect)).toBe(true)
 
     // Now joiner B leaves too
-    await leaveWorld(joinerB, joinerB.network.connections.values().next().value!)
+    await leaveWorld(joinerB, joinerB.networks.get('default')!.connections.values().next().value!)
     await flushAsync()
 
     // Now the avatar is swept

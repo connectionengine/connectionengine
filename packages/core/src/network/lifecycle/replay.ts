@@ -7,6 +7,7 @@
 
 import type { AuthoredEvent, World } from '../../ecs/world'
 import type { TransportEndpoint } from '../transport'
+import type { Network } from '../network'
 import { applyAuthoredEnvelope } from '../../engine/mutation'
 
 export interface ReplayChunkMessage {
@@ -39,8 +40,13 @@ export const streamEventLog = (
 }
 
 /** Apply one replay chunk to the world; returns how many events were newly applied. */
-export const applyReplayChunk = (world: World, fromPeer: string, events: readonly AuthoredEvent[]): number => {
+export const applyReplayChunk = (
+  world: World,
+  fromPeer: string,
+  events: readonly AuthoredEvent[],
+  network?: Network
+): number => {
   const before = world.eventLog.length
-  applyAuthoredEnvelope(world, { fromPeer, events: events.slice() })
+  applyAuthoredEnvelope(world, { fromPeer, events: events.slice() }, network)
   return world.eventLog.length - before
 }

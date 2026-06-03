@@ -1,5 +1,5 @@
 /**
- * Session — joinWorld / leaveWorld orchestration over a TransportEndpoint.
+ * Session — joinNetwork / leaveNetwork orchestration over a TransportEndpoint.
  *
  * Two channels on every endpoint:
  *   - `events`   — control messages + authored envelopes (reliable, ordered)
@@ -8,24 +8,24 @@
  * Wire protocol over `events`:
  *
  *   1. HELLO   — exchange { agentDID, knownEventCount, bindings }
- *                  bindings = local NetworkIdTable snapshot, seeds the peer's
- *                  remote table so the first binary packet resolves cleanly.
- *   2. REPLAY  — host streams its event log from joiner's known cursor as
- *                chunks; joiner applies idempotently. Replay-end signals done.
+ *   2. REPLAY  — host streams its event log from joiner's known cursor.
  *   3. LIVE    — authored envelopes + bind controls. Authored is rebroadcast
- *                (mesh flood) to other connections.
+ *                (mesh flood) to every other connection on every network.
  *
  * Wire protocol over `stream`: binary packets from the per-connection
  * `BinaryChannel`, point-to-point.
  *
- * Disconnect → `sweepDisconnectedPeer` removes TransientOnDisconnect entities
- * owned by the leaving user if no other connection still represents them.
+ * The session is per-Network — a peer with both voice and gameplay channels
+ * has two distinct connections, one per network. The underlying physical
+ * transport may be shared (via `engine.peers.acquire`).
  */
 
 import type { AuthoredEnvelope, Connection, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
 import { applyAuthoredEnvelope, flushAuthored } from '../../engine/mutation'
 import type { RuntimeTransportConfig, TransportEndpoint } from '../transport'
+import type { Network } from '../network'
+import { ensureDefaultNetwork } from '../network'
 import { createBinaryChannel, isBindControl } from './binary-channel'
 import { getConnectionChannel, installFanout, rebroadcastAuthored, setConnectionChannel } from './fanout'
 import { getNetworkIdTable, type NetworkIdBinding } from './network-id'
@@ -54,10 +54,12 @@ const isControl = (payload: unknown): payload is ControlMessage =>
 const isAuthoredEnvelope = (payload: unknown): payload is AuthoredEnvelope =>
   !!payload && typeof payload === 'object' && Array.isArray((payload as { events?: unknown }).events)
 
-// ── joinWorld ────────────────────────────────────────────────────────────────-
+// ── joinNetwork / joinWorld ─────────────────────────────────────────────────-
 
-export interface JoinWorldOptions {
+export interface JoinNetworkOptions {
   endpoint: TransportEndpoint
+  /** Network to join over this endpoint. Defaults to the world's 'default' network (auto-created). */
+  network?: Network
   /** Replay remote event log on join. Default true. */
   replayEventLog?: boolean
   /** Cursor: skip events at or before this index in the remote log. Default 0. */
@@ -66,17 +68,17 @@ export interface JoinWorldOptions {
   replayChunkSize?: number
   /** Runtime components to wire for binary replication on this connection. */
   runtimeComponents?: readonly ComponentDefinition[]
-  /** Per-component transport config (rate + full-sync interval + interpolation). */
+  /** Per-component transport config. */
   runtimeConfigs?: RuntimeTransportConfig[]
 }
 
 export interface JoinResult {
   connection: Connection
+  network: Network
   remoteDID: string
   replayedEventCount: number
 }
 
-/** Promote a TransportEndpoint into a Connection with session-level metadata. */
 const wrapEndpoint = (endpoint: TransportEndpoint): Connection => ({
   peer: 0,
   remoteDID: 'did:unknown:pending',
@@ -87,20 +89,22 @@ const wrapEndpoint = (endpoint: TransportEndpoint): Connection => ({
 })
 
 /**
- * Bring the local world up to date with the remote peer over `endpoint`.
- * Resolves after the replay phase completes; live envelopes flow over the
- * same endpoint with no further setup.
+ * Bring the local world up to date with the remote peer over `endpoint`. The
+ * connection joins the specified `network` (default: the world's `'default'`
+ * network, auto-created on first call). Resolves after the replay phase
+ * completes; live envelopes flow over the same endpoint with no further
+ * setup.
  */
-export const joinWorld = async (world: World, options: JoinWorldOptions): Promise<JoinResult> => {
+export const joinNetwork = async (world: World, options: JoinNetworkOptions): Promise<JoinResult> => {
   const { endpoint } = options
+  const network = options.network ?? ensureDefaultNetwork(world)
   const wantReplay = options.replayEventLog !== false
   const chunkSize = options.replayChunkSize ?? 256
   const myKnownCount = options.knownEventCount ?? 0
 
-  installFanout(world)
+  installFanout(world, network)
 
   const connection = wrapEndpoint(endpoint)
-  // Build a binary channel for this connection (only if runtime components were specified).
   if (options.runtimeComponents && options.runtimeComponents.length > 0) {
     const channel = createBinaryChannel(world, connection, {
       components: options.runtimeComponents,
@@ -120,9 +124,7 @@ export const joinWorld = async (world: World, options: JoinWorldOptions): Promis
       switch (payload.type) {
         case 'hello': {
           connection.remoteDID = payload.agentDID
-          // Seed remote table with peer's bindings so their first binary packet resolves.
           getChannelOrNull(connection)?.registerBindings(payload.bindings)
-          // Drain pending authored writes so replay reflects state-of-the-moment.
           flushAuthored(world)
           if (wantReplay && payload.knownEventCount < world.eventLog.length) {
             streamEventLog(world, endpoint, payload.knownEventCount, chunkSize)
@@ -135,7 +137,7 @@ export const joinWorld = async (world: World, options: JoinWorldOptions): Promis
           break
         }
         case 'replay-chunk':
-          replayedEventCount += applyReplayChunk(world, connection.remoteDID, payload.events)
+          replayedEventCount += applyReplayChunk(world, connection.remoteDID, payload.events, network)
           break
         case 'replay-end':
           resolveReplay()
@@ -153,7 +155,7 @@ export const joinWorld = async (world: World, options: JoinWorldOptions): Promis
     }
     if (isAuthoredEnvelope(payload)) {
       const envelope = payload
-      applyAuthoredEnvelope(world, envelope)
+      applyAuthoredEnvelope(world, envelope, network)
       rebroadcastAuthored(world, connection, envelope)
       return
     }
@@ -166,32 +168,35 @@ export const joinWorld = async (world: World, options: JoinWorldOptions): Promis
 
   endpoint.onClose(() => {
     sweepDisconnectedPeer(world, connection)
-    world.network.connections.delete(connection)
+    network.connections.delete(connection)
   })
 
-  world.network.connections.add(connection)
+  network.connections.add(connection)
 
-  // Send our hello, including current bindings so peer can decode our first packet immediately.
   const localBindings = options.runtimeComponents ? getNetworkIdTable(world).bindings() : []
   endpoint.events.send({
     type: 'hello',
-    agentDID: world.network.localAgent.did,
+    agentDID: world.localAgent.did,
     knownEventCount: myKnownCount,
     bindings: localBindings
   } satisfies HelloMessage)
 
   if (wantReplay) await replayPromise
 
-  return { connection, remoteDID: connection.remoteDID, replayedEventCount }
+  return { connection, network, remoteDID: connection.remoteDID, replayedEventCount }
 }
 
+/** Back-compat alias — `joinWorld` is `joinNetwork` over the default network. */
+export const joinWorld = joinNetwork
+export type JoinWorldOptions = JoinNetworkOptions
+
 /**
- * Leave a world: send a graceful-leave signal to the peer, close the endpoint,
- * run the deep disconnect cleanup locally.
+ * Leave a network: send a graceful-leave signal to the peer, close the
+ * endpoint, run disconnect cleanup locally.
  */
 export const leaveWorld = async (world: World, connection: Connection): Promise<void> => {
   try {
-    connection.events.send({ type: 'leave', agentDID: world.network.localAgent.did } satisfies LeaveMessage)
+    connection.events.send({ type: 'leave', agentDID: world.localAgent.did } satisfies LeaveMessage)
   } catch {
     // peer may already be gone
   }

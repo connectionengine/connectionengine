@@ -37,12 +37,13 @@ For ZCAP capability-based authorisation, install `@connectionengine/local` — i
 
 ## The validator gate
 
-You wire a validator into a world by setting `world.network.validateAuthored`:
+You wire a validator into a network by setting `network.validateAuthored`. Each network on a world has its own gate, so different networks can have different rules:
 
 ```ts
-import { validateEvent } from '@connectionengine/core'
+import { ensureDefaultNetwork, validateEvent } from '@connectionengine/core'
 
-world.network.validateAuthored = (event) =>
+const network = ensureDefaultNetwork(world)
+network.validateAuthored = (event) =>
   validateEvent(world, event, {
     hasCredential: (did, cred) => myOracle.holds(did, cred)
   }).allowed

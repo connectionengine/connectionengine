@@ -1,11 +1,28 @@
 /**
  * ComponentDefinition — schema-driven, SHACL-shape-bearing.
  *
- * One `defineComponent({ id, label, schema, local? })` produces:
- *   - SoA stores (typed arrays) for SoA-tagged fields (Vec3, Quat, Float32, ...)
- *   - per-entity instance store for value-typed fields (string, boolean, ...)
- *   - a ComponentSchema (jsonSchema + shaclShape + channel) registered with the
- *     world's schema map for replication metadata
+ * One `defineComponent({ id, label, schema, sync?, engine? })` produces:
+ *   - SoA stores (typed arrays) for SoA-tagged fields (Vec3, Quat, Float32, ...).
+ *     These are spread directly onto the ComponentDefinition object — so you
+ *     can write `Transform.position.x[eid]` for the bitECS-style hot path with
+ *     zero indirection.
+ *   - per-entity instance store for value-typed fields (string, boolean, ...).
+ *     Lives on the Engine, keyed by component+entity.
+ *   - a ComponentSchema (jsonSchema + shaclShape + channel) registered in the
+ *     engine's schema map for replication metadata.
+ *
+ * Storage shape:
+ *   - SoA arrays    → on the definition itself, single source of truth, shared
+ *                     across worlds attached to the same engine.
+ *   - Instance map  → on the engine, per (component, entity). Stable object
+ *                     reference per entity.
+ *
+ * `getComponent` returns:
+ *   - For event components:      the instance object directly (live data).
+ *   - For continuous components: a cached per-entity view bag whose fields are
+ *                                the SoA `.view(entity)` projections. Same
+ *                                object every call, no refresh, no allocation,
+ *                                always-live via getter/setter delegation.
  *
  * The replication channel is derived from the schema alone:
  *   - any SoA-tagged field  → `continuous` (binary delta path, no event log,
@@ -16,26 +33,27 @@
  *   - `sync: false`         → `local`      (never replicated)
  *
  * Schema-only is strict: mixing SoA and non-SoA fields in one component throws
- * at definition. Split it instead — a `Transform { position, rotation }` for
- * continuous, a separate `Label { text }` for events.
+ * at definition. Split it instead.
  *
- * setComponent / getComponent / removeComponent operate against bitECS storage
- * + our instance store, fire observers, and feed the mutation pipeline.
+ * All meta fields on the definition use a `$` prefix (`$id`, `$schema`,
+ * `$channel`, ...) so the bare keys are reserved for schema fields.
  */
 
 import * as bitecs from 'bitecs'
 import { Kind, type Static, type TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
-import { resizableArray } from '../maths/common'
+import { resizableArray, type ResizableArray, type TypedArrayConstructor } from '../maths/common'
 import type { ArrayBufferKind, SoAStoreKind } from '../schema/kinds'
 import type { World, Entity } from './world'
+import type { Engine } from './engine'
+import { getDefaultEngine } from './engine'
 import type { Origin } from './trace'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /**
  * Shareable replication metadata. One entry per component lives in
- * `world.network.schemas`, keyed by component id.
+ * `engine.schemas`, keyed by component id.
  */
 export interface ComponentSchema {
   readonly id: string
@@ -64,42 +82,94 @@ export interface ComponentOptions<T extends TSchema = TSchema> {
   id: string
   label?: string
   schema: T
-  /**
-   * Whether this component replicates across the network. Default `true`.
-   * Set to `false` to keep the component machine-local — no events, no
-   * binary packets, no SHACL `channel` other than `'local'`.
-   */
+  /** Whether this component replicates across the network. Default `true`. */
   sync?: boolean
+  /** Engine to register against. Defaults to the ambient engine. */
+  engine?: Engine
 }
 
-export interface ComponentDefinition<T extends TSchema = TSchema> {
-  readonly id: string
-  readonly label: string
+/**
+ * Meta fields on a ComponentDefinition. All prefixed `$` so the bare keys on
+ * the definition are reserved for SoA stores spread from the schema.
+ */
+export interface ComponentDefinitionMeta<T extends TSchema = TSchema> {
+  readonly $id: string
+  readonly $label: string
   readonly $schema: T
   /** Whether this component replicates. Defaults to `true` at definition time. */
-  readonly sync: boolean
-  /** Replication channel — derived from schema + `sync`. */
-  readonly channel: ReplicationChannel
+  readonly $sync: boolean
+  /** Replication channel — derived from schema + `$sync`. */
+  readonly $channel: ReplicationChannel
   /** True iff this component uses the binary delta path. */
-  readonly isBinary: boolean
-  readonly componentSchema: ComponentSchema
+  readonly $isBinary: boolean
+  readonly $componentSchema: ComponentSchema
   /** Default values per field, applied on first set. */
   readonly $defaults: Record<string, unknown>
   /** Internal: bitECS component ref for query/has/add. */
   readonly $ref: bitecs.ComponentRef
-  /** Internal: field names tagged as SoA — used by mutation pipeline + serializer. */
+  /** Internal: field names tagged as SoA. */
   readonly $soaFields: readonly string[]
   /** Internal: value-typed (instance store) field names. */
   readonly $valueFields: readonly string[]
-  /** Internal: factory for the per-world SoA stores (typed arrays + helpers). */
-  readonly $createSoA: () => Record<string, unknown>
 }
 
-/** Per-world storage for one component: SoA stores + per-entity instance values. */
-interface PerWorldStores {
-  soa: Record<string, unknown>
-  store: Record<Entity, Record<string, unknown>>
-}
+/**
+ * Map a single schema field to the SoA store type it would produce at runtime.
+ *   - SoAStoreKind<_, _, C>      → C (e.g. Vec3SoA<...>, QuatSoA<...>)
+ *   - ArrayBufferKind            → ResizableArray<TypedArrayConstructor>
+ *   - Anything else (value type) → never
+ */
+export type SoAStoreOf<P> =
+  P extends SoAStoreKind<TypedArrayConstructor, unknown, infer C>
+    ? C
+    : P extends ArrayBufferKind<unknown>
+      ? ResizableArray<TypedArrayConstructor>
+      : never
+
+/**
+ * Walk a component schema's `properties` and keep only the SoA-tagged fields,
+ * each typed as its concrete SoA store class. The intersection with a string
+ * index signature lets `ComponentDefinition<SpecificT>` flow up to the default
+ * `ComponentDefinition` (which uses `TSchema`) while still preserving narrow
+ * types when the schema is known.
+ */
+export type SoAStores<T extends TSchema> = T extends { properties: infer Props }
+  ? {
+      readonly [K in keyof Props as Props[K] extends TSchema
+        ? [SoAStoreOf<Props[K]>] extends [never]
+          ? never
+          : K
+        : never]: Props[K] extends TSchema ? SoAStoreOf<Props[K]> : never
+    } & Readonly<Record<string, unknown>>
+  : Readonly<Record<string, unknown>>
+
+/**
+ * A ComponentDefinition is the meta interface PLUS the SoA stores spread as
+ * direct properties on the same object. For `Transform { position: Vec3,
+ * rotation: Quat }`, `Transform.position` is a `Vec3SoA` — usable directly as
+ * `Transform.position.x[eid]` and `Transform.position.view(eid)`.
+ */
+export type ComponentDefinition<T extends TSchema = TSchema> = ComponentDefinitionMeta<T> & SoAStores<T>
+
+/**
+ * Per-field write shape. SoA-tagged fields accept either an ArrayLike (e.g.
+ * `[1, 2, 3]`, a typed array) or the view shape — `setComponent`'s value
+ * parameter widens to this so callers can pass plain arrays despite the
+ * canonical static type being the View.
+ */
+export type WriteValueOf<P> =
+  P extends SoAStoreKind<TypedArrayConstructor, infer S, unknown>
+    ? S | ArrayLike<number>
+    : P extends ArrayBufferKind<unknown>
+      ? number | ArrayLike<number>
+      : P extends TSchema
+        ? Static<P>
+        : never
+
+/** Write-side shape for `setComponent` value param — widened to accept arrays for SoA fields. */
+export type ComponentWriteShape<T extends TSchema> = T extends { properties: infer Props }
+  ? { [K in keyof Props]?: WriteValueOf<Props[K]> }
+  : Partial<Static<T>>
 
 // ── Schema walking ────────────────────────────────────────────────────────────
 
@@ -121,23 +191,21 @@ const classifyFields = (schema: TSchema): FieldClassification => {
   return { soaFields, valueFields }
 }
 
-const makeSoAStoreFactory = (schema: TSchema): (() => Record<string, unknown>) => {
-  return () => {
-    const stores: Record<string, unknown> = {}
-    if (schema.type !== 'object' || !schema.properties) return stores
-    for (const key of Object.keys(schema.properties)) {
-      const prop = (schema.properties as Record<string, TSchema>)[key]
-      const kind = prop[Kind]
-      if (kind === 'ArrayBuffer') {
-        const arrayKind = prop as unknown as ArrayBufferKind<unknown>
-        stores[key] = resizableArray(arrayKind.instanceOf)
-      } else if (kind === 'SoAStore') {
-        const storeKind = prop as unknown as SoAStoreKind<never, unknown, unknown>
-        stores[key] = new storeKind.construct(storeKind.instanceOf)
-      }
+const buildSoAStores = (schema: TSchema): Record<string, unknown> => {
+  const stores: Record<string, unknown> = {}
+  if (schema.type !== 'object' || !schema.properties) return stores
+  for (const key of Object.keys(schema.properties)) {
+    const prop = (schema.properties as Record<string, TSchema>)[key]
+    const kind = prop[Kind]
+    if (kind === 'ArrayBuffer') {
+      const arrayKind = prop as unknown as ArrayBufferKind<unknown>
+      stores[key] = resizableArray(arrayKind.instanceOf)
+    } else if (kind === 'SoAStore') {
+      const storeKind = prop as unknown as SoAStoreKind<never, unknown, unknown>
+      stores[key] = new storeKind.construct(storeKind.instanceOf)
     }
-    return stores
   }
+  return stores
 }
 
 const buildDefaults = (schema: TSchema): Record<string, unknown> => {
@@ -154,9 +222,6 @@ const buildDefaults = (schema: TSchema): Record<string, unknown> => {
 const SHACL_NS = 'https://connectionengine.dev/shacl#'
 
 const toShaclShape = (id: string, schema: TSchema, channel: ReplicationChannel): object => {
-  // Minimal SHACL shape — id maps to a NodeShape URI, fields become PropertyShapes.
-  // This is the metadata other peers receive to interpret incoming triples; a full
-  // SHACL engine isn't needed at runtime, validation is handled by governance + TypeBox.
   const properties: object[] = []
   if (schema.type === 'object' && schema.properties) {
     for (const [name, prop] of Object.entries(schema.properties as Record<string, TSchema>)) {
@@ -180,19 +245,13 @@ const toShaclShape = (id: string, schema: TSchema, channel: ReplicationChannel):
 
 // ── defineComponent ───────────────────────────────────────────────────────────
 
-const componentByRef = new WeakMap<bitecs.ComponentRef, ComponentDefinition>()
-/** Global id → definition registry. Components are global; multiple worlds share them. */
-const componentById = new Map<string, ComponentDefinition>()
-
 export const defineComponent = <T extends TSchema>(options: ComponentOptions<T>): ComponentDefinition<T> => {
+  const engine = options.engine ?? getDefaultEngine()
   const { id, label = id, schema, sync = true } = options
-  const existing = componentById.get(id)
+  const existing = engine.components.get(id)
   if (existing) return existing as ComponentDefinition<T>
   const { soaFields, valueFields } = classifyFields(schema)
 
-  // Strict: SoA fields and non-SoA fields are different replication channels.
-  // Mixing them in one component would silently drop the non-SoA fields on
-  // the binary wire — a footgun. Force the split at definition time.
   if (soaFields.length > 0 && valueFields.length > 0) {
     throw new Error(
       `defineComponent('${id}'): components cannot mix SoA-tagged fields (${soaFields.join(
@@ -204,113 +263,103 @@ export const defineComponent = <T extends TSchema>(options: ComponentOptions<T>)
   }
 
   const $defaults = buildDefaults(schema)
-  const $createSoA = makeSoAStoreFactory(schema)
   const isBinary = sync && soaFields.length > 0
   const channel: ReplicationChannel = !sync ? 'local' : isBinary ? 'continuous' : 'event'
 
-  // bitECS component ref — opaque marker object. We use a fresh object per
-  // definition so multiple components have distinct refs even when their
-  // schemas have no fields.
   const $ref: bitecs.ComponentRef = { __ce: id } as bitecs.ComponentRef
 
-  const componentSchema: ComponentSchema = {
+  const $componentSchema: ComponentSchema = {
     id,
     jsonSchema: schema as object,
     shaclShape: toShaclShape(id, schema, channel),
     channel
   }
 
-  const definition: ComponentDefinition<T> = {
-    id,
-    label,
+  const soaStores = buildSoAStores(schema)
+
+  const meta: ComponentDefinitionMeta<T> = {
+    $id: id,
+    $label: label,
     $schema: schema,
-    sync,
-    channel,
-    isBinary,
-    componentSchema,
+    $sync: sync,
+    $channel: channel,
+    $isBinary: isBinary,
+    $componentSchema,
     $defaults,
     $ref,
     $soaFields: soaFields,
-    $valueFields: valueFields,
-    $createSoA
+    $valueFields: valueFields
   }
-  componentByRef.set($ref, definition as ComponentDefinition)
-  componentById.set(id, definition as ComponentDefinition)
+
+  const definition = { ...meta, ...soaStores } as ComponentDefinition<T>
+
+  engine.componentsByRef.set($ref, definition as ComponentDefinition)
+  engine.components.set(id, definition as ComponentDefinition)
+  engine.schemas.set(id, $componentSchema)
   return definition
 }
 
-/** Resolve a ComponentDefinition from its bitECS ref. */
-export const getComponentDefinition = (ref: bitecs.ComponentRef): ComponentDefinition | undefined =>
-  componentByRef.get(ref)
+/** Resolve a ComponentDefinition from its bitECS ref. Uses the world's engine. */
+export const getComponentDefinition = (
+  worldOrEngine: World | Engine,
+  ref: bitecs.ComponentRef
+): ComponentDefinition | undefined => engineOf(worldOrEngine).componentsByRef.get(ref)
 
-/** Resolve a ComponentDefinition by its id (across worlds). */
-export const getComponentById = (id: string): ComponentDefinition | undefined => componentById.get(id)
+/** Resolve a ComponentDefinition by its id. Uses the world's engine if given, else the ambient engine. */
+export const getComponentById = (id: string, engine?: Engine): ComponentDefinition | undefined =>
+  (engine ?? getDefaultEngine()).components.get(id)
 
-/** Iterate every globally-defined ComponentDefinition (shared across worlds). */
-export const allComponents = (): ComponentDefinition[] => Array.from(componentById.values())
+/** Iterate every ComponentDefinition defined on the given engine (default: ambient). */
+export const allComponents = (engine?: Engine): ComponentDefinition[] =>
+  Array.from((engine ?? getDefaultEngine()).components.values())
 
-// ── Per-world storage ─────────────────────────────────────────────────────────
-//
-// Storage (SoA typed arrays + per-entity instance maps) MUST be per-world. Two
-// worlds in the same process use the same global ComponentDefinition but their
-// entity ids overlap; collapsing storage onto the definition would corrupt
-// state across worlds. We lazily materialise stores per-world on first use.
+const engineOf = (worldOrEngine: World | Engine): Engine =>
+  'bitECS' in worldOrEngine ? worldOrEngine : worldOrEngine.engine
 
-const worldStores = new WeakMap<World, WeakMap<ComponentDefinition, PerWorldStores>>()
+// ── Engine-level instance + view storage ──────────────────────────────────────
 
-const getStores = (world: World, component: ComponentDefinition): PerWorldStores => {
-  let perWorld = worldStores.get(world)
-  if (!perWorld) {
-    perWorld = new WeakMap()
-    worldStores.set(world, perWorld)
-  }
-  let stores = perWorld.get(component)
+/**
+ * Per-component engine-level storage. SoA arrays live on the definition; this
+ * holds only what's per-(component, entity) but *not* per-axis:
+ *
+ *   - `store` — instance map for value-typed components (event channel).
+ *   - `views` — cached per-entity bag for continuous components. Each entity's
+ *               bag is allocated once and its fields are the SoA `.view(entity)`
+ *               projections (themselves cached). Returned by `getComponent`.
+ */
+export interface PerComponentStores {
+  store: Record<Entity, Record<string, unknown>>
+  views: Record<Entity, Record<string, unknown>>
+}
+
+const getStores = (engine: Engine, component: ComponentDefinition): PerComponentStores => {
+  let stores = engine.componentStores.get(component)
   if (!stores) {
-    stores = { soa: component.$createSoA(), store: {} }
-    perWorld.set(component, stores)
+    stores = { store: {}, views: {} }
+    engine.componentStores.set(component, stores)
   }
   return stores
 }
 
-const registeredWorldComponents = new WeakMap<World, Set<ComponentDefinition>>()
-
-const ensureRegistered = (world: World, component: ComponentDefinition): void => {
-  let set = registeredWorldComponents.get(world)
-  if (!set) {
-    set = new Set()
-    registeredWorldComponents.set(world, set)
-  }
-  if (set.has(component)) return
-  set.add(component)
-  // Ensure stores exist (so callers iterating world's registered components
-  // can rely on getStores returning real storage).
-  getStores(world, component)
-  world.network.schemas.set(component.id, component.componentSchema)
-  for (const hook of componentRegisterHooks) hook(world, component)
-}
-
-const componentRegisterHooks: Array<(world: World, component: ComponentDefinition) => void> = []
-export const registerComponentRegisterHook = (hook: (world: World, component: ComponentDefinition) => void): void => {
-  componentRegisterHooks.push(hook)
-}
-
-/**
- * Public accessor — exposes a component's per-world SoA stores. Used by
- * snapshot serialisation, mutation pipeline runtime sampling, and any external
- * code that needs direct SoA reads (e.g. renderers).
- */
-export const getSoA = (world: World, component: ComponentDefinition): Record<string, unknown> =>
-  getStores(world, component).soa
-
-/** Public accessor — per-world per-entity instance map (value-typed fields). */
+/** Public accessor — engine-level per-entity instance map (value-typed fields). */
 export const getInstanceStore = (
   world: World,
   component: ComponentDefinition
-): Record<Entity, Record<string, unknown>> => getStores(world, component).store
+): Record<Entity, Record<string, unknown>> => getStores(world.engine, component).store
 
-/** Iterate every entity that currently has the component on this world (linear scan of instance map). */
-export const componentEntities = (world: World, component: ComponentDefinition): Entity[] =>
-  Object.keys(getStores(world, component).store).map((k) => Number(k))
+/**
+ * Iterate every entity in `world` that currently has the component. Filters the
+ * engine-level instance map by `world.entities` membership.
+ */
+export const componentEntities = (world: World, component: ComponentDefinition): Entity[] => {
+  const store = getStores(world.engine, component).store
+  const out: Entity[] = []
+  for (const key of Object.keys(store)) {
+    const e = Number(key)
+    if (world.entities.has(e)) out.push(e)
+  }
+  return out
+}
 
 // ── set / get / remove ────────────────────────────────────────────────────────
 
@@ -319,22 +368,21 @@ export interface SetComponentOptions {
   origin?: Origin
 }
 
-const writeSoA = (
-  soa: Record<string, unknown>,
-  component: ComponentDefinition,
-  entity: Entity,
-  value: Record<string, unknown>
-): void => {
+interface SoAStoreLike {
+  from?: (entity: number, data: ArrayLike<number>) => void
+  resize?: (n: number) => void
+}
+
+const writeSoA = (component: ComponentDefinition, entity: Entity, value: Record<string, unknown>): void => {
+  const stores = component as unknown as Record<string, SoAStoreLike | undefined>
   for (const field of component.$soaFields) {
     if (!(field in value)) continue
     const v = (value as Record<string, unknown>)[field]
-    const store = soa[field] as
-      | { from?: (entity: number, data: unknown) => void; resize?: (n: number) => void }
-      | undefined
+    const store = stores[field]
     if (!store) continue
     if (typeof store.resize === 'function') store.resize(entity + 1)
     if (typeof store.from === 'function') {
-      store.from(entity, v)
+      store.from(entity, v as ArrayLike<number>)
     } else if (Array.isArray(v) || ArrayBuffer.isView(v)) {
       ;(store as unknown as { [k: number]: number })[entity] =
         (v as unknown as ArrayLike<number>)[0] ?? (v as unknown as number)
@@ -344,64 +392,52 @@ const writeSoA = (
   }
 }
 
-const readSoA = (
-  soa: Record<string, unknown>,
-  component: ComponentDefinition,
-  entity: Entity,
-  into: Record<string, unknown>
-): void => {
-  for (const field of component.$soaFields) {
-    const store = soa[field] as { to?: (entity: number, out?: unknown) => unknown } | undefined
-    if (!store) continue
-    if (typeof store.to === 'function') {
-      into[field] = store.to(entity)
-    } else {
-      into[field] = (store as unknown as { [k: number]: number })[entity]
-    }
-  }
-}
-
 export const setComponent = <T extends TSchema>(
   world: World,
   entity: Entity,
   component: ComponentDefinition<T>,
-  value: Partial<Static<T>> = {} as Partial<Static<T>>,
+  value: ComponentWriteShape<T> = {} as ComponentWriteShape<T>,
   options: SetComponentOptions = {}
 ): void => {
-  ensureRegistered(world, component as ComponentDefinition)
-  const stores = getStores(world, component as ComponentDefinition)
+  const stores = getStores(world.engine, component as ComponentDefinition)
   const origin: Origin = options.origin ?? 'local'
-  const wasPresent = bitecs.hasComponent(world, entity, component.$ref)
+  const wasPresent = bitecs.hasComponent(world.engine.bitECS, entity, component.$ref)
 
   if (!wasPresent) {
-    bitecs.addComponent(world, entity, component.$ref)
+    bitecs.addComponent(world.engine.bitECS, entity, component.$ref)
     const merged: Record<string, unknown> = { ...component.$defaults }
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) merged[k] = v
     const initialised = Value.Default(component.$schema, merged) as Record<string, unknown>
-    const instance: Record<string, unknown> = {}
+    // Reuse any existing instance object so previously held references survive
+    // a remove + add cycle. Otherwise allocate once.
+    let instance = stores.store[entity]
+    if (!instance) {
+      instance = {}
+      stores.store[entity] = instance
+    } else {
+      for (const k of Object.keys(instance)) delete instance[k]
+    }
     for (const field of component.$valueFields) {
       if (field in initialised) instance[field] = initialised[field]
     }
-    stores.store[entity] = instance
-    writeSoA(stores.soa, component as ComponentDefinition, entity, initialised)
+    writeSoA(component as ComponentDefinition, entity, initialised)
   } else {
-    const instance = stores.store[entity] ?? {}
+    const instance = stores.store[entity] ?? (stores.store[entity] = {})
     for (const field of component.$valueFields) {
       if (field in (value as Record<string, unknown>)) {
         instance[field] = (value as Record<string, unknown>)[field]
       }
     }
-    stores.store[entity] = instance
-    writeSoA(stores.soa, component as ComponentDefinition, entity, value as Record<string, unknown>)
+    writeSoA(component as ComponentDefinition, entity, value as Record<string, unknown>)
   }
 
-  if (origin === 'local' && component.sync) {
-    if (component.isBinary) {
-      markRuntimeDirty(world, entity, component.id)
+  if (origin === 'local' && component.$sync) {
+    if (component.$isBinary) {
+      markRuntimeDirty(world, entity, component.$id)
     } else {
       world.authoredQueue.push({
         entity,
-        predicate: component.id,
+        predicate: component.$id,
         op: 'set',
         value: getComponent(world, entity, component),
         origin
@@ -413,25 +449,71 @@ export const setComponent = <T extends TSchema>(
     kind: 'component.set',
     ts: world.clock.now(),
     entity,
-    predicate: component.id,
+    predicate: component.$id,
     origin
   })
 }
 
+interface SoAViewSource {
+  view?: (entity: number) => unknown
+}
+
+/**
+ * Read the component value for `entity`. Returns a **stable reference** —
+ * calling `getComponent` repeatedly for the same (component, entity) returns
+ * the same JS object. Same for any SoA field inside it (Vec3, Quat, …): each
+ * is a getter-backed view that delegates straight to the SoA arrays, so values
+ * are always live without any refresh step.
+ *
+ * For event-channel components this IS the instance store (one allocation
+ * per entity, ever). For continuous-channel components this is a cached view
+ * bag whose fields are `SoA.view(entity)` projections (also cached). No
+ * allocation on the hot path.
+ *
+ * Mutating the returned object via the SoA-field accessors writes through to
+ * the underlying typed arrays. Mutating value-typed fields on the event
+ * instance does NOT flow through `setComponent` — those should be written via
+ * `setComponent` so the mutation pipeline picks them up.
+ */
 export const getComponent = <T extends TSchema>(
   world: World,
   entity: Entity,
   component: ComponentDefinition<T>
 ): Static<T> | undefined => {
-  if (!bitecs.hasComponent(world, entity, component.$ref)) return undefined
-  const stores = getStores(world, component as ComponentDefinition)
-  const result: Record<string, unknown> = { ...stores.store[entity] }
-  readSoA(stores.soa, component as ComponentDefinition, entity, result)
-  return result as Static<T>
+  if (!bitecs.hasComponent(world.engine.bitECS, entity, component.$ref)) return undefined
+  const def = component as ComponentDefinition
+  const stores = getStores(world.engine, def)
+  if (def.$soaFields.length === 0) {
+    // Event-channel component: instance store IS the live data.
+    return stores.store[entity] as Static<T>
+  }
+  let view = stores.views[entity]
+  if (!view) {
+    view = {}
+    const soaStores = def as unknown as Record<string, SoAViewSource | undefined>
+    for (const field of def.$soaFields) {
+      const soa = soaStores[field]
+      if (soa && typeof soa.view === 'function') {
+        view[field] = soa.view(entity)
+      } else if (soa) {
+        // Scalar SoA — expose a getter/setter that delegates to typed array index.
+        const arr = soa as unknown as { [k: number]: number }
+        Object.defineProperty(view, field, {
+          get: () => arr[entity],
+          set: (n: number) => {
+            arr[entity] = n
+          },
+          enumerable: true
+        })
+      }
+    }
+    stores.views[entity] = view
+  }
+  return view as Static<T>
 }
 
 export const hasComponent = (world: World, entity: Entity, component: ComponentDefinition): boolean =>
-  bitecs.hasComponent(world, entity, component.$ref)
+  bitecs.hasComponent(world.engine.bitECS, entity, component.$ref)
 
 export const removeComponent = <T extends TSchema>(
   world: World,
@@ -439,16 +521,17 @@ export const removeComponent = <T extends TSchema>(
   component: ComponentDefinition<T>,
   options: SetComponentOptions = {}
 ): void => {
-  if (!bitecs.hasComponent(world, entity, component.$ref)) return
-  const stores = getStores(world, component as ComponentDefinition)
+  if (!bitecs.hasComponent(world.engine.bitECS, entity, component.$ref)) return
+  const stores = getStores(world.engine, component as ComponentDefinition)
   const origin: Origin = options.origin ?? 'local'
-  bitecs.removeComponent(world, entity, component.$ref)
+  bitecs.removeComponent(world.engine.bitECS, entity, component.$ref)
   delete stores.store[entity]
-  if (component.isBinary) clearRuntimeDirty(world, entity, component.id)
-  if (origin === 'local' && component.sync && !component.isBinary) {
+  delete stores.views[entity]
+  if (component.$isBinary) clearRuntimeDirty(world, entity, component.$id)
+  if (origin === 'local' && component.$sync && !component.$isBinary) {
     world.authoredQueue.push({
       entity,
-      predicate: component.id,
+      predicate: component.$id,
       op: 'remove',
       value: null,
       origin
@@ -458,7 +541,7 @@ export const removeComponent = <T extends TSchema>(
     kind: 'component.remove',
     ts: world.clock.now(),
     entity,
-    predicate: component.id,
+    predicate: component.$id,
     origin
   })
 }

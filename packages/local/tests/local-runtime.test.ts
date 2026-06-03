@@ -76,7 +76,7 @@ describe('Local runtime — signed two-peer replication', () => {
       { world: worldB, clock: clockB }
     ])
 
-    const bScene = getEntityByUID(worldB, 0, 'scene:local')!
+    const bScene = getEntityByUID(worldB, worldB.worldRoot, 'scene:local')!
     const bAva = getEntityByUID(worldB, bScene, 'avatar:alice')!
     expect(getComponent(worldB, bAva, Health)).toEqual({ current: 77, max: 100 })
     // event log captured on both sides
@@ -120,9 +120,9 @@ describe('Local runtime — signed two-peer replication', () => {
 
   it('createLocalRuntime convenience wires agent + governance', () => {
     const { world, agent } = createLocalRuntime({ seed: 'convenience' })
-    expect(world.network.localAgent).toBe(agent)
-    // governance was installed (validateAuthored is set)
-    expect(world.network.validateAuthored).toBeDefined()
+    expect(world.localAgent).toBe(agent)
+    // governance was installed on the default network (validateAuthored is set)
+    expect(world.networks.get('default')?.validateAuthored).toBeDefined()
     destroyWorld(world)
   })
 })
@@ -162,7 +162,7 @@ describe('Local runtime — capability governance', () => {
     ])
 
     // Bob's world has the constraint + initial Health
-    const bScene = getEntityByUID(worldB, 0, 'scene:cap')!
+    const bScene = getEntityByUID(worldB, worldB.worldRoot, 'scene:cap')!
     const bAva = getEntityByUID(worldB, bScene, 'avatar')!
     expect(getComponent(worldB, bAva, Health)?.current).toBe(50)
 
@@ -186,25 +186,30 @@ describe('Local runtime — capability governance', () => {
 describe('Local runtime — direct envelope apply', () => {
   it('applyAuthoredEnvelope rejects events failing validateAuthored', () => {
     const { world } = createLocalRuntime({ seed: 'baseline' })
-    const evRejecter = world.network.validateAuthored
+    const network = world.networks.get('default')!
+    const evRejecter = network.validateAuthored
     // Install a deny-all gate for this test
-    world.network.validateAuthored = () => false
-    applyAuthoredEnvelope(world, {
-      fromPeer: 'did:test:other',
-      events: [
-        {
-          entityPath: ['x'],
-          predicate: 'L.Health',
-          op: 'set',
-          value: { current: 1 },
-          author: 'did:test:other',
-          timestamp: 0
-        }
-      ]
-    })
+    network.validateAuthored = () => false
+    applyAuthoredEnvelope(
+      world,
+      {
+        fromPeer: 'did:test:other',
+        events: [
+          {
+            entityPath: ['x'],
+            predicate: 'L.Health',
+            op: 'set',
+            value: { current: 1 },
+            author: 'did:test:other',
+            timestamp: 0
+          }
+        ]
+      },
+      network
+    )
     const rejects = world.trace.byKind('mutation.reject')
     expect(rejects.some((r) => r.detail?.reason === 'governance')).toBe(true)
-    world.network.validateAuthored = evRejecter
+    network.validateAuthored = evRejecter
     destroyWorld(world)
   })
 })

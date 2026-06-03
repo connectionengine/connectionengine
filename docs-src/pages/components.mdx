@@ -26,17 +26,19 @@ const Health = defineComponent({
 })
 ```
 
-Two things to internalise about `defineComponent`:
+Three things to internalise about `defineComponent`:
 
-1. **Definitions are global, storage is per-world.** `defineComponent({ id: 'Foo', ... })` registers `Foo` in a global registry keyed on `id`. Calling it again with the same id returns the same definition. But the typed arrays + per-entity instance store backing `Foo` are materialised lazily per world — two worlds in the same process don't share storage.
+1. **Definitions are global.** `defineComponent({ id: 'Foo', ... })` registers `Foo` in the ambient engine's registry keyed on `id`. Calling it again with the same id returns the same definition. The engine owns all per-component storage — worlds attached to the same engine share it.
 
-2. **The schema decides the wire.** SoA-tagged fields (`Schema.Vec3`, `Schema.Quat`, `Schema.ArrayBuffer`, `Schema.SoAStore`) get structure-of-arrays storage and travel the binary `continuous` channel. Everything else lives in a per-entity instance map and travels the authored `event` channel. There is no `mutationCategory` enum — the channel is *derived* from what's in your schema, full stop.
+2. **SoA storage lives on the definition.** SoA-tagged fields (`Schema.Vec3`, `Schema.Quat`, `Schema.ArrayBuffer`, `Schema.SoAStore`) are spread directly as properties on the returned definition. `Transform.position` is a `Vec3SoA` — the same object you'd get from a bitECS-style `defineComponent({ position: { x: f32, y: f32, z: f32 } })`. There is no separate "stores" lookup; the definition *is* the store.
+
+3. **The schema decides the wire.** SoA fields travel the binary `continuous` channel. Value-typed fields travel the authored `event` channel. The channel is *derived* from what's in your schema — there's no `mutationCategory` enum to set.
 
 ## Replication channels
 
 Every component lands on exactly one channel, computed once at definition time. Three channels, one rule each:
 
-| `channel`     | Selected when                                | How it travels                                      |
+| `$channel`    | Selected when                                | How it travels                                      |
 |---------------|----------------------------------------------|-----------------------------------------------------|
 | `continuous`  | Schema has any SoA-tagged field              | Binary delta, per-field change mask, per-peer shadow |
 | `event`       | Schema has no SoA fields                     | Authored envelope, event-sourced, governance-validated, replayed on late join |
@@ -58,11 +60,29 @@ const RenderCache = defineComponent({
 })
 ```
 
-The definition exposes three read-only properties for any system that needs to branch on the channel:
+## The `$`-prefixed meta surface
 
-- `Score.channel` — `'event' | 'continuous' | 'local'`
-- `Score.isBinary` — `true` iff the component takes the binary path
-- `Score.sync` — `true` unless explicitly opted out
+All metadata on the definition lives behind a `$` prefix so the bare keys are reserved for SoA stores spread from the schema:
+
+- `Score.$id`              — component id (`'Score'`)
+- `Score.$label`           — human label (defaults to `$id`)
+- `Score.$schema`          — the TypeBox schema you passed in
+- `Score.$sync`            — `true` unless explicitly opted out
+- `Score.$channel`         — `'event' | 'continuous' | 'local'`
+- `Score.$isBinary`        — `true` iff the component takes the binary path
+- `Score.$componentSchema` — the shareable replication-metadata blob (jsonSchema + shaclShape + channel)
+- `Score.$soaFields` / `Score.$valueFields` — field-name partitions used by the mutation pipeline
+
+So for `Transform`:
+
+```ts
+Transform.$id           // 'Transform'
+Transform.$channel      // 'continuous'
+Transform.position      // Vec3SoA<Float32ArrayConstructor>
+Transform.rotation      // QuatSoA<Float32ArrayConstructor>
+```
+
+The bare names (`position`, `rotation`) are reserved for *your* schema fields.
 
 ### Mixing SoA and non-SoA fields is an error
 
@@ -91,11 +111,11 @@ The reason this rule matters: **two components with identical-looking schemas ca
 import { setComponent, getComponent, hasComponent, removeComponent } from '@connectionengine/core'
 
 setComponent(world, entity, Health, { current: 50 })
-// → addComponent in bitECS, fills defaults, writes SoA + instance store,
-//   marks dirty (continuous) or queues authored event (event)
+// → addComponent in bitECS, fills defaults, writes value fields to the
+//   instance store, marks dirty (continuous) or queues authored event (event)
 
 getComponent(world, entity, Health)
-// → { current: 50, max: 100 }  — defaults merged in, SoA + instance unified
+// → { current: 50, max: 100 }  — the live instance object
 
 hasComponent(world, entity, Health) // → true
 
@@ -104,7 +124,59 @@ removeComponent(world, entity, Health)
 //   queues authored remove event for `event`-channel components
 ```
 
-`getComponent` returns a fresh object combining the SoA snapshot (`position`, `rotation`) with the instance fields (`current`, `max`). It does not return a live reference — mutating the returned object doesn't change the store. Use `setComponent` to write.
+## Two equally first-class read paths
+
+For continuous components, you have two equally fast ways to read state. Pick the one that fits the system you're writing.
+
+### 1. `Transform.position.x[eid]` — the bitECS-style hot path
+
+SoA storage lives directly on the definition. The per-axis arrays are real `Float32Array`s, suitable for `gl.bufferData` GPU uploads and tight inner loops:
+
+```ts
+const positionX = Transform.position.x
+const positionY = Transform.position.y
+const positionZ = Transform.position.z
+
+for (const eid of entities) {
+  positionX[eid] += dt * velocityX[eid]
+  positionY[eid] += dt * velocityY[eid]
+  positionZ[eid] += dt * velocityZ[eid]
+}
+```
+
+Zero indirection, zero per-call work. This is the path systems hit at 60 fps.
+
+### 2. `getComponent(world, e, Transform).position.x` — the ergonomic path
+
+Sometimes you want a named handle on a single entity's component:
+
+```ts
+const t = getComponent(world, e, Transform)
+if (!t) return
+t.position.x += dt * vx
+t.position.y += dt * vy
+console.log(`rotation: ${t.rotation.w}`)
+```
+
+Both paths read and write the same underlying SoA storage — no copies, no refresh. The view objects use property accessors (`Object.defineProperty` getters/setters) that delegate straight to the SoA arrays. Writes through either path are immediately visible to the other.
+
+### Stable references, zero garbage on the hot path
+
+`getComponent` returns a **stable JS object reference** for a given `(component, entity)` pair — calling it repeatedly returns the same object. The per-field view objects inside it (e.g. `t.position`, `t.rotation`) are also stable per entity:
+
+```ts
+const t1 = getComponent(world, entity, Transform)
+const t2 = getComponent(world, entity, Transform)
+t1 === t2                     // true
+t1.position === t2.position   // true — same view, getter-backed
+```
+
+The two channels back this differently:
+
+- **Event-channel components** (value fields): `getComponent` returns the engine's instance-store record for that entity directly. It IS the underlying data. `setComponent` mutates the same object.
+- **Continuous-channel components** (SoA fields): `getComponent` returns a cached per-entity view bag whose fields are `SoA.view(entity)` projections. Each projection's `.x/.y/.z/.w` accessors read and write the underlying typed arrays. No refresh step, always live.
+
+**Writing through the view works.** `t.position.x = 5` sets `Transform.position.x[entity] = 5`. But the mutation pipeline doesn't know about it on its own — for replicated state, call `setComponent` (or mark dirty explicitly) so the binary delta picks it up.
 
 ## The `{ origin }` option
 
@@ -130,7 +202,7 @@ setComponent(world, e, Health, {}) // creates with current: 100, max: 100
 setComponent(world, e, Health, { current: 25 }) // current: 25, max: 100
 ```
 
-…which is a frequent pattern when receiving a binary-channel snapshot: the binary path calls `setComponent(world, entity, component, {})` to ensure bitECS presence, then the codec writes the actual SoA values directly.
+…which is a frequent pattern when receiving a binary-channel snapshot: the binary path calls `setComponent(world, entity, component, {})` to ensure bitECS presence, then the codec writes the actual SoA values directly into `component.position.x[entity]` and friends.
 
 ## When you have a lot of components
 

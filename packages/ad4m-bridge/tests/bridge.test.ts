@@ -131,7 +131,7 @@ describe('connectAd4m — outbound', () => {
     const { proxy, added } = mockPerspective()
     const { world } = await createAd4mRuntime(client, proxy)
 
-    world.network.publishAuthored?.({
+    world.networks.get('default')?.publishAuthored?.({
       fromPeer: 'did:ad4m:alice',
       events: [
         {
@@ -173,7 +173,7 @@ describe('connectAd4m — inbound', () => {
     expect(listeners.size).toBe(1)
     for (const cb of listeners) cb(mkLinkExpression(aliceEvent))
 
-    const scene = getEntityByUID(world, 0, 'scene:ad4m')
+    const scene = getEntityByUID(world, world.worldRoot, 'scene:ad4m')
     expect(scene).toBeDefined()
     const ava = getEntityByUID(world, scene!, 'avatar')
     expect(ava).toBeDefined()
@@ -207,10 +207,10 @@ describe('Ad4mTransportHandle.close', () => {
     const { proxy, listeners } = mockPerspective()
     const { world, transport } = await createAd4mRuntime(client, proxy)
     expect(listeners.size).toBe(1)
-    expect(world.network.publishAuthored).toBeDefined()
+    expect(world.networks.get('default')?.publishAuthored).toBeDefined()
     await transport.close()
     expect(listeners.size).toBe(0)
-    expect(world.network.publishAuthored).toBeUndefined()
+    expect(world.networks.get('default')?.publishAuthored).toBeUndefined()
     destroyWorld(world)
   })
 })

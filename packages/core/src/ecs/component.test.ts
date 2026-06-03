@@ -37,21 +37,21 @@ const Debug = defineComponent({
 
 describe('defineComponent — replication channel', () => {
   it('value-only schema derives to event channel', () => {
-    expect(Health.channel).toBe('event')
-    expect(Health.isBinary).toBe(false)
-    expect(Health.sync).toBe(true)
+    expect(Health.$channel).toBe('event')
+    expect(Health.$isBinary).toBe(false)
+    expect(Health.$sync).toBe(true)
   })
 
   it('SoA-bearing schema derives to continuous channel', () => {
-    expect(Transform.channel).toBe('continuous')
-    expect(Transform.isBinary).toBe(true)
-    expect(Transform.sync).toBe(true)
+    expect(Transform.$channel).toBe('continuous')
+    expect(Transform.$isBinary).toBe(true)
+    expect(Transform.$sync).toBe(true)
   })
 
   it('`sync: false` opts out of replication entirely', () => {
-    expect(Debug.channel).toBe('local')
-    expect(Debug.sync).toBe(false)
-    expect(Debug.isBinary).toBe(false)
+    expect(Debug.$channel).toBe('local')
+    expect(Debug.$sync).toBe(false)
+    expect(Debug.$isBinary).toBe(false)
   })
 
   it('mixing SoA and non-SoA fields throws', () => {
@@ -64,10 +64,10 @@ describe('defineComponent — replication channel', () => {
   })
 
   it('generates ComponentSchema metadata', () => {
-    expect(Health.componentSchema.id).toBe('Health')
-    expect(Health.componentSchema.channel).toBe('event')
-    expect(Health.componentSchema.jsonSchema).toBeDefined()
-    expect(Health.componentSchema.shaclShape).toBeDefined()
+    expect(Health.$componentSchema.id).toBe('Health')
+    expect(Health.$componentSchema.channel).toBe('event')
+    expect(Health.$componentSchema.jsonSchema).toBeDefined()
+    expect(Health.$componentSchema.shaclShape).toBeDefined()
   })
 })
 
@@ -96,10 +96,38 @@ describe('setComponent / getComponent / removeComponent', () => {
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 2, 3], rotation: [0, 0, 0, 1] })
     const t = getComponent(world, e, Transform)
-    expect(t?.position[0]).toBeCloseTo(1)
-    expect(t?.position[1]).toBeCloseTo(2)
-    expect(t?.position[2]).toBeCloseTo(3)
-    expect(t?.rotation[3]).toBeCloseTo(1)
+    expect(t?.position.x).toBeCloseTo(1)
+    expect(t?.position.y).toBeCloseTo(2)
+    expect(t?.position.z).toBeCloseTo(3)
+    expect(t?.rotation.w).toBeCloseTo(1)
+    // SoA arrays live directly on the definition for the bitECS-style hot path.
+    expect(Transform.position.x[e]).toBeCloseTo(1)
+    expect(Transform.position.y[e]).toBeCloseTo(2)
+    expect(Transform.position.z[e]).toBeCloseTo(3)
+    expect(Transform.rotation.w[e]).toBeCloseTo(1)
+    destroyWorld(world)
+  })
+
+  it('getComponent returns a stable object reference across calls', () => {
+    const world = createWorld({ agent: createAnonAgent() })
+    const e = createEntity(world)
+    // Event component — instance store is the live data
+    setComponent(world, e, Health, { current: 50 })
+    const h1 = getComponent(world, e, Health)
+    const h2 = getComponent(world, e, Health)
+    expect(h1).toBe(h2)
+    // Continuous component — cached view bag, same reference + same per-field views
+    setComponent(world, e, Transform, { position: [1, 2, 3], rotation: [0, 0, 0, 1] })
+    const t1 = getComponent(world, e, Transform)
+    const t2 = getComponent(world, e, Transform)
+    expect(t1).toBe(t2)
+    expect(t1?.position).toBe(t2?.position) // SoA view reused per entity
+    expect(t1?.rotation).toBe(t2?.rotation)
+    // Values reflect the latest setComponent on each call without any refresh.
+    setComponent(world, e, Transform, { position: [9, 9, 9] })
+    const t3 = getComponent(world, e, Transform)
+    expect(t3).toBe(t1)
+    expect(t3?.position.x).toBeCloseTo(9)
     destroyWorld(world)
   })
 
@@ -115,12 +143,9 @@ describe('setComponent / getComponent / removeComponent', () => {
     destroyWorld(world)
   })
 
-  it('registers ComponentSchema with the world on first set', () => {
+  it('registers ComponentSchema with the engine at definition time', () => {
     const world = createWorld({ agent: createAnonAgent() })
-    const e = createEntity(world)
-    expect(world.network.schemas.has('Health')).toBe(false)
-    setComponent(world, e, Health)
-    expect(world.network.schemas.get('Health')).toBe(Health.componentSchema)
+    expect(world.engine.schemas.get('Health')).toBe(Health.$componentSchema)
     destroyWorld(world)
   })
 
@@ -185,11 +210,15 @@ describe('property invariants', () => {
     destroyWorld(world)
   })
 
-  it('idempotent registration: defining same id twice still works on the world', () => {
+  it('idempotent registration: defining same id twice yields the same definition', () => {
     const world = createWorld({ agent: createAnonAgent() })
     setComponent(world, createEntity(world), Health)
     setComponent(world, createEntity(world), Health)
-    expect(world.network.schemas.size).toBe(1)
+    const Health2 = defineComponent({
+      id: 'Health',
+      schema: Schema.Object({ current: Schema.Number({ default: 100 }), max: Schema.Number({ default: 100 }) })
+    })
+    expect(Health2).toBe(Health)
     destroyWorld(world)
   })
 })

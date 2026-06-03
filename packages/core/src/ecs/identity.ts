@@ -5,12 +5,9 @@
  *   - UIDComponent (regular component) carries the entity's UID within its parent.
  *   - BelongsTo (exclusive relation) carries the identity context.
  *
- * The (parent → uid → entity) cache is maintained inline by `setUID` (the only
- * sanctioned identity write path) and `cleanupIdentity` (called from
- * removeEntity / removeComponent(UID) / removeRelation(BelongsTo)). This is
- * deliberately direct rather than observer-driven: bitECS relation observers
- * commit lazily, and identity is a hot enough path that synchronous cache
- * maintenance is the simpler, more predictable design.
+ * Top-level named entities use `world.worldRoot` as their implicit parent for
+ * bucket-keying. The (parent → uid → entity) cache is maintained inline by
+ * `setUID` and `cleanupIdentity` (called from removeEntity).
  */
 
 import { Schema } from '../schema'
@@ -34,9 +31,6 @@ export const BelongsTo = defineRelation({
   name: 'BelongsTo',
   exclusive: true
 })
-
-/** Sentinel parent ID for root-level (un-parented) entities. */
-export const ROOT_PARENT = 0 as const
 
 // ── Internal cache helpers ────────────────────────────────────────────────────
 
@@ -66,7 +60,7 @@ export const cleanupIdentity = (world: World, entity: Entity): void => {
   const parent = world.parentOf.get(entity)
   if (uid !== undefined) {
     if (parent !== undefined) unindexFromBucket(world, parent, uid)
-    else unindexFromBucket(world, ROOT_PARENT, uid)
+    else unindexFromBucket(world, world.worldRoot, uid)
   }
   world.uidOf.delete(entity)
   world.parentOf.delete(entity)
@@ -87,8 +81,8 @@ export interface SetUIDOptions {
 
 /** Assign UID + optional BelongsTo parent. Maintains caches and enforces uniqueness. */
 export const setUID = (world: World, entity: Entity, uid: string, options: SetUIDOptions = {}): void => {
-  // Resolve effective parent — explicit > existing > root sentinel
-  const effectiveParent: Entity = options.parent ?? world.parentOf.get(entity) ?? ROOT_PARENT
+  // Resolve effective parent — explicit > existing > worldRoot (implicit top-level).
+  const effectiveParent: Entity = options.parent ?? world.parentOf.get(entity) ?? world.worldRoot
 
   // Collision check
   const existingInBucket = world.nameCache.get(effectiveParent)?.get(uid)
@@ -98,7 +92,7 @@ export const setUID = (world: World, entity: Entity, uid: string, options: SetUI
 
   // Drop previous identity entries for this entity
   const previousUid = world.uidOf.get(entity)
-  const previousParent = world.parentOf.get(entity) ?? ROOT_PARENT
+  const previousParent = world.parentOf.get(entity) ?? world.worldRoot
   if (previousUid !== undefined) unindexFromBucket(world, previousParent, previousUid)
 
   // Write component (instance store value) and relation
@@ -121,7 +115,7 @@ export const getUID = (world: World, entity: Entity): string | undefined =>
 /** Get BelongsTo parent of an entity, if any. */
 export const getParent = (world: World, entity: Entity): Entity | undefined => world.parentOf.get(entity)
 
-/** O(1) lookup: find entity by UID under a parent. Use ROOT_PARENT for top-level. */
+/** O(1) lookup: find entity by UID under a parent. Use `world.worldRoot` for top-level. */
 export const getEntityByUID = (world: World, parent: Entity, uid: string): Entity | undefined =>
   world.nameCache.get(parent)?.get(uid)
 
@@ -141,7 +135,7 @@ export const getEntityPath = (world: World, entity: Entity): string[] => {
 /** Inverse of getEntityPath — resolve a UID path back to an entity. */
 export const resolveEntityPath = (world: World, path: string[]): Entity | undefined => {
   if (path.length === 0) return undefined
-  let cursor: Entity | undefined = getEntityByUID(world, ROOT_PARENT, path[0])
+  let cursor: Entity | undefined = getEntityByUID(world, world.worldRoot, path[0])
   for (let i = 1; cursor !== undefined && i < path.length; i++) {
     cursor = getEntityByUID(world, cursor, path[i])
   }

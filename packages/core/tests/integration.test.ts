@@ -61,7 +61,7 @@ describe('Scenario: spawn → replicate → mutate → converge', () => {
     }
     await peers.tick()
 
-    const bScene = getEntityByUID(b.world, 0, 'scene:arena')!
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:arena')!
     for (const name of ['ava', 'bee', 'cee']) {
       const e = getEntityByUID(b.world, bScene, name)!
       expect(e).toBeDefined()
@@ -82,8 +82,8 @@ describe('Scenario: spawn → replicate → mutate → converge', () => {
 
     const aBee = getEntityByUID(a.world, scene, 'bee')!
     const aBeeT = getComponent(a.world, aBee, Transform)
-    expect(aBeeT?.position[0]).toBeCloseTo(5)
-    expect(aBeeT?.position[2]).toBeCloseTo(5)
+    expect(aBeeT?.position.x).toBeCloseTo(5)
+    expect(aBeeT?.position.z).toBeCloseTo(5)
 
     peers.dispose()
   })
@@ -100,8 +100,8 @@ describe('Scenario: governance rejects unauthorised mutations', () => {
     })
     const { a, b } = peers
     // Force the local agents to match the credential oracle's accepted DID
-    ;(a.world.network.localAgent as { did: string }).did = aliceDID
-    ;(b.world.network.localAgent as { did: string }).did = 'did:test:bob'
+    ;(a.world.localAgent as { did: string }).did = aliceDID
+    ;(b.world.localAgent as { did: string }).did = 'did:test:bob'
 
     const scene = createNamedEntity(a.world, 'scene:guarded')
     addConstraint(a.world, scene, 'credential', { requiredCredential: 'builder', operations: ['modify'] })
@@ -112,7 +112,7 @@ describe('Scenario: governance rejects unauthorised mutations', () => {
     setComponent(a.world, ava, Health, { current: 80 })
     await peers.tick()
 
-    const bScene = getEntityByUID(b.world, 0, 'scene:guarded')!
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:guarded')!
     const bAva = getEntityByUID(b.world, bScene, 'ava')
     expect(bAva).toBeDefined()
     expect(getComponent(b.world, bAva!, Health)?.current).toBe(80)
@@ -145,7 +145,7 @@ describe('Scenario: governance rejects unauthorised mutations', () => {
     setComponent(a.world, ava, Health, { current: 50 })
     await peers.tick()
 
-    const bScene = getEntityByUID(b.world, 0, 'scene:contented')!
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:contented')!
     const bAva = getEntityByUID(b.world, bScene, 'ava')!
     setComponent(b.world, bAva, Health, { current: 9999 })
     await peers.tick()
@@ -184,13 +184,13 @@ describe('Scenario: snapshot bootstraps a late-joining peer', () => {
       setComponent(a.world, e, Health, { current: 50 })
     }
     await peers.tick()
-    expect(getEntityByUID(b.world, 0, 'scene:late')).toBeDefined()
+    expect(getEntityByUID(b.world, b.world.worldRoot, 'scene:late')).toBeDefined()
 
     const cWorld = createWorld({ agent: createAnonAgent('carol') })
     const snap = createSnapshot(a.world)
     applySnapshot(cWorld, snap)
 
-    const cScene = getEntityByUID(cWorld, 0, 'scene:late')
+    const cScene = getEntityByUID(cWorld, cWorld.worldRoot, 'scene:late')
     expect(cScene).toBeDefined()
     for (const name of ['one', 'two', 'three']) {
       const e = getEntityByUID(cWorld, cScene!, name)
@@ -224,18 +224,18 @@ describe('Scenario: three-peer mesh convergence', () => {
     await mesh.tick()
 
     for (const peer of [bob, carol]) {
-      const peerScene = getEntityByUID(peer.world, 0, 'scene:mesh')!
+      const peerScene = getEntityByUID(peer.world, peer.world.worldRoot, 'scene:mesh')!
       const peerE = getEntityByUID(peer.world, peerScene, 'p')!
       expect(getComponent(peer.world, peerE, Health)?.current).toBe(30)
     }
 
-    const bScene = getEntityByUID(bob.world, 0, 'scene:mesh')!
+    const bScene = getEntityByUID(bob.world, bob.world.worldRoot, 'scene:mesh')!
     const bE = getEntityByUID(bob.world, bScene, 'p')!
     setComponent(bob.world, bE, Health, { current: 10 })
     await mesh.tick()
     await mesh.tick()
     for (const peer of [alice, carol]) {
-      const peerScene = getEntityByUID(peer.world, 0, 'scene:mesh')!
+      const peerScene = getEntityByUID(peer.world, peer.world.worldRoot, 'scene:mesh')!
       const peerE = getEntityByUID(peer.world, peerScene, 'p')!
       expect(getComponent(peer.world, peerE, Health)?.current).toBe(10)
     }

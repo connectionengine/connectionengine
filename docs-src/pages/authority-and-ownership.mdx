@@ -69,7 +69,7 @@ defineSystem(world, {
   phase: 'Simulation',
   execute: (world, dt) => {
     for (const e of physicsQuery(world)) {
-      if (getAuthority(world, e) !== world.network.localPeer) continue
+      if (getAuthority(world, e) !== world.localPeer) continue
       // ...integrate physics, write to Transform...
     }
   }

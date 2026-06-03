@@ -155,9 +155,9 @@ export const resolveRuntimeConfig = (
   component: ComponentDefinition,
   simRate: number
 ): Required<RuntimeTransportConfig> => {
-  const match = configs.find((c) => c.componentIds.includes(component.id))
+  const match = configs.find((c) => c.componentIds.includes(component.$id))
   return {
-    componentIds: [component.id],
+    componentIds: [component.$id],
     rate: match?.rate ?? simRate,
     fullSyncInterval: match?.fullSyncInterval ?? 300,
     interpolation: match?.interpolation ?? true

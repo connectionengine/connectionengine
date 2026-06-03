@@ -1,20 +1,19 @@
 ---
-description: Worlds are the unit of isolation. Systems are how time and logic flow through them.
+description: Worlds are logical scopes inside an Engine. Systems are how time and logic flow through them.
 ---
 
 # Worlds & Systems
 
-## A world is the unit of isolation
+## A world is a logical scope inside an Engine
 
-A `World` holds everything — time state, network bindings, identity caches, the authored queue, the runtime dirty set, the event log, the trace sink, plus the bitECS storage. Two worlds in the same process share nothing. Two worlds in different processes are connected only through transports.
-
-This isolation is what makes Connection Engine viable for multiplayer tests: spin up two `createWorld` calls, wire them with `connectInMemory`, and you have a two-peer scenario in microseconds. It's also what enables server-side multi-tenant hosting — a server process can hold many worlds, each scoped to a different room or session.
+The bitECS storage (entity ID space, archetype tables, component data) lives on the [Engine](/engine) — one per process. A `World` is a structured scope inside that storage: its own root entity (`worldRoot`), its own identity caches, its own time + mutation pipeline + event log, its own [Networks](/networking). Many worlds coexist in one engine; entities are partitioned by their `BelongsTo(worldRoot)` chain.
 
 ```ts
 import { createWorld, destroyWorld, createAnonAgent } from '@connectionengine/core'
 
 const world = createWorld({
-  agent: createAnonAgent(),
+  agent: createAnonAgent(),       // required. Local identity for this world.
+  // engine: customEngine,        // optional. Defaults to the ambient engine.
   fixedTimeStep: 1 / 60,          // simulation tick rate (seconds). Default 1/60.
   clock: customClock,             // optional. Defaults to wall-clock.
   trace: customTraceSink          // optional. Defaults to in-memory recording.
@@ -22,10 +21,17 @@ const world = createWorld({
 
 // ...
 
-destroyWorld(world) // tears down everything, releases bitECS, closes connections
+destroyWorld(world) // closes networks, removes this world's entities, drops it from the engine
 ```
 
 The `agent` is the only required option. Everything else is sensible defaults.
+
+A few things worth internalising:
+
+- **Entity IDs are engine-wide.** Two worlds in the same engine never see overlapping IDs. `world.entities` tracks which entities belong to this world.
+- **The world's `worldRoot`** is a sentinel entity. Top-level named entities (created via `createNamedEntity`) bucket their UIDs under `world.worldRoot` in the name cache. You use it occasionally — e.g. `getEntityByUID(world, world.worldRoot, 'scene:main')`.
+- **The event log is per-world, canonical.** Networks are sync topology; they don't have their own histories. See [Peers & Sessions](/networking).
+- **Spinning up isolated worlds is cheap.** Tests routinely create two and wire them with `connectInMemory` to simulate two peers in microseconds.
 
 ## Time has two scales
 

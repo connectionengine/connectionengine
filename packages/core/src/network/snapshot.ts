@@ -11,8 +11,9 @@
  * IDs are remapped automatically — no idMap parameter required.
  */
 
+import type { ComponentDefinition } from '../ecs/component'
 import { getComponent, getComponentById, hasComponent, setComponent } from '../ecs/component'
-import { ROOT_PARENT, getEntityByUID, getEntityPath, setUID } from '../ecs/identity'
+import { getEntityByUID, getEntityPath, setUID } from '../ecs/identity'
 import { addRelation, getRelationByName, getRelationTargets } from '../ecs/relation'
 import { createEntity, removeEntity } from '../ecs/entity'
 import { worldComponents, worldRelations } from '../engine/mutation'
@@ -57,11 +58,9 @@ export const createSnapshot = (world: World, options: CreateSnapshotOptions = {}
     const relations: Record<string, string[][]> = {}
     for (const def of componentDefs) {
       if (!hasComponent(world, entity, def)) continue
-      if (includeIds && !includeIds.has(def.id)) continue
-      const value = getComponent(world, entity, def)
-      // Convert typed arrays to plain arrays for JSON serialisation
-      components[def.id] = serialiseValue(value)
-      seenComponents.add(def.id)
+      if (includeIds && !includeIds.has(def.$id)) continue
+      components[def.$id] = serialiseComponent(world, entity, def)
+      seenComponents.add(def.$id)
     }
     for (const rel of relationDefs) {
       const targets = getRelationTargets(world, entity, rel)
@@ -102,9 +101,10 @@ export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySn
   // Resolve component / relation definitions — prefer this world's pipeline
   // registry, fall back to the global definition registry (so applySnapshot
   // can rebuild components that haven't been touched on this world yet).
-  const resolveComponent = (id: string) => worldComponents(world).find((c) => c.id === id) ?? getComponentById(id)
+  const resolveComponent = (id: string) =>
+    worldComponents(world).find((c) => c.$id === id) ?? getComponentById(id, world.engine)
   const resolveRelation = (name: string) =>
-    worldRelations(world).find((r) => r.name === name) ?? getRelationByName(name)
+    worldRelations(world).find((r) => r.name === name) ?? getRelationByName(name, world.engine)
 
   // Pass 1: ensure all entities exist with their UID + parent chain
   for (const ent of snapshot.entities) ensureEntityPath(world, ent.path)
@@ -140,20 +140,43 @@ export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySn
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 const ensureEntityPath = (world: World, path: string[]): Entity => {
-  let parent: Entity = ROOT_PARENT
-  let cursor: Entity = ROOT_PARENT
+  let parent: Entity = world.worldRoot
+  let cursor: Entity = world.worldRoot
   for (const uid of path) {
     const existing = getEntityByUID(world, parent, uid)
     if (existing !== undefined) {
       cursor = existing
     } else {
       cursor = createEntity(world, { silent: true })
-      if (parent === ROOT_PARENT) setUID(world, cursor, uid, { origin: 'network' })
+      if (parent === world.worldRoot) setUID(world, cursor, uid, { origin: 'network' })
       else setUID(world, cursor, uid, { parent, origin: 'network' })
     }
     parent = cursor
   }
   return cursor
+}
+
+interface SoAToable {
+  to?: (entity: number) => ArrayLike<number>
+}
+
+/**
+ * Serialise a single component to a JSON-safe value. SoA fields are read
+ * straight from the definition's SoA stores into plain arrays; value fields
+ * come from the engine's instance store via `getComponent`.
+ */
+const serialiseComponent = (world: World, entity: number, def: ComponentDefinition): unknown => {
+  if (def.$soaFields.length === 0) {
+    return serialiseValue(getComponent(world, entity, def))
+  }
+  const out: Record<string, unknown> = {}
+  for (const field of def.$soaFields) {
+    const soa = def[field] as SoAToable | undefined
+    if (soa && typeof soa.to === 'function') {
+      out[field] = Array.from(soa.to(entity))
+    }
+  }
+  return out
 }
 
 const serialiseValue = (value: unknown): unknown => {

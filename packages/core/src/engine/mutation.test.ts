@@ -37,7 +37,7 @@ describe('Two-peer authored replication', () => {
 
     await peers.tick()
 
-    const bScene = getEntityByUID(b.world, 0, 'scene:main')
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:main')
     expect(bScene).toBeDefined()
     const bAvatar = getEntityByUID(b.world, bScene!, 'avatar:alice')
     expect(bAvatar).toBeDefined()
@@ -54,7 +54,7 @@ describe('Two-peer authored replication', () => {
     setUID(a.world, e, 'thing', { parent: scene })
     setComponent(a.world, e, Health)
     await peers.tick()
-    const bSceneFirst = getEntityByUID(b.world, 0, 'scene:main')
+    const bSceneFirst = getEntityByUID(b.world, b.world.worldRoot, 'scene:main')
     const bThing = getEntityByUID(b.world, bSceneFirst!, 'thing')
     expect(hasComponent(b.world, bThing!, Health)).toBe(true)
 
@@ -79,7 +79,7 @@ describe('Two-peer authored replication', () => {
     addRelation(a.world, child, ChildOf, parent)
     await peers.tick()
 
-    const bScene = getEntityByUID(b.world, 0, 'scene:main')!
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:main')!
     const bParent = getEntityByUID(b.world, bScene, 'parent')!
     const bChild = getEntityByUID(b.world, bScene, 'child')!
     const targets = getRelationTargets(b.world, bChild, ChildOf)
@@ -135,12 +135,12 @@ describe('Two-peer runtime replication', () => {
 
     await peers.tick()
 
-    const bScene = getEntityByUID(b.world, 0, 'scene:rt')!
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:rt')!
     const bThing = getEntityByUID(b.world, bScene, 'thing')!
     const bT = getComponent(b.world, bThing, Transform)
-    expect(bT?.position[0]).toBeCloseTo(1)
-    expect(bT?.position[1]).toBeCloseTo(2)
-    expect(bT?.position[2]).toBeCloseTo(3)
+    expect(bT?.position.x).toBeCloseTo(1)
+    expect(bT?.position.y).toBeCloseTo(2)
+    expect(bT?.position.z).toBeCloseTo(3)
     peers.dispose()
   })
 

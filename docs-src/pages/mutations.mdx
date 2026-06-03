@@ -26,28 +26,41 @@ flushAuthored(world)
 for each queued mutation where origin === 'local':
     resolve entityPath, stamp { author, timestamp }
     appendEventLog(world, event)         // idempotent on signature
-    world.network.publishAuthored?(envelope)
+
+for each event:
+    networks = routeNetworks(world, entity)   // today: broadcast-to-all
+    for each network:
+        network.publishAuthored?(envelopeForNetwork)
 
 flushRuntime(world)
         │
         ▼
 snapshot world.runtimeDirty into Map<componentId, Set<entity>>
 clear the dirty set
-world.network.publishRuntime?(snapshot)
+for each (componentId, entity):
+    networks = routeNetworks(world, entity)
+    for each network:
+        accumulate into perNetworkDirty[networkId][componentId]
+for each network:
+    network.publishRuntime?(perNetworkDirty[networkId])
 ```
 
-The two `publish*` callbacks are hooks the network layer fills in. Core never decides how data goes on a wire — it hands an envelope to whoever's listening.
+The `publish*` callbacks are hooks the network layer fills in — one per network on the world. Core never decides how data goes on a wire; it routes envelopes to the right networks and hands them to whoever's listening.
+
+`routeNetworks(world, entity)` is the routing decision. Today it's broadcast-to-all (`Array.from(world.networks.values())`). A future spatial layer will replace it with proximity-based routing without touching `mutation.ts`.
 
 ## Receive paths
 
 ```
-applyAuthoredEnvelope(world, envelope)
+applyAuthoredEnvelope(world, envelope, network?)
         │
         ├─ for each event:
-        │    governance gate via world.network.validateAuthored?(event)
+        │    governance gate via network.validateAuthored?(event)
         │    if appendEventLog(world, event) returned true:
         │        applyEvent — setComponent / addRelation / etc. with origin: 'network'
 ```
+
+The optional `network` argument provides the governance gate. Different networks can have different rules.
 
 For `continuous` components, **there is no separate "apply runtime envelope" function**. The binary pipeline (`network/binary.ts`) is the receive path — it reads packets and writes directly into SoA storage, calling `setComponent(world, entity, component, {}, { origin: 'network' })` only as needed to register bitECS presence.
 

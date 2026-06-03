@@ -54,15 +54,15 @@ describe('Snapshot', () => {
     const target = createWorld({ agent: createAnonAgent() })
     applySnapshot(target, snap)
 
-    const tScene = getEntityByUID(target, 0, 'scene:snap2')
+    const tScene = getEntityByUID(target, target.worldRoot, 'scene:snap2')
     expect(tScene).toBeDefined()
     const tA = getEntityByUID(target, tScene!, 'a')
     expect(tA).toBeDefined()
     expect(getComponent(target, tA!, Health)).toEqual({ current: 42, max: 100 })
     const tT = getComponent(target, tA!, Transform)
-    expect(tT?.position[0]).toBeCloseTo(5)
-    expect(tT?.position[1]).toBeCloseTo(6)
-    expect(tT?.position[2]).toBeCloseTo(7)
+    expect(tT?.position.x).toBeCloseTo(5)
+    expect(tT?.position.y).toBeCloseTo(6)
+    expect(tT?.position.z).toBeCloseTo(7)
     destroyWorld(source)
     destroyWorld(target)
   })
@@ -78,7 +78,7 @@ describe('Snapshot', () => {
     const snap = createSnapshot(source)
     const target = createWorld({ agent: createAnonAgent() })
     applySnapshot(target, snap)
-    const tScene = getEntityByUID(target, 0, 'scene:rel')!
+    const tScene = getEntityByUID(target, target.worldRoot, 'scene:rel')!
     const tA = getEntityByUID(target, tScene, 'a')!
     const tB = getEntityByUID(target, tScene, 'b')!
     expect(getRelationTargets(target, tB, ChildOf)).toEqual([tA])
@@ -105,7 +105,7 @@ describe('Snapshot', () => {
     setComponent(world, a, Health, { current: 999 })
     expect(getComponent(world, a, Health)).toEqual({ current: 999, max: 100 })
     applySnapshot(world, snap, { replace: true })
-    const restored = getEntityByUID(world, 0, 'a')!
+    const restored = getEntityByUID(world, world.worldRoot, 'a')!
     expect(hasComponent(world, restored, Health)).toBe(true)
     expect(getComponent(world, restored, Health)).toEqual({ current: 1, max: 100 })
     destroyWorld(world)

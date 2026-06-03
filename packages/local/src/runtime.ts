@@ -14,7 +14,7 @@
  *   connectLocalInMemory(a.world, b.world)
  */
 
-import { createWorld, type CreateWorldOptions, type World } from '@connectionengine/core'
+import { createWorld, ensureDefaultNetwork, type CreateWorldOptions, type World } from '@connectionengine/core'
 import { createLocalAgent, type LocalAgent } from './agent'
 import { installCapabilityValidator, type CapabilityValidationContext } from './governance'
 
@@ -40,6 +40,8 @@ export const createLocalRuntime = (options: CreateLocalRuntimeOptions = {}): Loc
     clock: options.clock,
     trace: options.trace
   })
+  // installCapabilityValidator targets the default network; ensure it exists.
+  ensureDefaultNetwork(world)
   if (options.governance !== false) {
     installCapabilityValidator(world, options.governance ?? {})
   }

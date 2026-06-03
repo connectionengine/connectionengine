@@ -4,14 +4,34 @@ description: Transports, sessions, late join — how two worlds become one share
 
 # Peers & Sessions
 
-## The two layers
+## The three layers
 
-The network stack is deliberately split:
+The network stack is split:
 
 - **`TransportEndpoint`** — the mechanism. "How do bytes get from here to there?" WebRTC, WebSocket, in-memory, AD4M Perspective — all satisfy the same tiny interface.
+- **`Network`** — sync topology. A `Connection` set + publish hooks + governance gate. Many networks per world for spatial segmentation, voice / video channels, admin overlays. All networks on a world share the same event log; they just deliver it through different connections.
 - **`Connection` + lifecycle** — the protocol. "What do those bytes mean? When does a peer count as connected? What happens at disconnect?"
 
-You can write a new transport without touching the protocol. You can change the protocol without rewriting transports. They're orthogonal.
+Each layer is orthogonal: write a new transport without touching the protocol; add a new network without rewriting transports; change governance per network without affecting the rest.
+
+## Networks
+
+A `Network` is owned by a `World`. Every world has at least one — the `'default'` network, auto-created on first connect:
+
+```ts
+import { addNetwork, ensureDefaultNetwork } from '@connectionengine/core'
+
+ensureDefaultNetwork(world)            // returns the default network, creating it lazily
+addNetwork(world, { id: 'voice' })     // a second network for voice channels
+addNetwork(world, { id: 'admin' })     // a third for moderator overlays
+```
+
+Mutations route across networks via the world's mutation pipeline (today: broadcast-to-all). When a write fires:
+
+- Authored events are dispatched per-network through each `network.publishAuthored`.
+- Binary runtime packets are dispatched per-network through each `network.publishRuntime`.
+
+Same event log, many topologies on top. A peer connected on `voice` only never sees gameplay events; a peer connected on both networks sees both.
 
 ## TransportEndpoint
 
@@ -46,7 +66,7 @@ The interface is mechanism-agnostic — the backend (WebRTC, WebSocket, in-memor
 
 ## The session protocol
 
-`joinWorld(world, { endpoint })` runs a three-step session:
+`joinNetwork(world, { endpoint })` joins a network over a transport endpoint. The default network is used if you don't specify one. (`joinWorld` is a back-compat alias for `joinNetwork` over the default network.) It runs a three-step session:
 
 ```
 1. HELLO   — both sides send { agentDID, knownEventCount, networkId bindings }

@@ -18,18 +18,21 @@ const findUserByDID = (world: World, did: string): Entity | undefined => {
 }
 
 /**
- * If `connection` was the last live connection for its user, sweep every
- * TransientOnDisconnect entity owned by that user. No-op if other live peers
- * still represent the same user.
+ * If `connection` was the last live connection across every network on this
+ * world for its user, sweep every TransientOnDisconnect entity owned by that
+ * user. Walks all of `world.networks` because the same user may be reachable
+ * via voice on one network and gameplay on another.
  */
 export const sweepDisconnectedPeer = (world: World, connection: Connection): void => {
   const did = connection.remoteDID
   if (!did || did.startsWith('did:unknown')) return
   const userEntity = findUserByDID(world, did)
   if (userEntity === undefined) return
-  for (const other of world.network.connections) {
-    if (other === connection) continue
-    if (other.remoteDID && findUserByDID(world, other.remoteDID) === userEntity) return
+  for (const network of world.networks.values()) {
+    for (const other of network.connections) {
+      if (other === connection) continue
+      if (other.remoteDID && findUserByDID(world, other.remoteDID) === userEntity) return
+    }
   }
   for (const candidate of componentEntities(world, TransientOnDisconnect)) {
     if (getOwner(world, candidate) !== userEntity) continue

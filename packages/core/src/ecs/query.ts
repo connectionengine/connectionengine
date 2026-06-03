@@ -26,11 +26,24 @@ const toRef = (term: unknown): bitecs.QueryTerm => {
   return term as bitecs.QueryTerm
 }
 
+/**
+ * Run a bitECS query against the world's engine, then filter the results to
+ * the world's entity set. Because all worlds share one bitECS storage, a raw
+ * bitECS query would return matching entities from every world in the engine
+ * — the filter restores per-world scoping.
+ */
 export const query = (
   world: World,
   terms: QueryTerm[],
   ...modifiers: (bitecs.QueryModifier | bitecs.QueryOptions)[]
-): readonly Entity[] | Readonly<Uint32Array> => bitecs.query(world, terms.map(toRef), ...modifiers)
+): readonly Entity[] => {
+  const all = bitecs.query(world.engine.bitECS, terms.map(toRef), ...modifiers)
+  const out: Entity[] = []
+  for (const e of all as readonly number[]) {
+    if (world.entities.has(e)) out.push(e)
+  }
+  return out
+}
 
 /** Helper: relation pair builder — Relation(target). Replicates bitECS's `R(t)`. */
 export const pair = <T>(relation: RelationDefinition<T>, target: Entity | typeof bitecs.Wildcard): unknown =>

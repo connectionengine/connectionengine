@@ -51,4 +51,4 @@ export const observe = (
   world: World,
   hook: bitecs.ObservableHook,
   callback: (entity: Entity, ...args: unknown[]) => unknown
-): (() => void) => bitecs.observe(world, hook, callback as (eid: number, ...args: unknown[]) => unknown)
+): (() => void) => bitecs.observe(world.engine.bitECS, hook, callback as (eid: number, ...args: unknown[]) => unknown)
