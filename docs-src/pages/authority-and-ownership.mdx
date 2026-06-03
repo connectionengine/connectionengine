@@ -59,7 +59,7 @@ Authority is exclusive — at most one peer holds it for an entity at any time. 
 
 ## What "having authority" means
 
-Connection Engine doesn't enforce authority on the runtime channel — there's no per-packet check that says "is this peer authoritative?" That would be too expensive at 60 Hz.
+Connection Engine doesn't enforce authority on the `continuous` channel — there's no per-packet check that says "is this peer authoritative?" That would be too expensive at 60 Hz.
 
 Instead, **authority is a property your systems consult**. The convention is:
 
@@ -82,7 +82,7 @@ This is also why **runtime binary packets aren't signed** — authority is struc
 
 ## Authority transfer
 
-`transferAuthority` is just `setAuthority` with a trace event. The actual replication happens via the authored channel — the `AuthoritativeFor` relation is `authored`, so the change ships as a signed event everyone applies.
+`transferAuthority` is just `setAuthority` with a trace event. The actual replication happens via the `event` channel — relations always ship as authored events, so the change is signed and everyone applies it.
 
 For mid-session handoff (handing the car to your phone, host migration, etc.) the flow is:
 

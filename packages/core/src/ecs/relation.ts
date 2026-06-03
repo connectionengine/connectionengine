@@ -1,12 +1,13 @@
 /**
  * RelationDefinition + helpers.
  *
- * Relationships are predicates — typed, queryable links between entities. They
- * replicate as authored mutations by default (discrete events) or stay local.
+ * Relationships are predicates — typed, queryable links between entities.
+ * They always ship as authored events (discrete causal mutations) unless
+ * marked `local: true`, in which case they stay machine-local.
  *
  * Built on bitECS's createRelation; we wrap it to:
- *   - carry a stable name (predicate URI) and mutation category
- *   - thread relationship add/remove into the authored mutation queue (engine layer)
+ *   - carry a stable name (predicate URI)
+ *   - thread relation add/remove into the authored mutation queue (engine layer)
  *   - emit trace events
  */
 
@@ -14,13 +15,14 @@ import * as bitecs from 'bitecs'
 import type { Entity, World } from './world'
 import type { Origin } from './trace'
 
-export type RelationCategory = 'authored' | 'local'
-
 export interface RelationOptions<T = void> {
   /** Predicate name (used as the relation URI in semantic triples) */
   name: string
-  /** Default 'authored' — discrete mutation, replicated. 'local' = never synced. */
-  mutationCategory?: RelationCategory
+  /**
+   * Whether this relation replicates as authored events. Default `true`.
+   * Set to `false` to keep the relation machine-local.
+   */
+  sync?: boolean
   /** If true: exactly one target per subject. Assigning new target removes old. */
   exclusive?: boolean
   /** If true: subject is destroyed when target is destroyed. */
@@ -33,7 +35,8 @@ export interface RelationOptions<T = void> {
 
 export interface RelationDefinition<T = void> {
   readonly name: string
-  readonly mutationCategory: RelationCategory
+  /** Whether this relation replicates. Defaults to `true` at definition time. */
+  readonly sync: boolean
   readonly exclusive: boolean
   readonly autoRemoveSubject: boolean
   /** Internal bitECS relation function — invoke with a target to get a pair component. */
@@ -44,14 +47,7 @@ const relationByRef = new WeakMap<bitecs.Relation<unknown>, RelationDefinition<u
 const relationByName = new Map<string, RelationDefinition<unknown>>()
 
 export const defineRelation = <T = void>(options: RelationOptions<T>): RelationDefinition<T> => {
-  const {
-    name,
-    mutationCategory = 'authored',
-    exclusive = false,
-    autoRemoveSubject = false,
-    store,
-    onTargetRemoved
-  } = options
+  const { name, sync = true, exclusive = false, autoRemoveSubject = false, store, onTargetRemoved } = options
   const existing = relationByName.get(name)
   if (existing) return existing as RelationDefinition<T>
   const $relation = bitecs.createRelation<T>({
@@ -62,7 +58,7 @@ export const defineRelation = <T = void>(options: RelationOptions<T>): RelationD
   })
   const def: RelationDefinition<T> = {
     name,
-    mutationCategory,
+    sync,
     exclusive,
     autoRemoveSubject,
     $relation
@@ -91,8 +87,8 @@ export const registerRelationRegisterHook = (
   relationRegisterHooks.push(hook)
 }
 
-const seenRelations = new WeakMap<import('./world').World, Set<RelationDefinition<unknown>>>()
-const ensureRelationRegistered = (world: import('./world').World, relation: RelationDefinition<unknown>): void => {
+const seenRelations = new WeakMap<World, Set<RelationDefinition<unknown>>>()
+const ensureRelationRegistered = (world: World, relation: RelationDefinition<unknown>): void => {
   let set = seenRelations.get(world)
   if (!set) {
     set = new Set()
@@ -113,7 +109,7 @@ export const addRelation = <T>(
   ensureRelationRegistered(world, relation as RelationDefinition<unknown>)
   const origin: Origin = options.origin ?? 'local'
   bitecs.addComponent(world, subject, relation.$relation(target))
-  if (origin === 'local' && relation.mutationCategory === 'authored') {
+  if (origin === 'local' && relation.sync) {
     world.authoredQueue.push({
       entity: subject,
       predicate: relation.name,
@@ -141,7 +137,7 @@ export const removeRelation = <T>(
 ): void => {
   const origin: Origin = options.origin ?? 'local'
   bitecs.removeComponent(world, subject, relation.$relation(target))
-  if (origin === 'local' && relation.mutationCategory === 'authored') {
+  if (origin === 'local' && relation.sync) {
     world.authoredQueue.push({
       entity: subject,
       predicate: relation.name,

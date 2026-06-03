@@ -175,7 +175,7 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
   for (const [componentId, entities] of world.runtimeDirty) {
     if (entities.size === 0) continue
     const def = findComponent(world, componentId)
-    if (!def || def.mutationCategory !== 'runtime') {
+    if (!def || !def.isBinary) {
       entities.clear()
       continue
     }

@@ -6,15 +6,15 @@ description: One schema, two channels. How writes become packets, packets become
 
 ## The shape
 
-A local write goes through one of two queues, depending on the component's `mutationCategory`:
+A local write goes through one of two queues, depending on the component's channel (which the schema decided at definition time):
 
 ```
 setComponent(world, e, Health, { current: 50 })
         │
         ▼
-authored?  →  push into world.authoredQueue (carries entity, predicate, op, value, origin)
-runtime?   →  mark world.runtimeDirty[componentId].add(entity)
-local?     →  no-op (never replicated)
+channel = 'event'       →  push into world.authoredQueue (entity, predicate, op, value, origin)
+channel = 'continuous'  →  mark world.runtimeDirty[componentId].add(entity)
+channel = 'local'       →  no-op (sync: false, never replicated)
 ```
 
 At end-of-frame:
@@ -49,9 +49,9 @@ applyAuthoredEnvelope(world, envelope)
         │        applyEvent — setComponent / addRelation / etc. with origin: 'network'
 ```
 
-For runtime, **there is no separate "apply runtime envelope" function**. The binary pipeline (`network/binary.ts`) is the receive path — it reads packets and writes directly into SoA storage, calling `setComponent(world, entity, component, {}, { origin: 'network' })` only as needed to register bitECS presence.
+For `continuous` components, **there is no separate "apply runtime envelope" function**. The binary pipeline (`network/binary.ts`) is the receive path — it reads packets and writes directly into SoA storage, calling `setComponent(world, entity, component, {}, { origin: 'network' })` only as needed to register bitECS presence.
 
-This is one of the simplifications that justifies the dual channels. The authored side gets a proper apply pipeline because events are first-class semantic things. The runtime side is pure data: arrays in, arrays out, no event objects to construct.
+This is one of the simplifications that justifies the dual channels. The `event` side gets a proper apply pipeline because events are first-class semantic things. The `continuous` side is pure data: arrays in, arrays out, no event objects to construct.
 
 ## The origin tag, and why it exists
 
@@ -88,11 +88,11 @@ if (!hasEventBeenSeen(world, event)) {
 
 But normally you don't — the mutation pipeline handles it.
 
-## What about authority on the runtime channel?
+## What about authority on the `continuous` channel?
 
-The runtime channel has no governance gate. A binary packet from peer X arrives and updates SoA fields, full stop. Authority is enforced **structurally** via the `AuthoritativeFor` relation: a system that runs locally checks "do I have authority over this entity for this component?" before processing physics or moving things. See [Authority & Ownership](/authority-and-ownership).
+The `continuous` channel has no governance gate. A binary packet from peer X arrives and updates SoA fields, full stop. Authority is enforced **structurally** via the `AuthoritativeFor` relation: a system that runs locally checks "do I have authority over this entity for this component?" before processing physics or moving things. See [Authority & Ownership](/authority-and-ownership).
 
-This split is intentional. Per-packet signature verification at 60 Hz is too expensive. Per-event signature verification on authored events (sub-Hz cadence) is fine. Authority on runtime is a property of the entity graph, not the wire.
+This split is intentional. Per-packet signature verification at 60 Hz is too expensive. Per-event signature verification on authored events (sub-Hz cadence) is fine. Authority on `continuous` is a property of the entity graph, not the wire.
 
 ## A complete trace
 

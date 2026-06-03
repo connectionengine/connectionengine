@@ -118,6 +118,6 @@ Core ships the in-memory transport. Real transports compose with the lifecycle:
 - **WebRTC** — for direct peer-to-peer. Build a `TransportEndpoint` over an `RTCDataChannel`. Pass it to `joinWorld`. Done.
 - **WebSocket** — for client-server or relay flows. Wrap the socket. Pass to `joinWorld`. Done.
 - **AD4M Perspective** — `@connectionengine/ad4m-bridge` wraps a Perspective's `addLinks` + `addListener` as a `TransportEndpoint`. The Perspective IS the wire.
-- **Signed in-memory** — `@connectionengine/local`'s `connectLocalInMemory` adds Ed25519 signing on the authored channel; runtime binary stays unsigned (authority-checked at ECS level).
+- **Signed in-memory** — `@connectionengine/local`'s `connectLocalInMemory` adds Ed25519 signing on the `event` channel; `continuous` binary stays unsigned (authority-checked at ECS level).
 
 WebRTC and WebSocket implementations aren't yet shipped in core. The integration point is the `TransportEndpoint` interface — once you can satisfy it, the rest of the stack is reusable.

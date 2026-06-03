@@ -31,7 +31,6 @@ import type { AuthoredEvent, Entity, World } from '../ecs/world'
 
 export const CredentialConstraintComponent = defineComponent({
   id: 'CredentialConstraint',
-  mutationCategory: 'authored',
   schema: Schema.Object({
     requiredCredential: Schema.String({ default: '' }),
     /** comma-separated list of ops: 'spawn,modify,delete' */
@@ -41,7 +40,6 @@ export const CredentialConstraintComponent = defineComponent({
 
 export const TemporalConstraintComponent = defineComponent({
   id: 'TemporalConstraint',
-  mutationCategory: 'authored',
   schema: Schema.Object({
     minIntervalMs: Schema.Number({ default: 0 }),
     maxCountPerWindow: Schema.Number({ default: Number.POSITIVE_INFINITY }),
@@ -53,7 +51,6 @@ export const TemporalConstraintComponent = defineComponent({
 
 export const ContentConstraintComponent = defineComponent({
   id: 'ContentConstraint',
-  mutationCategory: 'authored',
   schema: Schema.Object({
     componentType: Schema.String({ default: '' }),
     /** JSON-encoded { fieldName: { min?, max?, pattern?, blocklist? } } */
@@ -63,8 +60,7 @@ export const ContentConstraintComponent = defineComponent({
 
 export const HasConstraint = defineRelation({
   name: 'HasConstraint',
-  exclusive: false,
-  mutationCategory: 'authored'
+  exclusive: false
 })
 
 // ── Constraint kind registry ─────────────────────────────────────────────────-

@@ -11,7 +11,7 @@
     "build": "next build && rm -rf ../docs && mv out ../docs"
   },
   "dependencies": {
-    "next": "^13.5.11",
+    "next": "^14.2.33",
     "nextra": "^2.13.4",
     "nextra-theme-docs": "^2.13.4",
     "react": "^18.3.1",

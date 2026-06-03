@@ -24,7 +24,6 @@ import { createEntity } from '../ecs/entity'
 export const UserComponent = defineComponent({
   id: 'User',
   label: 'User',
-  mutationCategory: 'authored',
   schema: Schema.Object({
     did: Schema.String({ default: '' }),
     displayName: Schema.String({ default: '' })
@@ -34,7 +33,6 @@ export const UserComponent = defineComponent({
 export const PeerComponent = defineComponent({
   id: 'Peer',
   label: 'Peer',
-  mutationCategory: 'authored',
   schema: Schema.Object({
     peerId: Schema.String({ default: '' }),
     latency: Schema.Number({ default: 0 })
@@ -52,7 +50,6 @@ export const PeerComponent = defineComponent({
 export const TransientOnDisconnect = defineComponent({
   id: 'TransientOnDisconnect',
   label: 'Transient On Disconnect',
-  mutationCategory: 'authored',
   schema: Schema.Object({}) // empty marker
 })
 

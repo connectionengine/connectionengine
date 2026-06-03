@@ -13,14 +13,12 @@ import { defineRelation, addRelation, getRelationTargets, removeRelation } from 
 
 const ChildOf = defineRelation({
   name: 'ChildOf',
-  exclusive: true, // a child has at most one parent
-  mutationCategory: 'authored'
+  exclusive: true // a child has at most one parent
 })
 
 const Likes = defineRelation({
   name: 'Likes',
-  exclusive: false, // an agent can like many things
-  mutationCategory: 'authored'
+  exclusive: false // an agent can like many things
 })
 
 addRelation(world, child, ChildOf, parent)
@@ -49,9 +47,17 @@ This is why Connection Engine can be read as both an ECS and an RDF-shaped graph
 
 The choice is structural, not policy. If having two parents is meaningless, mark it exclusive and the engine enforces it. If it could legitimately mean two, don't.
 
-## Relations are wire-mode aware
+## Relations replicate as authored events
 
-Relations have the same `mutationCategory` system as components. Almost always `authored` — relations carry causal meaning (who owns what, who follows whom) and benefit from event-sourcing. `runtime` relations exist but are unusual.
+Relations always travel the `event` channel — they carry causal meaning (who owns what, who follows whom) and belong in the event log so late-joining peers can rebuild the graph. There's no SoA equivalent for relations; the only opt-out is `sync: false`:
+
+```ts
+const DebugHover = defineRelation({
+  name: 'DebugHover',
+  exclusive: true,
+  sync: false  // local-only — hovering an entity in your editor doesn't replicate
+})
+```
 
 On the wire, a relation event looks like `(sourcePath, relationName, op, { targetPath })`. The receiver walks both paths in its own world, creates the chain if necessary, and applies the relation. Identity is path-based on both ends — there are no entity IDs in the envelope.
 

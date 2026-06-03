@@ -42,7 +42,7 @@ describe('World', () => {
 
   it('destroyWorld is idempotent and clears bindings', () => {
     const world = createWorld({ agent: createAnonAgent() })
-    world.network.schemas.set('X', { id: 'X', jsonSchema: {}, shaclShape: {}, mutationCategory: 'authored' })
+    world.network.schemas.set('X', { id: 'X', jsonSchema: {}, shaclShape: {}, channel: 'event' })
     destroyWorld(world)
     expect(world.network.schemas.size).toBe(0)
     expect(Worlds.has(world)).toBe(false)

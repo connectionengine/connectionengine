@@ -1,13 +1,23 @@
 /**
- * ComponentDefinition — schema-driven, mutation-categorised, SHACL-shape-bearing.
+ * ComponentDefinition — schema-driven, SHACL-shape-bearing.
  *
- * One `defineComponent({ id, label, schema, mutationCategory? })` produces:
+ * One `defineComponent({ id, label, schema, local? })` produces:
  *   - SoA stores (typed arrays) for SoA-tagged fields (Vec3, Quat, Float32, ...)
  *   - per-entity instance store for value-typed fields (string, boolean, ...)
- *   - a ComponentSchema (jsonSchema + shaclShape + mutationCategory) registered
- *     with the world's schema map for replication metadata
- *   - mutation category derived from schema field types if not specified:
- *       any SoA field → 'runtime', else → 'authored'
+ *   - a ComponentSchema (jsonSchema + shaclShape + channel) registered with the
+ *     world's schema map for replication metadata
+ *
+ * The replication channel is derived from the schema alone:
+ *   - any SoA-tagged field  → `continuous` (binary delta path, no event log,
+ *                              last-write-wins, no governance gate)
+ *   - else                  → `event`      (authored path: event-sourced,
+ *                              signed, governance-validated, replayed on
+ *                              late join)
+ *   - `sync: false`         → `local`      (never replicated)
+ *
+ * Schema-only is strict: mixing SoA and non-SoA fields in one component throws
+ * at definition. Split it instead — a `Transform { position, rotation }` for
+ * continuous, a separate `Label { text }` for events.
  *
  * setComponent / getComponent / removeComponent operate against bitECS storage
  * + our instance store, fire observers, and feed the mutation pipeline.
@@ -18,25 +28,60 @@ import { Kind, type Static, type TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { resizableArray } from '../maths/common'
 import type { ArrayBufferKind, SoAStoreKind } from '../schema/kinds'
-import type { World, Entity, ComponentSchema } from './world'
+import type { World, Entity } from './world'
 import type { Origin } from './trace'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type MutationCategory = 'authored' | 'runtime' | 'local'
+/**
+ * Shareable replication metadata. One entry per component lives in
+ * `world.network.schemas`, keyed by component id.
+ */
+export interface ComponentSchema {
+  readonly id: string
+  readonly jsonSchema: object
+  readonly shaclShape: object
+  /**
+   * Replication channel — derived from the schema in `defineComponent`.
+   * `event` for authored events, `continuous` for binary delta SoA fields,
+   * `local` if the component is opted out of replication.
+   */
+  readonly channel: 'event' | 'continuous' | 'local'
+}
+
+/**
+ * Replication channel for a component. Derived from the schema:
+ *   - `'continuous'` — has SoA-tagged fields, ships via binary delta pipeline,
+ *                      not in event log, last-write-wins.
+ *   - `'event'`      — no SoA fields, ships as authored event, in event log,
+ *                      signed, replayed on late join.
+ *   - `'local'`      — opt-out via `defineComponent({ sync: false })`. Never
+ *                      replicates.
+ */
+export type ReplicationChannel = 'event' | 'continuous' | 'local'
 
 export interface ComponentOptions<T extends TSchema = TSchema> {
   id: string
   label?: string
   schema: T
-  mutationCategory?: MutationCategory
+  /**
+   * Whether this component replicates across the network. Default `true`.
+   * Set to `false` to keep the component machine-local — no events, no
+   * binary packets, no SHACL `channel` other than `'local'`.
+   */
+  sync?: boolean
 }
 
 export interface ComponentDefinition<T extends TSchema = TSchema> {
   readonly id: string
   readonly label: string
   readonly $schema: T
-  readonly mutationCategory: MutationCategory
+  /** Whether this component replicates. Defaults to `true` at definition time. */
+  readonly sync: boolean
+  /** Replication channel — derived from schema + `sync`. */
+  readonly channel: ReplicationChannel
+  /** True iff this component uses the binary delta path. */
+  readonly isBinary: boolean
   readonly componentSchema: ComponentSchema
   /** Default values per field, applied on first set. */
   readonly $defaults: Record<string, unknown>
@@ -108,7 +153,7 @@ const buildDefaults = (schema: TSchema): Record<string, unknown> => {
 
 const SHACL_NS = 'https://connectionengine.dev/shacl#'
 
-const toShaclShape = (id: string, schema: TSchema, mutationCategory: MutationCategory): object => {
+const toShaclShape = (id: string, schema: TSchema, channel: ReplicationChannel): object => {
   // Minimal SHACL shape — id maps to a NodeShape URI, fields become PropertyShapes.
   // This is the metadata other peers receive to interpret incoming triples; a full
   // SHACL engine isn't needed at runtime, validation is handled by governance + TypeBox.
@@ -128,16 +173,9 @@ const toShaclShape = (id: string, schema: TSchema, mutationCategory: MutationCat
     '@id': `${SHACL_NS}${id}`,
     '@type': 'sh:NodeShape',
     targetClass: id,
-    mutationCategory,
+    channel,
     properties
   }
-}
-
-// ── deriveMutationCategory ────────────────────────────────────────────────────
-
-export const deriveMutationCategory = (schema: TSchema): MutationCategory => {
-  const { soaFields } = classifyFields(schema)
-  return soaFields.length > 0 ? 'runtime' : 'authored'
 }
 
 // ── defineComponent ───────────────────────────────────────────────────────────
@@ -147,13 +185,28 @@ const componentByRef = new WeakMap<bitecs.ComponentRef, ComponentDefinition>()
 const componentById = new Map<string, ComponentDefinition>()
 
 export const defineComponent = <T extends TSchema>(options: ComponentOptions<T>): ComponentDefinition<T> => {
-  const { id, label = id, schema } = options
+  const { id, label = id, schema, sync = true } = options
   const existing = componentById.get(id)
   if (existing) return existing as ComponentDefinition<T>
-  const mutationCategory = options.mutationCategory ?? deriveMutationCategory(schema)
   const { soaFields, valueFields } = classifyFields(schema)
+
+  // Strict: SoA fields and non-SoA fields are different replication channels.
+  // Mixing them in one component would silently drop the non-SoA fields on
+  // the binary wire — a footgun. Force the split at definition time.
+  if (soaFields.length > 0 && valueFields.length > 0) {
+    throw new Error(
+      `defineComponent('${id}'): components cannot mix SoA-tagged fields (${soaFields.join(
+        ', '
+      )}) with value-typed fields (${valueFields.join(
+        ', '
+      )}). Split into two components — SoA fields ship via the binary delta channel; value-typed fields ship as authored events.`
+    )
+  }
+
   const $defaults = buildDefaults(schema)
   const $createSoA = makeSoAStoreFactory(schema)
+  const isBinary = sync && soaFields.length > 0
+  const channel: ReplicationChannel = !sync ? 'local' : isBinary ? 'continuous' : 'event'
 
   // bitECS component ref — opaque marker object. We use a fresh object per
   // definition so multiple components have distinct refs even when their
@@ -163,15 +216,17 @@ export const defineComponent = <T extends TSchema>(options: ComponentOptions<T>)
   const componentSchema: ComponentSchema = {
     id,
     jsonSchema: schema as object,
-    shaclShape: toShaclShape(id, schema, mutationCategory),
-    mutationCategory
+    shaclShape: toShaclShape(id, schema, channel),
+    channel
   }
 
   const definition: ComponentDefinition<T> = {
     id,
     label,
     $schema: schema,
-    mutationCategory,
+    sync,
+    channel,
+    isBinary,
     componentSchema,
     $defaults,
     $ref,
@@ -340,10 +395,10 @@ export const setComponent = <T extends TSchema>(
     writeSoA(stores.soa, component as ComponentDefinition, entity, value as Record<string, unknown>)
   }
 
-  if (origin === 'local') {
-    if (component.mutationCategory === 'runtime') {
+  if (origin === 'local' && component.sync) {
+    if (component.isBinary) {
       markRuntimeDirty(world, entity, component.id)
-    } else if (component.mutationCategory === 'authored') {
+    } else {
       world.authoredQueue.push({
         entity,
         predicate: component.id,
@@ -389,8 +444,8 @@ export const removeComponent = <T extends TSchema>(
   const origin: Origin = options.origin ?? 'local'
   bitecs.removeComponent(world, entity, component.$ref)
   delete stores.store[entity]
-  if (component.mutationCategory === 'runtime') clearRuntimeDirty(world, entity, component.id)
-  if (origin === 'local' && component.mutationCategory === 'authored') {
+  if (component.isBinary) clearRuntimeDirty(world, entity, component.id)
+  if (origin === 'local' && component.sync && !component.isBinary) {
     world.authoredQueue.push({
       entity,
       predicate: component.id,

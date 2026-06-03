@@ -43,17 +43,17 @@ A consumer chooses one (or none) at the edge. Core itself remains identity- and 
 
 ## The two replication channels
 
-This is the single most important mental model in Connection Engine. Every component picks one of two **mutation categories**, and that choice decides everything about how it travels.
+This is the single most important mental model in Connection Engine. Every component lands on exactly one **replication channel**, derived from its schema at definition time. The channel decides everything about how the component travels.
 
-| Category    | Wire shape                       | Cadence       | Use for                                 |
-|-------------|----------------------------------|---------------|-----------------------------------------|
-| `authored`  | Signed JSON-shaped events        | Per-event     | Spawns, ownership, governance, intent   |
-| `runtime`   | Binary delta, per-field mask     | Per-tick      | Transforms, velocities, anything 60 Hz  |
-| `local`     | Never replicated                 | n/a           | Caches, view-state, machine-local data  |
+| `channel`     | Wire shape                       | Cadence       | Use for                                 |
+|---------------|----------------------------------|---------------|-----------------------------------------|
+| `event`       | Authored envelope (JSON-shaped)  | Per-event     | Spawns, ownership, governance, intent   |
+| `continuous`  | Binary delta, per-field mask     | Per-tick      | Transforms, velocities, anything 60 Hz  |
+| `local`       | Never replicated                 | n/a           | Caches, view-state, machine-local data  |
 
-The category is derived from the schema: any SoA-tagged field (Vec3, Quat, Float32, …) makes the component `runtime` by default; everything else defaults to `authored`. You can override per component.
+The channel is **derived from the schema** — there is no `mutationCategory` enum to set. Any SoA-tagged field (Vec3, Quat, Float32, …) puts the component on `continuous`; anything else lands on `event`. The only opt-out is `defineComponent({ sync: false })`, which forces `local`.
 
-The two channels share one schema. That's the central design move — you don't write the same component twice. The same `Transform` component is binary on the wire when its position changes, authored when its parent BelongsTo changes.
+Mixing SoA and non-SoA fields in one component throws at definition time. You split into two components — one continuous, one event — because they have different replication contracts. See [Components](/components) for the rationale.
 
 ## The session protocol
 

@@ -27,8 +27,8 @@ Once you accept the equivalence, a lot of complexity disappears:
 
 - **bitECS-based runtime** with schema-driven components (TypeBox), structure-of-arrays storage for hot fields (Vec3/Quat/Float32/...).
 - **Two replication channels** that share one schema:
-  - **Authored** — reliable, event-sourced, governance-validated. Spawns, deletes, ownership transfers, anything causal.
-  - **Runtime** — binary, per-field delta encoding, per-peer shadow maps. Transforms, velocities, anything 60 Hz.
+  - **`event`** — reliable, event-sourced, governance-validated. Spawns, deletes, ownership transfers, anything causal.
+  - **`continuous`** — binary, per-field delta encoding, per-peer shadow maps. Transforms, velocities, anything 60 Hz.
 - **Pure event-sourced late join** — no snapshot protocol. A new peer catches up by replaying the host's signed event log. Idempotent on top of itself.
 - **Three runtime modes** that share the same core:
   - **Solo** — anonymous agent, no transport, runs offline.

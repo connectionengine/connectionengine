@@ -4,7 +4,6 @@ import { createAnonAgent, createWorld, destroyWorld } from './world'
 import { createEntity } from './entity'
 import {
   defineComponent,
-  deriveMutationCategory,
   drainRuntimeDirty,
   getComponent,
   hasComponent,
@@ -30,30 +29,43 @@ const Transform = defineComponent({
 
 const Debug = defineComponent({
   id: 'Debug',
-  mutationCategory: 'local',
+  sync: false,
   schema: Schema.Object({
     label: Schema.String({ default: '' })
   })
 })
 
-describe('defineComponent — mutation category', () => {
-  it('value-only schema defaults to authored', () => {
-    expect(Health.mutationCategory).toBe('authored')
-    expect(deriveMutationCategory(Health.$schema)).toBe('authored')
+describe('defineComponent — replication channel', () => {
+  it('value-only schema derives to event channel', () => {
+    expect(Health.channel).toBe('event')
+    expect(Health.isBinary).toBe(false)
+    expect(Health.sync).toBe(true)
   })
 
-  it('SoA-bearing schema defaults to runtime', () => {
-    expect(Transform.mutationCategory).toBe('runtime')
-    expect(deriveMutationCategory(Transform.$schema)).toBe('runtime')
+  it('SoA-bearing schema derives to continuous channel', () => {
+    expect(Transform.channel).toBe('continuous')
+    expect(Transform.isBinary).toBe(true)
+    expect(Transform.sync).toBe(true)
   })
 
-  it('explicit mutationCategory overrides derivation', () => {
-    expect(Debug.mutationCategory).toBe('local')
+  it('`sync: false` opts out of replication entirely', () => {
+    expect(Debug.channel).toBe('local')
+    expect(Debug.sync).toBe(false)
+    expect(Debug.isBinary).toBe(false)
+  })
+
+  it('mixing SoA and non-SoA fields throws', () => {
+    expect(() =>
+      defineComponent({
+        id: 'Mixed-illegal',
+        schema: Schema.Object({ position: Schema.Vec3(), label: Schema.String({ default: '' }) })
+      })
+    ).toThrow(/cannot mix SoA-tagged fields/i)
   })
 
   it('generates ComponentSchema metadata', () => {
     expect(Health.componentSchema.id).toBe('Health')
-    expect(Health.componentSchema.mutationCategory).toBe('authored')
+    expect(Health.componentSchema.channel).toBe('event')
     expect(Health.componentSchema.jsonSchema).toBeDefined()
     expect(Health.componentSchema.shaclShape).toBeDefined()
   })

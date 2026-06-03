@@ -36,6 +36,8 @@ git add packages/ad4m && git commit -m "bump ad4m submodule"
 
 When this fails, the temptation is to "just add the import." Don't — surface the missing concept down a layer instead, or invert the dependency via a registered hook. The existing precedent is `entity.ts → registerRemoveHook(...)` in core, which lets `identity.ts` (higher layer) plug a cleanup callback into entity removal without `entity.ts` ever importing `identity.ts`.
 
+**For type-only cycles within the same layer**, prefer inline `import(...)` references in type positions over a "forward-declared" interface. Example: `world.ts` references `ComponentSchema` via `Map<string, import('./component').ComponentSchema>` rather than redeclaring the interface, because the type properly lives in `component.ts`. Inline imports keep the type definition in one place, leave no runtime import to participate in a cycle, and don't trigger `import/no-cycle`. Avoid the older "duplicate interface in a leaf module" pattern — it drifts.
+
 ## Code map (codegraph)
 
 ```bash
@@ -52,6 +54,7 @@ Outputs land in `.codegraph/` (gitignored). After `map` has run once, `npx codeg
 - **Every fix needs a test that would have caught the regression.** No exceptions.
 - **Verification is end-to-end, not just type-check.** `pnpm run check` (typecheck + oxlint) + `pnpm run test` (vitest across all packages) before declaring anything done.
 - **No mocks/stubs/placeholders in production code.** `// TODO` and `throw new Error('not implemented')` are not acceptable in committed code.
+- **Docs travel with code.** Every change to engine behaviour, public API, or mental model must land with matching updates in `docs-src/pages/*.mdx`. No commit may leave the docs describing the old shape. If a renamed identifier, removed concept, or new option appears in a diff, the documentation prose, code blocks, and `description:` frontmatter must all be updated in the same commit. Grep for the old name across `docs-src/` before declaring done; a non-empty hit is a regression.
 
 ## Things easy to miss
 

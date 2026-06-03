@@ -7,11 +7,11 @@
  * assigns identity (parent + UID) so the entity is addressable.
  */
 
-import type { ComponentDefinition } from '../ecs/component'
+import type { ComponentDefinition, ComponentSchema } from '../ecs/component'
 import { setComponent } from '../ecs/component'
 import { createEntity } from '../ecs/entity'
 import { setUID } from '../ecs/identity'
-import type { Entity, World, ComponentSchema } from '../ecs/world'
+import type { Entity, World } from '../ecs/world'
 
 export interface PrefabDefinition {
   readonly name: string
@@ -27,7 +27,15 @@ export interface DefinePrefabOptions {
 }
 
 export const definePrefab = (name: string, options: DefinePrefabOptions): PrefabDefinition => {
-  // Compose SHACL shape as the merge of each component's
+  // A prefab is a composition — its constituent components each carry their
+  // own channel. We surface the broadest channel for SHACL metadata only:
+  // continuous > event > local.
+  const channels = new Set(options.components.map((c) => c.channel))
+  const channel: ComponentSchema['channel'] = channels.has('continuous')
+    ? 'continuous'
+    : channels.has('event')
+      ? 'event'
+      : 'local'
   const composedSchema: ComponentSchema = {
     id: `prefab:${name}`,
     jsonSchema: {
@@ -40,12 +48,7 @@ export const definePrefab = (name: string, options: DefinePrefabOptions): Prefab
       targetClass: `prefab:${name}`,
       components: options.components.map((c) => c.componentSchema.shaclShape)
     },
-    // Composed prefabs inherit the most permissive category (runtime > authored > local)
-    mutationCategory: options.components.some((c) => c.mutationCategory === 'runtime')
-      ? 'runtime'
-      : options.components.some((c) => c.mutationCategory === 'authored')
-        ? 'authored'
-        : 'local'
+    channel
   }
   return {
     name,

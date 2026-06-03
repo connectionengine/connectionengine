@@ -93,9 +93,9 @@ describe('Relation', () => {
     destroyWorld(world)
   })
 
-  it('mutation category defaults to authored, local opts out', () => {
-    expect(ChildOf.mutationCategory).toBe('authored')
-    const LocalOnly = defineRelation({ name: 'LocalOnly', mutationCategory: 'local' })
-    expect(LocalOnly.mutationCategory).toBe('local')
+  it('replicates by default; `sync: false` opts out', () => {
+    expect(ChildOf.sync).toBe(true)
+    const LocalOnly = defineRelation({ name: 'LocalOnly', sync: false })
+    expect(LocalOnly.sync).toBe(false)
   })
 })

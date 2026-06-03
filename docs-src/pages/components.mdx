@@ -1,5 +1,5 @@
 ---
-description: Schema-driven components, mutation categories, and why your schema decides your wire format.
+description: Schema-driven components, replication channels, and why your schema decides your wire format.
 ---
 
 # Components
@@ -30,36 +30,60 @@ Two things to internalise about `defineComponent`:
 
 1. **Definitions are global, storage is per-world.** `defineComponent({ id: 'Foo', ... })` registers `Foo` in a global registry keyed on `id`. Calling it again with the same id returns the same definition. But the typed arrays + per-entity instance store backing `Foo` are materialised lazily per world — two worlds in the same process don't share storage.
 
-2. **The schema drives the wire.** SoA-tagged fields (`Schema.Vec3`, `Schema.Quat`, `Schema.ArrayBuffer`, `Schema.SoAStore`) get structure-of-arrays storage and travel the binary runtime channel. Everything else lives in a per-entity instance map and travels the authored channel.
+2. **The schema decides the wire.** SoA-tagged fields (`Schema.Vec3`, `Schema.Quat`, `Schema.ArrayBuffer`, `Schema.SoAStore`) get structure-of-arrays storage and travel the binary `continuous` channel. Everything else lives in a per-entity instance map and travels the authored `event` channel. There is no `mutationCategory` enum — the channel is *derived* from what's in your schema, full stop.
 
-## Mutation categories
+## Replication channels
 
-Every component has a `mutationCategory`. It decides which replication path the component uses:
+Every component lands on exactly one channel, computed once at definition time. Three channels, one rule each:
 
-| Category    | Default for                              | How it travels                                      |
-|-------------|------------------------------------------|-----------------------------------------------------|
-| `runtime`   | Components with any SoA-tagged field     | Binary, per-field change masks, per-connection state |
-| `authored`  | Everything else                          | JS-object envelope, event-sourced, governance-validated |
-| `local`     | Never (opt-in only)                      | Doesn't replicate. Caches, UI state.                |
+| `channel`     | Selected when                                | How it travels                                      |
+|---------------|----------------------------------------------|-----------------------------------------------------|
+| `continuous`  | Schema has any SoA-tagged field              | Binary delta, per-field change mask, per-peer shadow |
+| `event`       | Schema has no SoA fields                     | Authored envelope, event-sourced, governance-validated, replayed on late join |
+| `local`       | `defineComponent({ sync: false })`           | Never replicates                                     |
 
-You can override:
+You don't pick the channel directly — you pick the schema, and `sync` for opt-out:
 
 ```ts
 const Score = defineComponent({
   id: 'Score',
-  // No SoA fields, so default would be 'authored'. Make it explicit.
-  mutationCategory: 'authored',
+  // No SoA fields → `event` channel. No override needed.
   schema: Schema.Object({ points: Schema.Number({ default: 0 }) })
 })
 
 const RenderCache = defineComponent({
   id: 'RenderCache',
-  mutationCategory: 'local', // pure derived state, don't ship
+  sync: false, // pure derived state — don't ship
   schema: Schema.Object({ lastDrawTime: Schema.Number({ default: 0 }) })
 })
 ```
 
-The reason this matters: **two components with identical-looking schemas can have very different network behaviour** depending on the category. A `Vec3 position` on a Transform is a 60 Hz binary stream. A `Vec3 spawnPoint` on a `SpawnerConfig` should be `authored` — it changes rarely, and the consensus + signed-history cost is worth it for that low frequency.
+The definition exposes three read-only properties for any system that needs to branch on the channel:
+
+- `Score.channel` — `'event' | 'continuous' | 'local'`
+- `Score.isBinary` — `true` iff the component takes the binary path
+- `Score.sync` — `true` unless explicitly opted out
+
+### Mixing SoA and non-SoA fields is an error
+
+A component cannot have both. `defineComponent` throws at definition time:
+
+```ts
+defineComponent({
+  id: 'TransformWithLabel',
+  schema: Schema.Object({
+    position: Schema.Vec3(),      // SoA
+    label:    Schema.String()      // value-typed
+  })
+})
+// → throws: components cannot mix SoA-tagged fields with value-typed fields.
+//   Split into two components — SoA fields ship via the binary delta channel;
+//   value-typed fields ship as authored events.
+```
+
+The split is `Transform { position, rotation }` and `Label { text }`. They're logically related but travel different channels with different semantics; making the developer split is the whole point of the strict check. The schema declares intent.
+
+The reason this rule matters: **two components with identical-looking schemas can have very different network behaviour** depending on whether they hold SoA or value fields. A `Vec3 position` on a `Transform` is a 60 Hz binary stream with last-write-wins semantics. A `Vec3` representing a spawn point should be expressed differently — as three numbers in an `event` component, or wrapped in a `SpawnConfig` that's authored — because changes to it are causally meaningful and belong in the event log.
 
 ## Reading and writing
 
@@ -68,7 +92,7 @@ import { setComponent, getComponent, hasComponent, removeComponent } from '@conn
 
 setComponent(world, entity, Health, { current: 50 })
 // → addComponent in bitECS, fills defaults, writes SoA + instance store,
-//   marks dirty (runtime) or queues authored event (authored)
+//   marks dirty (continuous) or queues authored event (event)
 
 getComponent(world, entity, Health)
 // → { current: 50, max: 100 }  — defaults merged in, SoA + instance unified
@@ -76,8 +100,8 @@ getComponent(world, entity, Health)
 hasComponent(world, entity, Health) // → true
 
 removeComponent(world, entity, Health)
-// → bitECS removeComponent, drops instance, clears runtime dirty,
-//   queues authored remove event if authored
+// → bitECS removeComponent, drops instance, clears dirty flag,
+//   queues authored remove event for `event`-channel components
 ```
 
 `getComponent` returns a fresh object combining the SoA snapshot (`position`, `rotation`) with the instance fields (`current`, `max`). It does not return a live reference — mutating the returned object doesn't change the store. Use `setComponent` to write.

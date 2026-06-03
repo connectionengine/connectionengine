@@ -30,7 +30,6 @@ import { type Capability, capabilityAllows, verifyCapability } from './zcap'
 
 export const CapabilityConstraintComponent = defineComponent({
   id: 'CapabilityConstraint',
-  mutationCategory: 'authored',
   schema: Schema.Object({
     /** Serialised capability JSON (parsed during validation). */
     capability: Schema.String({ default: '' })

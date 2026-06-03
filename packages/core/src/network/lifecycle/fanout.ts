@@ -31,7 +31,7 @@ export const ensureChannel = (world: World, connection: Connection): BinaryChann
   let channel = channels.get(connection)
   if (channel) return channel
   const components = allComponents()
-    .filter((c) => c.mutationCategory === 'runtime')
+    .filter((c) => c.isBinary)
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   if (components.length === 0) return undefined
   channel = createBinaryChannel(world, connection, { components })

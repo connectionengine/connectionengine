@@ -23,8 +23,8 @@ describe('Prefab', () => {
     const Avatar = definePrefab('Avatar', { components: [Transform, Health, Tag] })
     expect(Avatar.components).toHaveLength(3)
     expect(Avatar.composedSchema.id).toBe('prefab:Avatar')
-    // Has runtime component (Transform) → composed category is runtime
-    expect(Avatar.composedSchema.mutationCategory).toBe('runtime')
+    // Has a continuous component (Transform) → composed channel is continuous
+    expect(Avatar.composedSchema.channel).toBe('continuous')
   })
 
   it('instantiatePrefab attaches all components with defaults', () => {

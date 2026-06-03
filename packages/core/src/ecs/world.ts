@@ -99,19 +99,11 @@ export interface Connection {
   close(): void
 }
 
-/** Forward-declared — full shape in component.ts. */
-export interface ComponentSchema {
-  readonly id: string
-  readonly jsonSchema: object
-  readonly shaclShape: object
-  readonly mutationCategory: 'authored' | 'runtime' | 'local'
-}
-
 export interface NetworkBindings {
   /** Active peer connections for this world's live session. */
   connections: Set<Connection>
   /** Component id → ComponentSchema (shareable metadata). */
-  schemas: Map<string, ComponentSchema>
+  schemas: Map<string, import('./component').ComponentSchema>
   /** Local agent — opaque to core. Required. */
   localAgent: Agent
   /** Local peer entity (set on createPeer for this runtime). */

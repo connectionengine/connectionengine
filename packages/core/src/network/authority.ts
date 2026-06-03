@@ -17,14 +17,12 @@ import type { Entity, World } from '../ecs/world'
 
 export const OwnedBy = defineRelation({
   name: 'OwnedBy',
-  exclusive: true,
-  mutationCategory: 'authored'
+  exclusive: true
 })
 
 export const AuthoritativeFor = defineRelation({
   name: 'AuthoritativeFor',
-  exclusive: true,
-  mutationCategory: 'authored'
+  exclusive: true
 })
 
 // ── Ownership ────────────────────────────────────────────────────────────────-

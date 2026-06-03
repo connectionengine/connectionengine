@@ -25,7 +25,6 @@ import { createEntity, registerRemoveHook } from '../ecs/entity'
 export const UIDComponent = defineComponent({
   id: 'UID',
   label: 'UID',
-  mutationCategory: 'authored',
   schema: Schema.Object({
     value: Schema.String({ default: '' })
   })
@@ -33,8 +32,7 @@ export const UIDComponent = defineComponent({
 
 export const BelongsTo = defineRelation({
   name: 'BelongsTo',
-  exclusive: true,
-  mutationCategory: 'authored'
+  exclusive: true
 })
 
 /** Sentinel parent ID for root-level (un-parented) entities. */
