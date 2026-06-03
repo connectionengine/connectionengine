@@ -1,6 +1,7 @@
 {
-  "name": "template-monorepo",
+  "name": "connectionengine",
   "private": true,
+  "license": "CAL-1.0",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"pnpm --filter @connectionengine/client dev\" \"pnpm --filter @connectionengine/server dev\"",

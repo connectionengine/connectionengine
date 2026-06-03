@@ -1,98 +1,24 @@
-# Connection Engine
+# Connection Engine — agent notes
 
-A semantic spatial web engine — multiplayer-first, data-driven TypeScript runtime for real-time spatial experiences. Built on web standards (WebGPU, WebRTC, WebXR, Web Crypto), designed to converge with AD4M/WE as the spatial runtime for the decentralised semantic web.
+What [`README.md`](./README.md) covers (project overview, packages, runtime modes, quick start, license) and [`VISION.md`](./VISION.md) covers (WE/AD4M convergence, why this exists) is not repeated here. Everything below is what isn't obvious from the code, the package.json files, or the planning docs.
 
-## What it is
+## Source of truth for design
 
-An ECS engine where the entity-component-relationship graph **is** a semantic graph — structurally isomorphic with RDF triples, optimised for 60fps. Components are SHACL shapes. Relationships are predicates. Queries are SPARQL-equivalent pattern matching. The core engine is identity- and crypto-agnostic; identity, transport, and persistence are pluggable runtime modes.
+The canonical engine design lives at [`.specs/planning/ecs-network-exploration.md`](./.specs/planning/ecs-network-exploration.md). When the code and the spec disagree on intent, the spec wins — unless there's a reason captured in a commit message. Per-tier specs in `.specs/01-..06-*.md` are derived from the canonical doc; current status is in [`.specs/planning/implementation-status.md`](./.specs/planning/implementation-status.md).
 
-## Architecture
+## AD4M submodule — one-time setup gotcha
 
-Three packages, three responsibilities:
-
-| Package | Role |
-| --- | --- |
-| **`@connectionengine/core`** | Pure ECS + spatial runtime. World, Entity, Components, Relations, Observers, Query, Identity addressing (BelongsTo + UID), System scheduler, Mutation pipeline (unsigned `AuthoredEvent`), Prefab, Snapshot, in-memory transport, engine-level governance (credential + temporal + content). No identity provider, no signing, no transport-specific code. |
-| **`@connectionengine/local`** | Solo/local-multiplayer runtime. Ed25519/did:key identity, ZCAP-LD capability constraints, signed in-memory transport. `createLocalRuntime({ seed })` wires it all together. Self-contained — no external dependencies on Holochain/AD4M. |
-| **`@connectionengine/ad4m-bridge`** | AD4M-backed runtime. Wraps AD4M `Agent` (identity + signing), `Ad4mClient` (RPC), and `PerspectiveProxy` (Link/LinkExpression replication via Holochain). `createAd4mRuntime({ client, perspective })` plugs Connection Engine onto the AD4M executor. The AD4M repo is a git submodule at `packages/ad4m/` — see `## AD4M submodule` below. |
-
-Core works standalone for tests + solo apps. Layer `local/` on top for full cryptographic guarantees without AD4M. Layer `ad4m-bridge/` on top for decentralised persistence + sync + identity via AD4M / Holochain.
-
-## Core design
-
-- **Everything is an entity.** Users, avatars, scores, quests, factions, inventories — only engine runtime bindings (timer, WebXR, WebGPU, resource loaders, input) live outside the ECS.
-- **Component-level mutation categories.** Authored (reliable, governance-validated, event-sourced) vs runtime (binary, authority-checked, ephemeral) vs local (never replicated).
-- **Agent-centric networking.** No inherent server — each peer evaluates shared governance rules locally. A dedicated server is just a peer with broader authority.
-- **Schema-driven.** A single TypeBox schema definition generates SoA stores, instance stores, JSON Schema, SHACL shapes, and governance hooks.
-
-## Tech stack
-
-TypeScript · pnpm workspaces · bitECS v4 · TypeBox · SolidJS · Vite/Rollup · Vitest/Playwright · oxlint · Havok (physics worker via SharedArrayBuffer)
-
-**Runtime modes:**
-
-- `local/` adds `@noble/ed25519` + `@noble/hashes`
-- `ad4m-bridge/` adds `@coasys/ad4m` (via submodule)
-
-## Core surface (`@connectionengine/core`)
-
-Organised by domain (matching the on-disk structure):
-
-- **`schema/`** — unified `Schema` namespace: `Schema.Object`, `Schema.Number`, `Schema.Vec3`, `Schema.Quat`, `Schema.Float32`, … TypeBox-backed with SoA tag kinds.
-- **`maths/`** — `Vec2SoA`, `Vec3SoA`, `Vec4SoA`, `QuatSoA`, `Quat2SoA`, `resizableArray`.
-- **`ecs/`** — `createWorld({ agent, ... })`, `destroyWorld`, `tickWorld`, `createAnonAgent`, `createEntity`, `removeEntity`, `defineComponent`, `setComponent` / `getComponent` / `removeComponent`, `defineRelation`, `addRelation` / `removeRelation`, `observe` + `onAdd`/`onRemove`/`onSet`/`onGet`, `createManualClock`, `createTraceSink`. **No crypto.**
-- **`engine/`** — `defineSystem({ phase, execute?, reactor? })`, `runSystems`, `flushAuthored` / `flushRuntime` (produce unsigned envelopes via `world.network.publishAuthored?`), `applyAuthoredEnvelope` / `applyRuntimeEnvelope` (consume verified envelopes from a runtime mode), `definePrefab`, `instantiatePrefab`, `createSnapshot`, `applySnapshot`.
-- **`network/`** — `UIDComponent`, `BelongsTo`, `setUID`, `getEntityByUID`, `getEntityPath`, `resolveEntityPath`, `query`, `Or`/`And`/`Not`/`Hierarchy`/`Cascade`, `connectInMemory` (unsigned), `createUser`, `createPeer`, `OwnedBy` / `AuthoritativeFor`, `requestAuthority` / `transferAuthority` / `recoverAuthority`, `addConstraint` / `validateEvent` (engine-level constraints only: credential, temporal, content).
-
-`AuthoredEvent` is the engine's wire-agnostic mutation shape: `{ entityPath, predicate, op, value, author, timestamp }`. Runtime modes wrap it for signing/transport.
-
-## Local runtime surface (`@connectionengine/local`)
-
-- `createLocalAgent({ seed? })` — Ed25519 keypair wrapped as an opaque `Agent`.
-- `createLocalRuntime({ seed?, agent?, governance? })` — convenience: world + agent + capability validator.
-- `connectLocalInMemory(worldA, worldB)` — signed in-memory transport (Ed25519-signed envelopes).
-- `createRootCapability` / `delegateCapability` / `verifyCapability` / `capabilityAllows` — ZCAP-LD.
-- `addCapabilityConstraint(world, scope, cap)` + `installCapabilityValidator(world, ctx)` — capability governance composed with core's engine-level governance.
-
-## AD4M bridge surface (`@connectionengine/ad4m-bridge`)
-
-Imports directly from `@coasys/ad4m` — `Ad4mClient`, `PerspectiveProxy`, `Link`, `LinkExpression`, `ExpressionProof`. Consumers who don't want AD4M simply don't depend on this package; `@connectionengine/core` and `@connectionengine/local` never reference AD4M.
-
-- `createAd4mAgent(client: Ad4mClient)` — wraps AD4M's logged-in agent into the opaque `Agent` core wants.
-- `eventToLink` / `linkExpressionToEvent` — AuthoredEvent ↔ AD4M Link encoding (v0: single Link per event).
-- `connectAd4m(world, perspective)` — installs `publishAuthored` (→ `perspective.addLinks`) + `link-added` listener (→ `applyAuthoredEnvelope`).
-- `createAd4mRuntime(client, perspective)` — world + agent + transport in one call.
-
-## Checks
-
-Always ensure these pass:
-
-```bash
-pnpm run check   # type checking + oxlint (including layering rules)
-pnpm run test    # vitest across all packages
-```
-
-The lint config enforces:
-
-- `ecs/**` cannot import from `engine/**` or `network/**` (foundation-layer protection)
-- `import/no-cycle` across all source files (cycle gate, depth 10)
-- The AD4M submodule (`packages/ad4m/**`) is ignored by oxlint and the layering rules.
-
-## AD4M submodule
-
-The AD4M monorepo is checked out as a git submodule at `packages/ad4m`, tracking the `dev` branch. `pnpm-workspace.yaml` includes only `packages/ad4m/core` (the JS SDK) — the rest of AD4M (Rust executor, languages, CLI) is built independently via AD4M's own pnpm-workspace.
-
-**One-time setup on a fresh checkout:**
+`@coasys/ad4m`'s `package.json` points its main/module/types at `lib/...`, which the submodule does not check in. The bridge package cannot resolve `@coasys/ad4m` imports until AD4M's own build has run:
 
 ```bash
 git submodule update --init --recursive
 pnpm install
-pnpm --filter @coasys/ad4m build   # produces packages/ad4m/core/lib/
+pnpm --filter @coasys/ad4m build      # ← this is the non-obvious step
 ```
 
-The AD4M build step is required because `@coasys/ad4m`'s `main`/`module`/`types` point at `lib/...`. Without it, the bridge package cannot resolve `@coasys/ad4m` imports.
+Fresh checkouts that skip the build step will get TypeScript errors in `packages/ad4m-bridge/`.
 
-**Updating to the latest AD4M `dev`:**
+**Bumping AD4M:**
 
 ```bash
 git submodule update --remote packages/ad4m
@@ -100,38 +26,37 @@ pnpm --filter @coasys/ad4m build
 git add packages/ad4m && git commit -m "bump ad4m submodule"
 ```
 
-The submodule SHA is pinned in our commit so every checkout is reproducible.
+## Layering — enforced, not just convention
 
-**Consumers without AD4M:** apps that don't need AD4M never add `@connectionengine/ad4m-bridge` to their deps. The bridge is the only package that depends on `@coasys/ad4m`, so AD4M's transitive deps (Holochain client, base64-js, pako) are required only when you opt in.
+`.oxlintrc.json` enforces:
 
-## Code map
+- `ecs/**` may not import from `engine/**` or `network/**` (foundation-layer protection)
+- `import/no-cycle` across all source files (depth 10)
+- `packages/ad4m/**` is ignored
 
-The core package wraps [`@colbymchenry/codegraph`](https://github.com/colbymchenry/codegraph) (Tree-sitter under the hood) for cross-package code intelligence.
+When this fails, the temptation is to "just add the import." Don't — surface the missing concept down a layer instead, or invert the dependency via a registered hook. The existing precedent is `entity.ts → registerRemoveHook(...)` in core, which lets `identity.ts` (higher layer) plug a cleanup callback into entity removal without `entity.ts` ever importing `identity.ts`.
+
+## Code map (codegraph)
 
 ```bash
 pnpm --filter @connectionengine/core map         # sync index + print status
-pnpm --filter @connectionengine/core map:render  # also emit visualisations
+pnpm --filter @connectionengine/core map:render  # also emit graph.md / graph.html / graph.json
 ```
 
-`map:render` produces three artifacts under `.codegraph/` (all gitignored):
+Outputs land in `.codegraph/` (gitignored). After `map` has run once, `npx codegraph query|callers|callees|impact|context|serve <symbol>` works from the repo root — useful for impact analysis before non-local refactors. The `serve` subcommand exposes the index as an MCP server for editor/agent integration.
 
-- **`graph.md`** — Mermaid module-level dependency graph of `packages/core/src/`, grouped into `ecs/`/`engine/`/`network/` subgraphs.
-- **`graph.html`** — interactive Cytoscape view of all symbols + their `calls`/`references` edges. Search, kind filters, click-to-inspect.
-- **`graph.json`** — raw `{nodes, edges}` payload for downstream tooling.
+## Conventions
 
-The script (`packages/core/scripts/map-render.ts`) reads `.codegraph/codegraph.db` directly via `node:sqlite` (Node 22+). No npm deps.
+- **No commits without explicit ask.** Leave changes in the working tree for the human to review; `git add`/`git commit` only when told.
+- **Never push to `main` / `dev` / `master`.** Always feature branch. Force-pushes (when needed for rebase on a feature branch) use `--force-with-lease`.
+- **Every fix needs a test that would have caught the regression.** No exceptions.
+- **Verification is end-to-end, not just type-check.** `pnpm run check` (typecheck + oxlint) + `pnpm run test` (vitest across all packages) before declaring anything done.
+- **No mocks/stubs/placeholders in production code.** `// TODO` and `throw new Error('not implemented')` are not acceptable in committed code.
 
-After running `map` once, raw codegraph subcommands work from the repo root:
+## Things easy to miss
 
-```bash
-npx codegraph query "<symbol>"             # search by name
-npx codegraph callers "<symbol>"           # who calls this?
-npx codegraph callees "<symbol>"           # what does this call?
-npx codegraph impact  "<symbol>"           # full blast radius of a change
-npx codegraph context "<task description>" # markdown context bundle for an AI agent
-npx codegraph serve                        # MCP server for editor / agent integration
-```
-
-## Design docs
-
-Canonical design document: [`.specs/planning/ecs-network-exploration.md`](./.specs/planning/ecs-network-exploration.md). Per-tier specs derived from it live in `.specs/01-..06-*.md`. Implementation status: [`.specs/planning/implementation-status.md`](./.specs/planning/implementation-status.md).
+- **Components and relations are global definitions; storage is per-world.** `defineComponent({ id })` is idempotent across worlds (same id → same definition) but typed-array stores allocate per `World` instance, lazily on first set. Multiple worlds in the same process do not collide on entity IDs.
+- **Entity IDs are runtime-local and never serialised.** Identity on the wire uses BelongsTo + UID paths (`getEntityPath` / `resolveEntityPath`).
+- **`AuthoredEvent` is unsigned.** Core's mutation pipeline produces/consumes plain events; signing + verification are runtime-mode concerns (the `local/` package signs via Ed25519, `ad4m-bridge/` delegates to AD4M's executor).
+- **The `origin` tag prevents re-broadcast.** A mutation tagged `network` (i.e. received from a peer) does not re-enter the outbound queue. This is the single most important invariant for the multi-peer system; tests in `packages/core/tests/integration.test.ts` lock it in.
+- **Solid signals don't work under Vitest's default `node` export condition.** Both `local/` and `ad4m-bridge/` have a `vitest.config.ts` that aliases `solid-js` to its dev build. Copy this if you add a new workspace package that pulls Solid transitively.
