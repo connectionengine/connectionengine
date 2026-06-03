@@ -20,6 +20,9 @@ test-results
 # CodeGraph index — local, per-machine. Built via `pnpm --filter @connectionengine/core map`.
 .codegraph
 
+# Working specs / planning notes — kept on disk per-machine, never pushed.
+.specs/
+
 # AD4M submodule contents — the submodule pointer itself is tracked by git;
 # its internal files are managed by its own repo. We ignore everything inside
 # from this outer repo's perspective so the codegraph indexer (which honours
