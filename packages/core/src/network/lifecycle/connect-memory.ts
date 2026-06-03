@@ -43,10 +43,9 @@ const wireSide = (
 ): Connection => {
   const connection: Connection = {
     peer: 0,
-    backend: 'memory',
     remoteDID,
-    send: (payload) => endpoint.send(payload),
-    onMessage: (h) => endpoint.onMessage(h),
+    events: endpoint.events,
+    stream: endpoint.stream,
     onClose: (h) => endpoint.onClose(h),
     close: () => {
       world.network.connections.delete(connection)
@@ -62,11 +61,7 @@ const wireSide = (
       })
     )
   }
-  endpoint.onMessage((payload) => {
-    if (payload instanceof ArrayBuffer) {
-      ensureChannel(world, connection)?.applyBuffer(payload)
-      return
-    }
+  endpoint.events.onMessage((payload) => {
     if (isBindControl(payload)) {
       ensureChannel(world, connection)?.registerBindings((payload as BindControlMessage).bindings)
       return
@@ -76,6 +71,9 @@ const wireSide = (
       rebroadcastAuthored(world, connection, payload)
       return
     }
+  })
+  endpoint.stream.onMessage((buffer) => {
+    ensureChannel(world, connection)?.applyBuffer(buffer)
   })
   endpoint.onClose(() => {
     sweepDisconnectedPeer(world, connection)

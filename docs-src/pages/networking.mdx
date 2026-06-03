@@ -15,23 +15,34 @@ You can write a new transport without touching the protocol. You can change the 
 
 ## TransportEndpoint
 
+A `TransportEndpoint` exposes **two channels** with different delivery semantics:
+
 ```ts
+interface TransportChannel<T = unknown> {
+  send(payload: T): void
+  onMessage(handler: (payload: T) => void): () => void
+}
+
 interface TransportEndpoint {
-  readonly backend: 'webrtc' | 'websocket' | 'memory'
-  send(payload: unknown): void
-  onMessage(handler: (payload: unknown) => void): () => void
+  readonly events: TransportChannel               // reliable, ordered
+  readonly stream: TransportChannel<ArrayBuffer>  // typically unreliable, ArrayBuffer-only
   onClose(handler: () => void): () => void
   close(): void
 }
 ```
 
-Payloads pass as `unknown`. The lifecycle layer discriminates by shape:
+The split matches the two replication channels of the engine:
 
-- `ArrayBuffer` → binary runtime packet (decoded by the binary pipeline)
-- `{ events: [...] }` → authored envelope
-- `{ type: '...' }` → control message (hello, replay-chunk, replay-end, leave, bind)
+| Transport channel | Carries                                            | Wire mapping                                                                  |
+|-------------------|----------------------------------------------------|-------------------------------------------------------------------------------|
+| `events`          | Control messages + authored envelopes (`event`)    | TCP / WebSocket / reliable QUIC stream / ordered+reliable `RTCDataChannel`     |
+| `stream`          | Binary runtime packets (`continuous`)              | QUIC datagrams / unordered+unreliable `RTCDataChannel`                         |
 
-In-process transports (memory, AD4M-bridge) pass JS objects directly. Wire transports serialise authored envelopes and control messages — usually via the authored codec (`network/codec.ts`).
+A WebSocket-only transport satisfies both slots with the same underlying connection — it just doesn't get the loss-tolerance benefit on `stream`. A QUIC transport gets it natively. A WebRTC transport opens two data channels with different reliability config and assigns one to each slot.
+
+The interface is mechanism-agnostic — the backend (WebRTC, WebSocket, in-memory, AD4M Perspective, QUIC) is implicit in the concrete implementation. Consumers don't switch on it; they send to the right channel and route incoming messages from the right handler.
+
+**Routing is explicit, not shape-sniffed.** The lifecycle layer never inspects an unknown payload to figure out what it is — it sends authored envelopes via `events.send` and binary packets via `stream.send`, and listens on each channel separately. That's the whole point of the split.
 
 ## The session protocol
 
@@ -113,11 +124,12 @@ For the production-shaped flow including late-join replay, use `joinWorld`.
 
 ## Picking a transport
 
-Core ships the in-memory transport. Real transports compose with the lifecycle:
+Core ships the in-memory transport. Real transports compose with the lifecycle. Each must satisfy the dual-channel contract — the natural mappings:
 
-- **WebRTC** — for direct peer-to-peer. Build a `TransportEndpoint` over an `RTCDataChannel`. Pass it to `joinWorld`. Done.
-- **WebSocket** — for client-server or relay flows. Wrap the socket. Pass to `joinWorld`. Done.
-- **AD4M Perspective** — `@connectionengine/ad4m-bridge` wraps a Perspective's `addLinks` + `addListener` as a `TransportEndpoint`. The Perspective IS the wire.
-- **Signed in-memory** — `@connectionengine/local`'s `connectLocalInMemory` adds Ed25519 signing on the `event` channel; `continuous` binary stays unsigned (authority-checked at ECS level).
+- **WebRTC** — direct peer-to-peer. Open two `RTCDataChannel`s on the peer connection: one ordered+reliable (assign to `events`), one unordered+unreliable (assign to `stream`). Hand the endpoint to `joinWorld`.
+- **WebSocket** — client-server or relay. Wrap one socket; assign it to both `events` and `stream`. You lose the loss-tolerance benefit on `stream` (everything stays reliable + ordered), but the rest of the stack works unchanged.
+- **QUIC** — open a reliable stream for `events`, send `stream` payloads as QUIC datagrams. Best fit on paper; no ecosystem-stable browser API yet.
+- **AD4M Perspective** — `@connectionengine/ad4m-bridge` wraps a Perspective's `addLinks` + `addListener` as the `events` channel. `stream` typically rides a sibling WebRTC channel since Links are too heavy for 60 Hz binary packets.
+- **Signed in-memory** — `@connectionengine/local`'s `connectLocalInMemory` adds Ed25519 signing on the `events` channel; `stream` stays unsigned (authority-checked at ECS level).
 
-WebRTC and WebSocket implementations aren't yet shipped in core. The integration point is the `TransportEndpoint` interface — once you can satisfy it, the rest of the stack is reusable.
+Real WebRTC / WebSocket / QUIC implementations aren't yet shipped in core. The integration point is the `TransportEndpoint` interface — once you can satisfy it for your wire, the rest of the stack is reusable.

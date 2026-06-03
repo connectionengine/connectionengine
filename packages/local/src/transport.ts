@@ -136,15 +136,16 @@ export const connectLocalInMemory = (
 
 const installSigningOverride = (world: World, kp: KeyPair): void => {
   // Replace authored fanout with signing fanout. Runtime hook untouched —
-  // core's installFanout already wired publishRuntime to the binary channel.
+  // core's installFanout already wired publishRuntime to the binary channel,
+  // which uses the `stream` transport channel directly.
   world.network.publishAuthored = (envelope: AuthoredEnvelope) => {
     const signed = signEnvelope(envelope, kp)
-    for (const conn of world.network.connections) conn.send(signed)
+    for (const conn of world.network.connections) conn.events.send(signed)
   }
 }
 
 const attachVerifier = (world: World, connection: Connection): void => {
-  connection.onMessage((payload) => {
+  connection.events.onMessage((payload) => {
     if (!isSignedAuthored(payload)) return
     const unwrapped = verifyAndUnwrap(world, payload)
     if (unwrapped) applyAuthoredEnvelope(world, unwrapped)

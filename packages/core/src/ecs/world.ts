@@ -81,20 +81,20 @@ export interface DirtyKey {
 
 /**
  * A live transport link to a peer. A Connection is a `TransportEndpoint` plus
- * session-level metadata (remoteDID, local peer entity once known).
+ * session-level metadata (remoteDID, local peer entity once known). The two
+ * channels (`events`, `stream`) re-export the endpoint's, so producers route
+ * by sending to the right one — the `Connection` itself never sniffs payload
+ * shape.
  *
- * Wire payloads are typed by JS shape:
- *   - `ArrayBuffer`  → binary runtime packet (decoded by the binary pipeline)
- *   - `{ events }`   → AuthoredEnvelope (low-frequency reliable channel)
- *   - `{ type: ... }` → control message (handshake, replay, leave, bind)
+ *   - `connection.events.send(envelope|controlMessage)` — reliable, ordered.
+ *   - `connection.stream.send(arrayBuffer)`             — binary runtime packets.
  */
 export interface Connection {
   peer: Entity
-  backend: 'webrtc' | 'websocket' | 'memory'
   /** Remote agent DID — `'did:unknown:pending'` until the hello is received. */
   remoteDID: string
-  send(payload: unknown): void
-  onMessage(handler: (payload: unknown) => void): () => void
+  readonly events: import('../network/transport').TransportChannel
+  readonly stream: import('../network/transport').TransportChannel<ArrayBuffer>
   onClose(handler: () => void): () => void
   close(): void
 }

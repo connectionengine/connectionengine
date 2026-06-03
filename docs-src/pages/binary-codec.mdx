@@ -57,7 +57,7 @@ Per-connection (receiver side):
   Map<u32, EntityPath>  ← received via control messages, resolved per packet
 ```
 
-When a new entity becomes dirty, the channel sends a `{ type: 'bind', bindings: [{ networkId, entityPath }] }` control message before the binary packet. The receiver registers the binding and from then on every packet referencing that networkId resolves cleanly.
+When a new entity becomes dirty, the channel sends a `{ type: 'bind', bindings: [{ networkId, entityPath }] }` control message **over the transport's `events` channel** (reliable, ordered) so the receiver sees the binding before the binary packet that uses it arrives on the `stream` channel.
 
 The initial hello includes the local table snapshot, so the first binary packet after handshake can use any pre-existing entity without a separate `bind` control.
 

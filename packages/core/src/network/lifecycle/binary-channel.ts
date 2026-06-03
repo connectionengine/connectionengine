@@ -145,7 +145,7 @@ export const createBinaryChannel = (world: World, connection: Connection, option
     }
     if (newBindings.length === 0) return
     const msg: BindControlMessage = { type: 'bind', bindings: newBindings }
-    connection.send(msg)
+    connection.events.send(msg)
   }
 
   return {
@@ -157,7 +157,7 @@ export const createBinaryChannel = (world: World, connection: Connection, option
       const buffer = state.pipeline.write({ fromPeerIndex: 0, timestamp: world.clock.now() }, entries, forceFull)
       // Skip pure-header packets — nothing to deliver.
       if (buffer.byteLength <= HEADER_BYTES) return
-      connection.send(buffer)
+      connection.stream.send(buffer)
     },
 
     applyBuffer(buffer) {
@@ -180,7 +180,7 @@ export const createBinaryChannel = (world: World, connection: Connection, option
       if (all.length === 0) return
       for (const b of all) state.notified.add(b.networkId)
       const msg: BindControlMessage = { type: 'bind', bindings: all }
-      connection.send(msg)
+      connection.events.send(msg)
     },
 
     remoteTable

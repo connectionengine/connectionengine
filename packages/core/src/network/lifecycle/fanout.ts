@@ -50,7 +50,7 @@ export const installFanout = (world: World): void => {
   if (installed.has(world)) return
   installed.add(world)
   world.network.publishAuthored = (envelope: AuthoredEnvelope) => {
-    for (const conn of world.network.connections) conn.send(envelope)
+    for (const conn of world.network.connections) conn.events.send(envelope)
   }
   world.network.publishRuntime = (dirty: Map<string, Set<Entity>>) => {
     for (const conn of world.network.connections) {
@@ -74,6 +74,6 @@ export const rebroadcastAuthored = (world: World, source: Connection, envelope: 
   const out: AuthoredEnvelope = { fromPeer: envelope.fromPeer, events: fresh }
   for (const conn of world.network.connections) {
     if (conn === source) continue
-    conn.send(out)
+    conn.events.send(out)
   }
 }

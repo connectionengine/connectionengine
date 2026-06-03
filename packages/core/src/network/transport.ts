@@ -14,22 +14,39 @@
 
 import type { ComponentDefinition } from '../ecs/component'
 
-export type TransportBackend = 'webrtc' | 'websocket' | 'memory'
-
 // ── Endpoint contract ────────────────────────────────────────────────────────-
 
 /**
- * A bi-directional channel to one remote peer. Real backends produce one
- * endpoint per remote; the in-memory factory below produces a pair.
+ * A single uni-typed pub/sub channel. One transport endpoint carries two of
+ * them, with different delivery semantics — see `TransportEndpoint`.
+ */
+export interface TransportChannel<T = unknown> {
+  send(payload: T): void
+  onMessage(handler: (payload: T) => void): () => void
+}
+
+/**
+ * A bi-directional link to one remote peer, exposing two separately-shaped
+ * channels:
  *
- * Payload type is `unknown`: control + authored envelopes pass as plain JS
- * objects in-process, runtime packets pass as `ArrayBuffer`. The lifecycle
- * layer discriminates by shape.
+ *   - **`events`** — reliable, ordered. Carries control messages (hello,
+ *     replay, leave, bind) and authored envelopes (`{ events, fromPeer }`).
+ *     Map to TCP / WebSocket / a reliable QUIC stream / an ordered+reliable
+ *     WebRTC `RTCDataChannel`.
+ *
+ *   - **`stream`** — `ArrayBuffer`-only, typically unreliable / unordered,
+ *     optimised for cadence over delivery guarantees. Carries the binary
+ *     runtime packets emitted by the per-connection `BinaryChannel`. Map to
+ *     QUIC datagrams / an unordered+unreliable WebRTC data channel.
+ *
+ * Concrete implementations (WebRTC, WebSocket, in-memory, AD4M Perspective,
+ * QUIC) decide what underlying mechanism backs each channel. A transport
+ * with only one wire (WebSocket-only) can satisfy both slots with the same
+ * underlying connection — it just doesn't get the loss-tolerance win.
  */
 export interface TransportEndpoint {
-  readonly backend: TransportBackend
-  send(payload: unknown): void
-  onMessage(handler: (payload: unknown) => void): () => void
+  readonly events: TransportChannel
+  readonly stream: TransportChannel<ArrayBuffer>
   onClose(handler: () => void): () => void
   close(): void
 }
@@ -48,41 +65,54 @@ export interface MemoryTransportOptions {
 
 /**
  * Create a paired in-memory transport. Each endpoint delivers to the other
- * after a microtask (or `latencyMs` if set). Use as the wire layer under
- * `joinWorld` for same-process two-peer tests.
+ * after a microtask (or `latencyMs` if set). Both `events` and `stream`
+ * channels are fully reliable in-process — the dual surface exists so the
+ * lifecycle layer reads the same on real wire transports.
  */
 export const createMemoryTransport = (options: MemoryTransportOptions = {}): MemoryTransportPair => {
-  const aListeners = { msg: new Set<(p: unknown) => void>(), close: new Set<() => void>() }
-  const bListeners = { msg: new Set<(p: unknown) => void>(), close: new Set<() => void>() }
+  type Side<T> = { msg: Set<(p: T) => void> }
+  type Pair = {
+    events: Side<unknown>
+    stream: Side<ArrayBuffer>
+    close: Set<() => void>
+  }
+  const aListeners: Pair = { events: { msg: new Set() }, stream: { msg: new Set() }, close: new Set() }
+  const bListeners: Pair = { events: { msg: new Set() }, stream: { msg: new Set() }, close: new Set() }
   let closed = false
 
-  const deliver = (to: typeof aListeners, payload: unknown): void => {
+  const dispatch = <T>(side: Side<T>, payload: T): void => {
     if (closed) return
-    const dispatch = () => {
-      for (const h of to.msg) h(payload)
+    const fire = () => {
+      for (const h of side.msg) h(payload)
     }
-    if (options.latencyMs && options.latencyMs > 0) setTimeout(dispatch, options.latencyMs)
-    else queueMicrotask(dispatch)
+    if (options.latencyMs && options.latencyMs > 0) setTimeout(fire, options.latencyMs)
+    else queueMicrotask(fire)
   }
+
+  const mkChannel = <T>(peer: Side<T>, self: Side<T>): TransportChannel<T> => ({
+    send: (payload) => dispatch(peer, payload),
+    onMessage: (h) => {
+      self.msg.add(h)
+      return () => self.msg.delete(h)
+    }
+  })
 
   const closeAll = (): void => {
     if (closed) return
     closed = true
     for (const h of aListeners.close) h()
     for (const h of bListeners.close) h()
-    aListeners.msg.clear()
-    bListeners.msg.clear()
+    aListeners.events.msg.clear()
+    aListeners.stream.msg.clear()
+    bListeners.events.msg.clear()
+    bListeners.stream.msg.clear()
     aListeners.close.clear()
     bListeners.close.clear()
   }
 
-  const mkEndpoint = (self: typeof aListeners, peer: typeof aListeners): TransportEndpoint => ({
-    backend: 'memory',
-    send: (payload) => deliver(peer, payload),
-    onMessage: (h) => {
-      self.msg.add(h)
-      return () => self.msg.delete(h)
-    },
+  const mkEndpoint = (self: Pair, peer: Pair): TransportEndpoint => ({
+    events: mkChannel<unknown>(peer.events, self.events),
+    stream: mkChannel<ArrayBuffer>(peer.stream, self.stream),
     onClose: (h) => {
       self.close.add(h)
       return () => self.close.delete(h)

@@ -30,9 +30,12 @@ export const streamEventLog = (
 ): void => {
   const events = world.eventLog.slice(fromIndex)
   for (let i = 0; i < events.length; i += chunkSize) {
-    endpoint.send({ type: 'replay-chunk', events: events.slice(i, i + chunkSize) } satisfies ReplayChunkMessage)
+    endpoint.events.send({
+      type: 'replay-chunk',
+      events: events.slice(i, i + chunkSize)
+    } satisfies ReplayChunkMessage)
   }
-  endpoint.send({ type: 'replay-end', totalEvents: world.eventLog.length } satisfies ReplayEndMessage)
+  endpoint.events.send({ type: 'replay-end', totalEvents: world.eventLog.length } satisfies ReplayEndMessage)
 }
 
 /** Apply one replay chunk to the world; returns how many events were newly applied. */
