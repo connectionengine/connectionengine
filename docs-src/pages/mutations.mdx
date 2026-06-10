@@ -47,7 +47,7 @@ for each network:
 
 The `publish*` callbacks are hooks the network layer fills in — one per network on the world. Core never decides how data goes on a wire; it routes envelopes to the right networks and hands them to whoever's listening.
 
-`routeNetworks(world, entity)` is the routing decision. Today it's broadcast-to-all (`Array.from(world.networks.values())`). A future spatial layer will replace it with proximity-based routing without touching `mutation.ts`.
+`routeNetworks(world, entity)` is the routing decision. Today it's broadcast-to-all (`Array.from(getNetworks(world).values())`). A future spatial layer will replace it with proximity-based routing without touching `mutation.ts`.
 
 ## Receive paths
 

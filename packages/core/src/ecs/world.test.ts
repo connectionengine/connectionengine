@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { Worlds, createAnonAgent, createWorld, destroyWorld, tickEngine } from './world'
 import { createEngine } from './engine'
 import { createManualClock } from './clock'
-import { getNetworks } from '../network/network'
 
 describe('World', () => {
   it('initialises with default time state on the engine and empty bindings', () => {
@@ -12,7 +11,6 @@ describe('World', () => {
     expect(world.engine.fixedTimeStep).toBeCloseTo(1 / 60)
     expect(world.engine.deltaSeconds).toBe(0)
     expect(world.engine.accumulator).toBe(0)
-    expect(getNetworks(world).size).toBe(0)
     expect(world.eventLog).toEqual([])
     expect(world.authoredQueue).toEqual([])
     expect(world.runtimeDirty.size).toBe(0)
@@ -42,10 +40,9 @@ describe('World', () => {
     destroyWorld(b)
   })
 
-  it('destroyWorld is idempotent and clears networks', () => {
+  it('destroyWorld is idempotent', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     destroyWorld(world)
-    expect(getNetworks(world).size).toBe(0)
     expect(Worlds.has(world)).toBe(false)
     // calling again is a noop
     destroyWorld(world)

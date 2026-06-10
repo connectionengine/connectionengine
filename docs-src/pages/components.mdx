@@ -28,11 +28,11 @@ const Health = defineComponent({
 
 Three things to internalise about `defineComponent`:
 
-1. **Definitions are global.** `defineComponent({ id: 'Foo', ... })` registers `Foo` in the ambient engine's registry keyed on `id`. Calling it again with the same id returns the same definition. The engine owns all per-component storage — worlds attached to the same engine share it.
+1. **Definitions are global.** `defineComponent({ id: 'Foo', ... })` registers a process-wide singleton keyed on `id` — calling it again with the same id returns the same definition. Per-engine storage lives in `engine.componentStores`; the definition itself is shared across every engine that uses it.
 
 2. **SoA storage lives on the definition.** SoA-tagged fields (`Schema.Vec3`, `Schema.Quat`, `Schema.ArrayBuffer`, `Schema.SoAStore`) are spread directly as properties on the returned definition. `Transform.position` is a `Vec3SoA` — the same object you'd get from a bitECS-style `defineComponent({ position: { x: f32, y: f32, z: f32 } })`. There is no separate "stores" lookup; the definition *is* the store.
 
-3. **The schema decides the wire.** SoA fields travel the binary `continuous` channel. Value-typed fields travel the authored `event` channel. The channel is *derived* from what's in your schema — there's no `mutationCategory` enum to set.
+3. **The schema decides the wire.** SoA fields travel the binary `continuous` channel. Value-typed fields travel the authored `event` channel. The channel is *derived* from what's in your schema.
 
 ## Replication channels
 

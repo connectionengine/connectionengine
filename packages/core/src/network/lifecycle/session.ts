@@ -246,7 +246,7 @@ const localPeerId = (world: World): string => {
  * the same entity replay will reuse — no duplicate user/peer rows.
  *
  * Falls back to `user:<did>` / `peer:<peerId>` UIDs when the sender hasn't
- * set up local identity (legacy / solo flows).
+ * set up local identity (test / solo flows).
  */
 const ensureRemotePeerEntity = (world: World, hello: HelloMessage): Entity => {
   const userPath = hello.userPath.length > 0 ? hello.userPath : [`user:${hello.agentDID}`]

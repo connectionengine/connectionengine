@@ -66,7 +66,7 @@ export const BelongsTo = defineRelation({
 })
 ```
 
-There is nothing magical about it. The identity caches (`world.nameCache`, `world.parentOf`, `world.uidOf`) are maintenance bookkeeping that `setUID` writes inline, so path lookups are O(1) instead of a relation walk. But conceptually, *identity composes from existing primitives* — a component (UID) plus a relation (BelongsTo). The engine doesn't grow a separate "namespace system."
+There is nothing magical about it. The identity caches (`UIDComponent.nameCache`, `UIDComponent.uidOf`, `BelongsTo.parentOf` — typed `WeakMap<Engine, …>` extensions on the relevant definitions) are maintenance bookkeeping that `setUID` writes inline, so path lookups are O(1) without a relation walk. But conceptually, *identity composes from existing primitives* — a component (UID) plus a relation (BelongsTo). The engine doesn't grow a separate "namespace system."
 
 ## Why paths, not IDs
 

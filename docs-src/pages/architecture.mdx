@@ -30,7 +30,7 @@ Component and Relation **definitions** are module-level globals — `defineCompo
 
 Three rules govern the dependency graph:
 
-1. **`Engine` owns the ECS.** bitECS storage, per-component storage, time, systems. There is no ambient engine — every `createWorld` takes an explicit `engine`. One engine per app is the dominant production shape; tests give each peer its own.
+1. **`Engine` owns the ECS.** bitECS storage, per-component storage, time, systems. Every `createWorld` takes an explicit `engine`. One engine per app is the dominant production shape; tests give each peer its own.
 2. **`World` is a virtual scope.** A `worldRoot` entity anchoring a subtree, plus the per-world network state (event log, authored queue, runtime-dirty, networks) and the local identity for that scope.
 3. **`Network` is many per world.** Sync topology — different networks ship the same events through different connections. Spatial segmentation, voice / video, admin overlays.
 
@@ -85,7 +85,7 @@ The single most important mental model in Connection Engine. Every component lan
 | `continuous`  | Binary delta, per-field mask     | Per-tick      | Transforms, velocities, anything at the simulation tick rate |
 | `local`       | Never replicated                 | n/a           | Caches, view-state, machine-local data  |
 
-The channel is **derived from the schema** — there is no `mutationCategory` enum to set. Any SoA-tagged field (Vec3, Quat, Float32, …) puts the component on `continuous`; anything else lands on `event`. The only opt-out is `defineComponent({ sync: false })`, which forces `local`.
+The channel is **derived from the schema**. Any SoA-tagged field (Vec3, Quat, Float32, …) puts the component on `continuous`; anything else lands on `event`. `defineComponent({ sync: false })` forces `local`.
 
 Mixing SoA and non-SoA fields in one component throws at definition time. You split into two components — one continuous, one event — because they have different replication contracts. See [Components](/components) for the rationale.
 

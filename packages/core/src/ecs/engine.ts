@@ -22,9 +22,9 @@
  * (entity IDs aren't unique across bitECS worlds). `destroyWorld` sweeps a
  * world's descendants from the engine's caches.
  *
- * There is no ambient engine. Every `createWorld` takes an explicit `engine`
- * — callers decide what to share. Production apps construct one engine and
- * compose worlds inside it; test harnesses give each peer its own.
+ * Every `createWorld` takes an explicit `engine` — callers decide what to
+ * share. Production apps construct one engine and compose worlds inside it;
+ * multi-machine tests give each peer its own.
  */
 
 import * as bitecs from 'bitecs'

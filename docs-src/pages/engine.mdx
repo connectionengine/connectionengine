@@ -21,7 +21,7 @@ CE Worlds are NOT engines. A World is a logical scope inside an engine — see [
 
 ## Always explicit
 
-Every `createWorld` takes an explicit `engine`. There is no ambient engine — you decide what's shared and what's isolated at every call:
+Every `createWorld` takes an explicit `engine`. You decide what's shared and what's isolated at every call:
 
 ```ts
 import { createEngine, createWorld, createAnonAgent, defineComponent } from '@connectionengine/core'

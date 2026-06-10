@@ -21,7 +21,7 @@ const world = createWorld({
 destroyWorld(world) // closes networks, drops the worldRoot. Entities under it survive on the engine.
 ```
 
-The `agent` is the only required option besides `engine`. There is no ambient engine; every call to `createWorld` takes an explicit `engine` built via `createEngine({ fixedTimeStep?, clock? })`.
+Both options are required. Every call to `createWorld` takes an explicit `engine` built via `createEngine({ fixedTimeStep?, clock? })`.
 
 A few things worth internalising:
 

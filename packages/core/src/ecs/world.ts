@@ -125,9 +125,9 @@ export const onWorldDestroy = (hook: DestroyHook): (() => void) => {
 }
 
 export interface CreateWorldOptions {
-  /** Engine to allocate this world inside. Always explicit — there is no
-   *  ambient engine. Production apps construct one engine and compose worlds
-   *  inside it; multi-machine tests create one per peer. */
+  /** Engine to allocate this world inside. Always explicit. Production apps
+   *  construct one engine and compose worlds inside it; multi-machine tests
+   *  create one per peer. */
   engine: Engine
   /** Local agent identity. Required — runtime modes provide a real agent;
    *  solo callers can pass a stub `{ did: 'did:anon:xxx' }`. */
