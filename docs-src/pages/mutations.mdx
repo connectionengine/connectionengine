@@ -17,7 +17,7 @@ channel = 'continuous'  →  mark world.runtimeDirty[componentId].add(entity)
 channel = 'local'       →  no-op (sync: false, never replicated)
 ```
 
-At end-of-frame:
+The driver explicitly flushes both queues at end-of-frame (after `runSystems` returns):
 
 ```
 flushAuthored(world)
@@ -56,11 +56,14 @@ applyAuthoredEnvelope(world, envelope, network?)
         │
         ├─ for each event:
         │    governance gate via network.validateAuthored?(event)
+        │    if event.predicate === 'AuthoritativeFor':
+        │        checkAuthorityChangeStanding(world, event)   ← inline call into network/authority
+        │        (rejects with reason if author has no standing)
         │    if appendEventLog(world, event) returned true:
         │        applyEvent — setComponent / addRelation / etc. with origin: 'network'
 ```
 
-The optional `network` argument provides the governance gate. Different networks can have different rules.
+Two gates run before an event is applied. The optional per-network `validateAuthored` is the governance hook (different networks can have different rules — credential, temporal, content, capability). The authority-transfer standing check is unconditional — `network/mutation.ts` calls `checkAuthorityChangeStanding` from `network/authority.ts` directly. Both modules live in `network/`, so it's an ordinary named import, not a runtime hook.
 
 For `continuous` components, **there is no separate "apply runtime envelope" function**. The binary pipeline (`network/binary.ts`) is the receive path — it reads packets and writes directly into SoA storage, calling `setComponent(world, entity, component, {}, { origin: 'network' })` only as needed to register bitECS presence.
 
@@ -107,7 +110,7 @@ The `continuous` channel has no governance gate. A binary packet from peer X arr
 
 This split is intentional. Per-packet signature verification at the simulation tick rate is too expensive. Per-event signature verification on authored events (sub-Hz cadence) is fine. Authority on `continuous` is a property of the entity graph, not the wire.
 
-## A complete trace
+## A complete flow
 
 ```
 peer A:                                          peer B:
@@ -120,20 +123,22 @@ setComponent(world, e, Transform, { position: [1,2,3] })
 
 runSystems(world, 1/60)
   → ...systems...
-  → flushAuthored(world)
-       eventLog.push(event)
-       publishAuthored({ events: [...], fromPeer: did })
-       → connection.send(envelope)
+
+flushAuthored(world)
+  eventLog.push(event)
+  publishAuthored({ events: [...], fromPeer: did })
+  → connection.send(envelope)
                                                  ── microtask ──→
                                                  endpoint.onMessage(envelope)
                                                  isAuthoredEnvelope? yes
                                                  applyAuthoredEnvelope(world, envelope)
                                                    for event:
                                                      governance.validate? ok
+                                                     checkAuthorityChangeStanding? ok (non-authority event)
                                                      appendEventLog (new)
                                                      applyEvent → setComponent(..., { origin: 'network' })
                                                    B's authoredQueue: no entries (origin: network skipped)
-  → flushRuntime(world)
+flushRuntime(world)
        publishRuntime(dirty)
        → ensureChannel(connection)
        → channel.publish(dirty)

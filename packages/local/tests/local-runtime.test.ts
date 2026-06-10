@@ -9,14 +9,20 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  createEngine,
   createWorld,
   destroyWorld,
   defineComponent,
   getComponent,
   setComponent,
-  createNamedEntity,
+  spawnPrefab,
   createEntity,
+  createPeer,
+  createUser,
+  flushAuthored,
+  flushRuntime,
   getEntityByUID,
+  getNetwork,
   setUID,
   runSystems,
   Schema,
@@ -52,6 +58,8 @@ const tick = async (
   for (const { world, clock } of worlds) {
     clock.advance(1000 / 60)
     runSystems(world, 1 / 60)
+    flushAuthored(world)
+    flushRuntime(world)
   }
   await new Promise<void>((r) => queueMicrotask(r))
 }
@@ -62,11 +70,15 @@ describe('Local runtime — signed two-peer replication', () => {
     const clockB = createManualClock(0)
     const agentA = createLocalAgent({ seed: 'alice' })
     const agentB = createLocalAgent({ seed: 'bob' })
-    const worldA = createWorld({ agent: agentA, clock: clockA })
-    const worldB = createWorld({ agent: agentB, clock: clockB })
+    const worldA = createWorld({ engine: createEngine({ clock: clockA }), agent: agentA })
+    const worldB = createWorld({ engine: createEngine({ clock: clockB }), agent: agentB })
+    const aliceUser = createUser(worldA, { did: agentA.did, asLocal: true })
+    createPeer(worldA, { user: aliceUser, peerId: 'alice-p', asLocal: true })
+    const bobUser = createUser(worldB, { did: agentB.did, asLocal: true })
+    createPeer(worldB, { user: bobUser, peerId: 'bob-p', asLocal: true })
     connectLocalInMemory(worldA, worldB)
 
-    const scene = createNamedEntity(worldA, 'scene:local')
+    const scene = spawnPrefab(worldA, 'scene:local')
     const avatar = createEntity(worldA)
     setUID(worldA, avatar, 'avatar:alice', { parent: scene })
     setComponent(worldA, avatar, Health, { current: 77 })
@@ -79,9 +91,14 @@ describe('Local runtime — signed two-peer replication', () => {
     const bScene = getEntityByUID(worldB, worldB.worldRoot, 'scene:local')!
     const bAva = getEntityByUID(worldB, bScene, 'avatar:alice')!
     expect(getComponent(worldB, bAva, Health)).toEqual({ current: 77, max: 100 })
-    // event log captured on both sides
+    // Both sides authored their own identity bootstrap (createUser + createPeer);
+    // assert that the avatar's events specifically came from A.
     expect(worldB.eventLog.length).toBeGreaterThan(0)
-    for (const evt of worldB.eventLog) expect(evt.author).toBe(agentA.did)
+    const aliceAvatarEvents = worldB.eventLog.filter((e) =>
+      e.entityPath.join('/').startsWith('scene:local/avatar:alice')
+    )
+    expect(aliceAvatarEvents.length).toBeGreaterThan(0)
+    for (const evt of aliceAvatarEvents) expect(evt.author).toBe(agentA.did)
 
     destroyWorld(worldA)
     destroyWorld(worldB)
@@ -122,7 +139,7 @@ describe('Local runtime — signed two-peer replication', () => {
     const { world, agent } = createLocalRuntime({ seed: 'convenience' })
     expect(world.localAgent).toBe(agent)
     // governance was installed on the default network (validateAuthored is set)
-    expect(world.networks.get('default')?.validateAuthored).toBeDefined()
+    expect(getNetwork(world, 'default')?.validateAuthored).toBeDefined()
     destroyWorld(world)
   })
 })
@@ -133,8 +150,12 @@ describe('Local runtime — capability governance', () => {
     const clockB = createManualClock(0)
     const aliceAgent = createLocalAgent({ seed: 'cap-alice' })
     const bobAgent = createLocalAgent({ seed: 'cap-bob' })
-    const worldA = createWorld({ agent: aliceAgent, clock: clockA })
-    const worldB = createWorld({ agent: bobAgent, clock: clockB })
+    const worldA = createWorld({ engine: createEngine({ clock: clockA }), agent: aliceAgent })
+    const worldB = createWorld({ engine: createEngine({ clock: clockB }), agent: bobAgent })
+    const aliceUser = createUser(worldA, { did: aliceAgent.did, asLocal: true })
+    createPeer(worldA, { user: aliceUser, peerId: 'alice-p', asLocal: true })
+    const bobUser = createUser(worldB, { did: bobAgent.did, asLocal: true })
+    createPeer(worldB, { user: bobUser, peerId: 'bob-p', asLocal: true })
 
     // Alice has a self-issued root capability for L.Health under scene:cap
     const aliceCap = createRootCapability({
@@ -150,7 +171,7 @@ describe('Local runtime — capability governance', () => {
 
     connectLocalInMemory(worldA, worldB)
 
-    const scene = createNamedEntity(worldA, 'scene:cap')
+    const scene = spawnPrefab(worldA, 'scene:cap')
     addCapabilityConstraint(worldA, scene, aliceCap)
     const ava = createEntity(worldA)
     setUID(worldA, ava, 'avatar', { parent: scene })
@@ -174,8 +195,6 @@ describe('Local runtime — capability governance', () => {
     ])
 
     expect(getComponent(worldA, ava, Health)?.current).toBe(50)
-    const rejects = worldA.trace.byKind('governance.reject')
-    expect(rejects.length).toBeGreaterThan(0)
 
     destroyWorld(worldA)
     destroyWorld(worldB)
@@ -184,9 +203,9 @@ describe('Local runtime — capability governance', () => {
 
 // Direct apply path used as a baseline (no transport)
 describe('Local runtime — direct envelope apply', () => {
-  it('applyAuthoredEnvelope rejects events failing validateAuthored', () => {
+  it('applyAuthoredEnvelope drops events failing validateAuthored', () => {
     const { world } = createLocalRuntime({ seed: 'baseline' })
-    const network = world.networks.get('default')!
+    const network = getNetwork(world, 'default')!
     const evRejecter = network.validateAuthored
     // Install a deny-all gate for this test
     network.validateAuthored = () => false
@@ -207,8 +226,8 @@ describe('Local runtime — direct envelope apply', () => {
       },
       network
     )
-    const rejects = world.trace.byKind('mutation.reject')
-    expect(rejects.some((r) => r.detail?.reason === 'governance')).toBe(true)
+    // Gate rejected → event never landed in the log.
+    expect(world.eventLog).toHaveLength(0)
     network.validateAuthored = evRejecter
     destroyWorld(world)
   })

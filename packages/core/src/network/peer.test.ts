@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
+import { createEngine } from '../ecs/engine'
 import { createPeer, createUser, findUserByDID, getPeersForUser, PeerComponent, UserComponent } from './peer'
 import { getComponent, hasComponent } from '../ecs/component'
-import { getParent } from '../ecs/identity'
+import { getParent } from '../ecs/entity'
 
-const mkWorld = () => createWorld({ agent: createAnonAgent('test') })
+const mkWorld = () => createWorld({ engine: createEngine(), agent: createAnonAgent('test') })
 const did = (name: string): string => `did:test:${name}`
 
 describe('User + Peer', () => {

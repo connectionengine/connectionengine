@@ -103,22 +103,19 @@ Two peers reconnecting after a disconnect just exchange whatever they each misse
 
 There's still a `Snapshot` API in `network/snapshot.ts` — but it's a tool you can use for bootstrap optimisations, debugging, persistence, or hot-reload. The session protocol doesn't need it.
 
-## Deep disconnect cleanup
+## Disconnect cleanup
 
-When a connection closes (graceful `leave` or otherwise), the lifecycle layer runs `sweepDisconnectedPeer`. It walks the closed connection's `remoteDID`, finds the corresponding user entity in this world, checks whether any other connection still represents that user (a user can have multiple peers — desktop + phone), and if not, removes every entity tagged `TransientOnDisconnect` that the user owns.
+When a connection closes (graceful `leave` or otherwise), the lifecycle layer runs `sweepDisconnectedPeer`. It walks the closed connection's `remoteDID`, finds the corresponding user entity in this world, checks whether any other connection still represents that user (a user can have multiple peers — desktop + phone), and if not, removes **every entity owned by that user**.
 
 ```ts
-import { TransientOnDisconnect, createPeer, createUser } from '@connectionengine/core'
+import { createPeer, createUser, spawnPrefab } from '@connectionengine/core'
 
 const user = createUser(world, { did: 'did:key:...' })
-const avatar = createEntity(world)
-setUID(world, avatar, 'avatar:alice', { parent: scene })
-setOwner(world, avatar, user)
-setComponent(world, avatar, TransientOnDisconnect, {})
-// when the user's last peer disconnects → avatar is swept
+const avatar = spawnPrefab(world, 'avatar:alice', { owner: user, parent: scene })
+// when the user's last peer disconnects → avatar (and everything else owned by `user`) is swept
 ```
 
-Tag avatars, cursors, presence indicators. Don't tag persistent objects (scores, world content). Disconnect cleanup is a tag-driven policy, not a special-case in the engine.
+The rule is structural, not opt-in: ownership IS session-bound. Entities that should outlive a user's session must not be owned by that user — give them a different owner (a world-scope entity, a system user, etc.).
 
 ## Mesh propagation
 

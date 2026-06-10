@@ -1,82 +1,87 @@
 ---
-description: The runtime container — registries, bitECS storage, and the peer transport cache.
+description: The runtime container — bitECS storage, time, and the per-engine extension state.
 ---
 
 # Engine
 
-An **Engine** is the global runtime container. One per process (almost always). Anything truly global to a Connection Engine runtime lives here:
+An **Engine** is the ECS runtime container. Per-engine state lives here — bitECS storage, per-component instance/view bags, time. Systems run at the engine level. Multiple `World` objects can coexist inside one engine; they share storage and tick together.
 
-- **One bitECS world.** All entities allocated in this engine share an ID space. CE Worlds scope themselves to subtrees inside it.
-- **Component / relation type registries.** `defineComponent({ id: 'Foo', ... })` registers `Foo` on the engine and dedups by id.
-- **Per-component storage.** SoA typed arrays live directly on each `ComponentDefinition` (so `Transform.position.x[eid]` works without any lookup). Per-entity instance maps for value fields live on the engine, keyed by component + entity.
-- **The `ComponentSchema` registry.** Shareable replication metadata (`{ id, jsonSchema, shaclShape, channel }`).
-- **`customRegistries`.** An open slot where higher layers stamp their own engine-keyed state (e.g. `network/peers.ts` keeps the per-engine `PeerTransportRegistry` here).
+What the engine owns:
+
+- **One bitECS world.** All entities allocated in this engine share an ID space. CE Worlds scope themselves to subtrees inside it via the `BelongsTo` chain rooted at `worldRoot`.
+- **Per-component storage.** SoA typed arrays live directly on each `ComponentDefinition` (so `Transform.position.x[eid]` works without any lookup). Per-entity instance maps + view bags for value fields live on the engine in `componentStores`, keyed by `(ComponentDefinition, entity)`.
+- **Time state.** `clock`, `frameTime`, `simulationTime`, `fixedTimeStep`, `deltaSeconds`, `accumulator`. The engine ticks; `tickEngine` / `runSystems` drive every world rooted in it.
+
+What the engine does *not* own:
+
+- **Component / Relation definitions** are module-level singletons. `defineComponent({ id: 'Foo', ... })` produces one `ComponentDefinition` object shared across every engine that uses it. Components defined at module load work for any engine that comes or goes — no per-engine registration step.
+- **Identity caches** (`nameCache`, `uidOf`, `parentOf`) live as typed extension properties on `UIDComponent` and `BelongsTo`. The extension itself is global; the inner maps are keyed by Engine so two engines in the same process keep their state isolated. Access via the `nameCacheFor(engine)` / `uidOfFor(engine)` / `parentOfFor(engine)` helpers.
 
 CE Worlds are NOT engines. A World is a logical scope inside an engine — see [Worlds & Systems](/worlds-and-systems).
 
-## Ambient default
+## Always explicit
 
-You don't usually create an Engine explicitly. The ambient default is created lazily on first use:
+Every `createWorld` takes an explicit `engine`. There is no ambient engine — you decide what's shared and what's isolated at every call:
 
 ```ts
-import { defineComponent, createWorld, createAnonAgent } from '@connectionengine/core'
+import { createEngine, createWorld, createAnonAgent, defineComponent } from '@connectionengine/core'
 
-// Both register against the same ambient engine.
+// Module-level: registers globally.
 const Health = defineComponent({ id: 'Health', schema: /* ... */ })
 
-// World is allocated in the ambient engine too.
-const world = createWorld({ agent: createAnonAgent() })
-```
-
-The ambient engine is fine for almost everything. Multiple worlds inside it share the type registries and the bitECS storage; world membership is tracked via `world.entities` and the `BelongsTo` chain rooted at `world.worldRoot`.
-
-## When to create your own
-
-`createEngine()` returns a fresh isolated engine. Reasons to use it:
-
-- **Test isolation.** A test that wants its own component registry without polluting the ambient one.
-- **Plugin sandboxes.** A dynamically-loaded plugin that should run inside its own bitECS world.
-- **Multi-tenant server.** Hosting multiple unrelated worlds where you don't want entity IDs to cross over.
-
-```ts
-import { createEngine, defineComponent, createWorld } from '@connectionengine/core'
-
+// One engine per app — the dominant production shape.
 const engine = createEngine()
-const Score = defineComponent({ id: 'Score', schema: /* ... */, engine })
-const world = createWorld({ agent: /* ... */, engine })
+const world = createWorld({ engine, agent: createAnonAgent() })
 ```
 
-Note that components defined on different engines are *different definitions* — `defineComponent({ id: 'Foo', engine: A })` and `defineComponent({ id: 'Foo', engine: B })` give you two distinct `ComponentDefinition` objects with disjoint storage.
-
-## Peer transport dedup
-
-Engine-level state that the network layer adds: a `PeerTransportRegistry` that ensures only one physical transport (RTCPeerConnection / QUIC connection / WebSocket / in-memory pair) exists per remote DID, even when multiple Networks address the same peer.
+Two worlds inside one engine share bitECS storage + clock + identity caches:
 
 ```ts
-import { getPeerRegistry } from '@connectionengine/core'
-
-const peers = getPeerRegistry(world.engine)
-const handle = peers.acquire('did:key:z6Mk...', () => createWebRTCTransport(/* ... */))
-// handle.endpoint — the shared transport
-// handle.release() — refcount decrement
+const engine = createEngine()
+const worldA = createWorld({ engine, agent: aliceAgent })
+const worldB = createWorld({ engine, agent: bobAgent })
 ```
 
-Each Network on each World requests transports via the registry rather than opening its own. This becomes meaningful when WebRTC lands: one peer connection multiplexes voice + gameplay + admin channels rather than negotiating each separately.
+Two engines means full isolation — entity IDs, time, and identity caches all separate. Multi-peer test harnesses use this pattern to simulate independent machines:
+
+```ts
+const worldA = createWorld({ engine: createEngine(), agent: aliceAgent })
+const worldB = createWorld({ engine: createEngine(), agent: bobAgent })
+```
+
+## Extension state on definitions
+
+Identity caches are an instance of a broader pattern: components and relations can carry arbitrary typed extension properties on their definitions. Anything you put on the options object (beyond the reserved keys) lands on the resulting definition with its type preserved.
+
+```ts
+import type { Engine, Entity } from '@connectionengine/core'
+
+export const UIDComponent = defineComponent({
+  id: 'UID',
+  schema: Schema.Object({ value: Schema.String({ default: '' }) }),
+  // Typed extension — keyed by Engine so each engine keeps its own buckets.
+  nameCache: new WeakMap<Engine, Map<Entity, Map<string, Entity>>>(),
+  uidOf: new WeakMap<Engine, Map<Entity, string>>()
+})
+
+// Anything else can do the same. Use WeakMap<Engine, ...> for per-engine
+// state, or a plain Map / object for genuinely process-global indexes.
+```
+
+Reserved component option keys: `id`, `label`, `schema`, `sync`. Reserved relation keys: `name`, `sync`, `exclusive`, `autoRemoveSubject`, `store`, `onTargetRemoved`. Everything else flows through.
 
 ## What's on the engine — at a glance
 
 ```ts
 interface Engine {
-  readonly bitECS: bitecs.World                                // entity ID space
-  readonly components: Map<string, ComponentDefinition>        // id → def
-  readonly componentsByRef: WeakMap<...>                       // bitECS ref → def
-  readonly componentStores: WeakMap<...>                       // per-(component, entity) instance + view bags
-                                                               // (SoA arrays live on the definition itself)
-  readonly relations: Map<string, RelationDefinition>          // name → def
-  readonly relationsByRef: WeakMap<...>
-  readonly schemas: Map<string, ComponentSchema>               // replication metadata
-  readonly customRegistries: Map<symbol, unknown>              // peer registry + future plugins
+  readonly bitECS: bitecs.World                                    // entity ID space
+  readonly componentStores: WeakMap<ComponentDefinition, ...>      // per-(component, entity) instance + view bags
+                                                                   // (SoA arrays live on the definition itself)
+
+  clock: Clock                                                     // injectable
+  frameTime: number; simulationTime: number
+  fixedTimeStep: number; deltaSeconds: number; accumulator: number
 }
 ```
 
-You almost never touch these fields directly. Most engine state is accessed through `defineComponent`, `defineRelation`, `getComponentById(id, engine)`, etc. The fields are public so plugin code and tooling can introspect.
+You almost never touch these fields directly. Most engine state is accessed through `defineComponent`, `defineRelation`, `getComponentById(id)`, `setComponent(world, e, def, value)`, etc. The fields are public so plugin code and tooling can introspect.

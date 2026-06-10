@@ -18,8 +18,9 @@
  * `RuntimeTransportConfig[]` (see `network/transport.ts`).
  */
 
-import type { Connection, Entity, World } from '../../ecs/world'
+import type { Entity, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
+import type { Connection } from '../network'
 import type { BinaryEntry, BinaryPipeline } from '../binary'
 import { createBinaryPipeline } from '../binary'
 import type { RuntimeTransportConfig } from '../transport'
@@ -87,7 +88,7 @@ export const createBinaryChannel = (world: World, connection: Connection, option
     resolvedConfig: new Map()
   }
 
-  const simRate = world.fixedTimeStep > 0 ? 1 / world.fixedTimeStep : 60
+  const simRate = world.engine.fixedTimeStep > 0 ? 1 / world.engine.fixedTimeStep : 60
   for (const component of components) {
     const cfg = resolveRuntimeConfig(options.configs ?? [], component, simRate)
     state.resolvedConfig.set(component.$id, cfg)
@@ -155,7 +156,7 @@ export const createBinaryChannel = (world: World, connection: Connection, option
       const { entries, forceFull } = eligibleEntries(dirty)
       if (entries.length === 0) return
       sendBindingsControl(entries)
-      const buffer = state.pipeline.write({ fromPeerIndex: 0, timestamp: world.clock.now() }, entries, forceFull)
+      const buffer = state.pipeline.write({ fromPeerIndex: 0, timestamp: world.engine.clock.now() }, entries, forceFull)
       // Skip pure-header packets — nothing to deliver.
       if (buffer.byteLength <= HEADER_BYTES) return
       connection.stream.send(buffer)

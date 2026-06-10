@@ -9,6 +9,7 @@ import {
   VEC3_INT16_BYTES
 } from './compression'
 import { Schema } from '../schema'
+import { createEngine } from '../ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { createEntity } from '../ecs/entity'
 import { defineComponent, setComponent } from '../ecs/component'
@@ -78,7 +79,7 @@ describe('createBinaryPipeline — compression integration', () => {
       id: 'Cmp.Transform',
       schema: Schema.Object({ position: Schema.Vec3(), rotation: Schema.Quat() })
     })
-    const world = createWorld({ agent: createAnonAgent('cmp') })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('cmp') })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [10, 20, 30], rotation: [0, 0, 0, 1] })
 
@@ -106,8 +107,8 @@ describe('createBinaryPipeline — compression integration', () => {
       id: 'Cmp.Round',
       schema: Schema.Object({ position: Schema.Vec3(), rotation: Schema.Quat() })
     })
-    const source = createWorld({ agent: createAnonAgent('cmp-src') })
-    const target = createWorld({ agent: createAnonAgent('cmp-tgt') })
+    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('cmp-src') })
+    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('cmp-tgt') })
     const compression = {
       'Cmp.Round': {
         position: { kind: 'vec3-int16' as const, range: 100 },

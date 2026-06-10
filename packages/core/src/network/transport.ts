@@ -147,7 +147,7 @@ export interface RuntimeTransportConfig {
 
 /**
  * Resolve config for a specific component. `simRate` is the simulation tick
- * rate in Hz (`1 / world.fixedTimeStep`) — used as the default for `rate`
+ * rate in Hz (`1 / world.engine.fixedTimeStep`) — used as the default for `rate`
  * when no override is supplied.
  */
 export const resolveRuntimeConfig = (

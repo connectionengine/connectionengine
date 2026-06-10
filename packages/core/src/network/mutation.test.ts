@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { defineComponent, getComponent, hasComponent, setComponent } from '../ecs/component'
 import { defineRelation, getRelationTargets } from '../ecs/relation'
-import { setUID, createNamedEntity, getEntityByUID } from '../ecs/identity'
+import { setUID, getEntityByUID } from '../ecs/entity'
 import { createEntity } from '../ecs/entity'
+import { spawnPrefab } from './prefab'
 import { destroyWorld } from '../ecs/world'
 import { createPeerPair } from '../../tests/test-utils/peer-pair'
 
@@ -30,7 +31,7 @@ describe('Two-peer authored replication', () => {
     const peers = createPeerPair()
     const { a, b } = peers
 
-    const scene = createNamedEntity(a.world, 'scene:main')
+    const scene = spawnPrefab(a.world, 'scene:main')
     const avatar = createEntity(a.world)
     setUID(a.world, avatar, 'avatar:alice', { parent: scene })
     setComponent(a.world, avatar, Health, { current: 80 })
@@ -49,7 +50,7 @@ describe('Two-peer authored replication', () => {
   it('removeComponent replicates as a remove triple', async () => {
     const peers = createPeerPair()
     const { a, b } = peers
-    const scene = createNamedEntity(a.world, 'scene:main')
+    const scene = spawnPrefab(a.world, 'scene:main')
     const e = createEntity(a.world)
     setUID(a.world, e, 'thing', { parent: scene })
     setComponent(a.world, e, Health)
@@ -69,7 +70,7 @@ describe('Two-peer authored replication', () => {
   it('relations replicate by walking path on receive', async () => {
     const peers = createPeerPair()
     const { a, b } = peers
-    const scene = createNamedEntity(a.world, 'scene:main')
+    const scene = spawnPrefab(a.world, 'scene:main')
     const parent = createEntity(a.world)
     setUID(a.world, parent, 'parent', { parent: scene })
     const child = createEntity(a.world)
@@ -90,7 +91,7 @@ describe('Two-peer authored replication', () => {
   it('origin tag prevents re-broadcast (no infinite loop)', async () => {
     const peers = createPeerPair()
     const { a, b } = peers
-    const scene = createNamedEntity(a.world, 'scene:loop')
+    const scene = spawnPrefab(a.world, 'scene:loop')
     const e = createEntity(a.world)
     setUID(a.world, e, 'thing', { parent: scene })
     setComponent(a.world, e, Health, { current: 50 })
@@ -99,16 +100,18 @@ describe('Two-peer authored replication', () => {
     await peers.tick()
     await peers.tick()
 
-    // No matter how many ticks, B never re-broadcasts the network-origin write back to A
-    const sends = b.world.trace.byKind('transport.send')
-    expect(sends).toHaveLength(0)
+    // B never re-broadcasts the network-origin write back to A. A's authored
+    // events for 'thing' / Health flush via A; B's eventLog gains them with
+    // origin='network' which the dirty/queue paths skip.
+    const bAuthoredAboutThing = b.world.authoredQueue.filter((q) => q.predicate === 'Health')
+    expect(bAuthoredAboutThing).toHaveLength(0)
     peers.dispose()
   })
 
   it('event log is append-only and ordered', async () => {
     const peers = createPeerPair()
     const { a, b } = peers
-    const scene = createNamedEntity(a.world, 'scene:log')
+    const scene = spawnPrefab(a.world, 'scene:log')
     const e = createEntity(a.world)
     setUID(a.world, e, 'thing', { parent: scene })
     setComponent(a.world, e, Health, { current: 10 })
@@ -128,7 +131,7 @@ describe('Two-peer runtime replication', () => {
   it('SoA values propagate via runtime packet', async () => {
     const peers = createPeerPair()
     const { a, b } = peers
-    const scene = createNamedEntity(a.world, 'scene:rt')
+    const scene = spawnPrefab(a.world, 'scene:rt')
     const e = createEntity(a.world)
     setUID(a.world, e, 'thing', { parent: scene })
     setComponent(a.world, e, Transform, { position: [1, 2, 3], rotation: [0, 0, 0, 1] })
@@ -147,7 +150,7 @@ describe('Two-peer runtime replication', () => {
   it('runtime flush clears dirty set; subsequent ticks ship only new dirty entities', async () => {
     const peers = createPeerPair()
     const { a } = peers
-    const scene = createNamedEntity(a.world, 'scene:rt')
+    const scene = spawnPrefab(a.world, 'scene:rt')
     const e = createEntity(a.world)
     setUID(a.world, e, 'thing', { parent: scene })
     setComponent(a.world, e, Transform, { position: [1, 0, 0] })
@@ -165,7 +168,7 @@ describe('Property invariants — pipeline', () => {
   it('round-trip: applyTriple does not re-emit', async () => {
     const peers = createPeerPair()
     const { a, b } = peers
-    const scene = createNamedEntity(a.world, 'scene:x')
+    const scene = spawnPrefab(a.world, 'scene:x')
     const e = createEntity(a.world)
     setUID(a.world, e, 'p', { parent: scene })
     setComponent(a.world, e, Health, { current: 1 })

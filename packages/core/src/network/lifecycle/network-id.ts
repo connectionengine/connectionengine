@@ -13,7 +13,7 @@
  */
 
 import type { Entity, World } from '../../ecs/world'
-import { getEntityPath } from '../../ecs/identity'
+import { getEntityPath, nameCacheFor } from '../../ecs/entity'
 
 export interface NetworkIdBinding {
   networkId: number
@@ -99,7 +99,7 @@ export const createRemoteBindingTable = (): RemoteBindingTable => {
       let parent: Entity = world.worldRoot
       let cursor: Entity | undefined = undefined
       for (const uid of path) {
-        cursor = world.nameCache.get(parent)?.get(uid)
+        cursor = nameCacheFor(world.engine).get(parent)?.get(uid)
         if (cursor === undefined) return undefined
         parent = cursor
       }

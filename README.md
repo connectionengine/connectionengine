@@ -22,7 +22,7 @@ You compose them per app. Same engine surface, same components, three transports
 
 | Package | Role |
 | --- | --- |
-| [`@connectionengine/core`](./packages/core) | Pure ECS + engine + identity-agnostic network primitives. No crypto, no AD4M. |
+| [`@connectionengine/core`](./packages/core) | Pure ECS + the distribution layer (mutation pipeline, transport, authority, governance). Identity- and crypto-agnostic. |
 | [`@connectionengine/local`](./packages/local) | Solo / local-multiplayer runtime — Ed25519 DIDs, ZCAP, signed transport. |
 | [`@connectionengine/ad4m-bridge`](./packages/ad4m-bridge) | AD4M-backed runtime — Agent / Ad4mClient / PerspectiveProxy wiring. |
 | [`packages/client`](./packages/client) | Reference SolidJS client. |
@@ -51,7 +51,17 @@ open .codegraph/graph.html
 ## A first taste
 
 ```ts
-import { createWorld, defineComponent, setComponent, Schema, createAnonAgent } from '@connectionengine/core'
+import {
+  createEngine,
+  createWorld,
+  createUser,
+  createPeer,
+  spawnPrefab,
+  defineComponent,
+  setComponent,
+  Schema,
+  createAnonAgent
+} from '@connectionengine/core'
 
 const Health = defineComponent({
   id: 'Health',
@@ -61,10 +71,15 @@ const Health = defineComponent({
   })
 })
 
-const world = createWorld({ agent: createAnonAgent() })
-const e = world.createEntity()
-setComponent(world, e, Health, { current: 80 })
+const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+const user = createUser(world, { did: world.localAgent.did, asLocal: true })
+createPeer(world, { user, peerId: 'tab-1', asLocal: true })
+
+const ava = spawnPrefab(world, 'avatar:alice') // wire-addressable, owned by local user, authority on local peer
+setComponent(world, ava, Health, { current: 80 })
 ```
+
+`spawnPrefab` is the user-facing factory for networked entities — it composes `createEntity + setUID + OwnedBy + AuthoritativeFor` in one call. The base `createEntity` is pure ECS for cases that don't need a wire identity (system caches, scratch entities).
 
 Promote to **local-multiplayer** with two peers signing their events:
 
@@ -92,11 +107,16 @@ const { world, agent, transport } = await createAd4mRuntime(ad4mClient, perspect
 packages/
 ├── core/                    @connectionengine/core
 │   └── src/
-│       ├── schema/          unified Schema namespace (TypeBox + SoA tags)
+│       ├── schema/          TypeBox + SoA tag kinds (Vec3, Quat, ArrayBuffer, …)
 │       ├── maths/           Vec/Quat SoA classes
-│       ├── ecs/             World · Entity · Component · Relation · Observer · clock · trace
-│       ├── engine/          System scheduler · Mutation pipeline · Prefab · Snapshot
-│       └── network/         Identity · Query · Transport · Peer · Authority · Governance
+│       ├── ecs/             Pure local runtime — Engine · World · Entity ·
+│       │                    Component · Relation · Observer · Query · Identity
+│       │                    (UID + BelongsTo) · System scheduler · Prefab · Clock
+│       └── network/         Everything distribution-related — Mutation pipeline
+│                            (queue + log + flush + apply) · Transport ·
+│                            Lifecycle (handshake / replay / sweep / fanout) ·
+│                            Binary delta codec · Snapshot · User / Peer ·
+│                            Authority · Governance · Peers registry
 │
 ├── local/                   @connectionengine/local
 │   └── src/                 DID · ZCAP · LocalAgent · signed transport · capability governance
@@ -107,13 +127,15 @@ packages/
 └── ad4m/                    @coasys/ad4m (git submodule, dev branch)
 ```
 
-For the canonical engine design, see [`.specs/planning/ecs-network-exploration.md`](./.specs/planning/ecs-network-exploration.md). For day-to-day developer context, see [`AGENTS.md`](./AGENTS.md). For the broader picture, see [`VISION.md`](./VISION.md).
+Two layers, no middle — `ecs/` is the foundation (local-runtime semantics, no notion of authoring or peers); `network/` is the distribution layer (the mutation pipeline only exists because state is distributed). The split is enforced mechanically by oxlint.
+
+For day-to-day developer context, see [`AGENTS.md`](./AGENTS.md). For the broader picture, see [`VISION.md`](./VISION.md).
 
 ## Status
 
-Three runtime modes work end-to-end (core solo, local two-peer with signing + ZCAP, AD4M bridge against mocks). 148 tests passing. Type-checked + lint-clean. Layering enforced by oxlint (`ecs/` cannot depend on `engine/` or `network/`). Cycle detection on.
+Three runtime modes work end-to-end (core solo, local two-peer with Ed25519 signing + ZCAP capability governance, AD4M bridge against mocks). 203 unit/integration tests + 2 Playwright tests pass across all packages. Type-checked + lint-clean. Layering enforced by oxlint (`ecs/` cannot depend on `network/`). Cycle detection on.
 
-The spatial layer (Transform, WebXR, zones, bounding trees, renderer) is the next major work — see [`.specs/planning/physics-spatial-exploration.md`](./.specs/planning/physics-spatial-exploration.md).
+The spatial layer (Transform, WebXR, zones, bounding trees, renderer) is the next major work.
 
 ## License
 

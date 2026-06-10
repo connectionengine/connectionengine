@@ -12,20 +12,52 @@ An entity in Connection Engine has two identifiers, and confusing them is the mo
 - **The UID path** is the entity's identity. It's the list of UIDs walked from a root entity through `BelongsTo` relations. It's stable, addressable, comparable across worlds.
 
 ```ts
-import { createNamedEntity, createEntity, setUID, getEntityPath } from '@connectionengine/core'
+import { spawnPrefab, getEntityPath } from '@connectionengine/core'
 
-const scene = createNamedEntity(world, 'scene:arena')
-const alice = createEntity(world)
-setUID(world, alice, 'avatar:alice', { parent: scene })
+// Top-level networked entity — owner defaults to world.localUser,
+// authority defaults to world.localPeer.
+const scene = spawnPrefab(world, 'scene:arena')
+const alice = spawnPrefab(world, 'avatar:alice', { parent: scene })
 
 getEntityPath(world, alice) // → ['scene:arena', 'avatar:alice']
 ```
 
-This pattern — `setUID` with a parent — is how you build any addressable structure. The path becomes the entity's URI on the wire and in the semantic-graph view.
+`spawnPrefab` is the only factory you normally need for wire-addressable entities. It composes four primitives that together define a networked entity:
+
+1. `createEntity` — allocate the bitECS entity (pure ECS, no identity).
+2. `setUID(uid, { parent })` — give it a path so authored events can address it. Anonymous entities (no path) don't ship.
+3. `OwnedBy(owner ?? world.localUser)` — permanent provenance.
+4. `AuthoritativeFor(authority ?? world.localPeer)` — runtime authority.
+
+Pass `{ prefab }` to also apply a bundle of components in one call — that's how prefabs work, see [the Prefab section below](#prefabs). The function is the same; the prefab is just an optional extra.
+
+For non-networked entities (no UID, no owner — useful for test scaffolding or ECS-only structures), use `createEntity` directly. The base `createEntity` does only one thing: allocate the bitECS entity. Nothing more.
+
+## Prefabs
+
+A `PrefabDefinition` is a named bundle of components with optional per-component defaults. It's data — `definePrefab` doesn't touch any world.
+
+```ts
+import { definePrefab, spawnPrefab } from '@connectionengine/core'
+
+const Avatar = definePrefab('Avatar', {
+  components: [Transform, Health],
+  defaults: { Health: { current: 100, max: 100 } }
+})
+
+// Apply the prefab at spawn:
+const alice = spawnPrefab(world, 'avatar:alice', { prefab: Avatar })
+const boss  = spawnPrefab(world, 'boss:1', {
+  prefab: Avatar,
+  overrides: { Health: { max: 999 } }
+})
+```
+
+`spawnPrefab` without a prefab is the bare-entity case; with a prefab it's a full instantiation. One function, one mental model.
 
 ## BelongsTo is a relation, not a special case
 
-`BelongsTo` is just an exclusive ECS relation, defined in `ecs/identity.ts`:
+`BelongsTo` is just an exclusive ECS relation, defined in `ecs/entity.ts`:
 
 ```ts
 export const BelongsTo = defineRelation({
@@ -54,7 +86,7 @@ Three caches on the world keep path operations O(1):
 | `parentOf`     | `Map<entity, parent>`                | child → parent              |
 | `uidOf`        | `Map<entity, uid>`                   | entity → uid                |
 
-`setUID` maintains all three. Entity removal (`removeEntity`) calls `cleanupIdentity` via a hook so the caches stay tight. You don't normally touch the caches directly; use `getEntityByUID`, `getEntityPath`, `resolveEntityPath`.
+`setUID` maintains all three. `removeEntity` clears them inline (lifecycle and identity caches live in the same module — no runtime registration needed). You don't normally touch the caches directly; use `getEntityByUID`, `getEntityPath`, `resolveEntityPath`.
 
 ## Conventions for UIDs
 

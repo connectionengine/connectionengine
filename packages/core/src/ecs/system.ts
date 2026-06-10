@@ -10,15 +10,17 @@
  *   - before / after: ordering constraints — names of other systems in the
  *     same phase. Topologically sorted on each (un)register.
  *
- * runSystems(world, deltaSeconds) drives one frame: tickWorld delegates the
+ * runSystems(world, deltaSeconds) drives one frame: tickEngine delegates the
  * fixed substeps to Simulation systems and variable steps to the rest.
- * Authored + runtime flushes run at end-of-frame after Render.
+ *
+ * Pure ECS — no knowledge of authoring or replication. Drivers that want to
+ * flush networking at frame end (runtime modes, test harnesses) call
+ * `flushAuthored` + `flushRuntime` from `network/mutation` after `runSystems`.
  */
 
 import { createRoot } from 'solid-js'
-import type { World } from '../ecs/world'
-import { tickWorld } from '../ecs/world'
-import { flushAuthored, flushRuntime } from './mutation'
+import type { World } from './world'
+import { tickEngine } from './world'
 
 export type Phase = 'Input' | 'Simulation' | 'Animation' | 'Render'
 export const PHASES: readonly Phase[] = ['Input', 'Simulation', 'Animation', 'Render'] as const
@@ -98,7 +100,7 @@ const sortPhase = (handles: SystemHandle[]): SystemHandle[] => {
     }
   }
   if (sorted.length !== handles.length) {
-    // Cycle — fall back to insertion order and warn via trace
+    // Cycle — fall back to insertion order
     return handles
   }
   return sorted
@@ -191,14 +193,16 @@ export const listSystems = (world: World, phase?: Phase): SystemHandle[] => {
 // ── Frame runner ──────────────────────────────────────────────────────────────
 
 /**
- * Drive one frame of the world: phase-ordered system execution + end-of-tick
- * mutation flushes.
+ * Drive one frame of the world: phase-ordered system execution.
  *
  * Phase order: Input → Simulation (fixed substeps) → Animation → Render.
- * After Render: flushRuntime + flushAuthored broadcast pending mutations.
+ *
+ * Pure ECS — does NOT flush networking. Drivers wanting end-of-frame
+ * replication call `flushAuthored` + `flushRuntime` after this returns.
  */
 export const runSystems = (world: World, deltaSeconds: number): void => {
   const state = getOrCreate(world)
+  const engine = world.engine
   const runPhase = (phase: Phase, dt: number): void => {
     for (const handle of state.byPhase.get(phase) ?? []) {
       handle.definition.execute?.(world, dt)
@@ -206,19 +210,14 @@ export const runSystems = (world: World, deltaSeconds: number): void => {
   }
   // Input runs once per frame (variable)
   runPhase('Input', deltaSeconds)
-  // tickWorld drives Simulation in fixed substeps, then variable phases
-  tickWorld(world, deltaSeconds, {
-    fixed: () => runPhase('Simulation', world.fixedTimeStep),
+  // tickEngine drives Simulation in fixed substeps, then variable phases
+  tickEngine(engine, deltaSeconds, {
+    fixed: () => runPhase('Simulation', engine.fixedTimeStep),
     variable: () => {
       runPhase('Animation', deltaSeconds)
       runPhase('Render', deltaSeconds)
     }
   })
-  // End of frame: emit accumulated mutations. Authored first so that any
-  // new entities created this frame are addressable on the receiver before
-  // the binary packet arrives carrying their runtime SoA payloads.
-  flushAuthored(world)
-  flushRuntime(world)
 }
 
 /** Dispose all systems on a world (called by destroyWorld via a hook). */

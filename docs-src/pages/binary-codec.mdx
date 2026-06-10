@@ -32,7 +32,7 @@ import { createBinaryPipeline } from '@connectionengine/core'
 const pipe = createBinaryPipeline(world, [Transform, Velocity])
 
 const buffer = pipe.write(
-  { fromPeerIndex: 7, timestamp: world.clock.now() },
+  { fromPeerIndex: 7, timestamp: world.engine.clock.now() },
   [{ networkId: 100, entity: alicePlayer }]
 )
 

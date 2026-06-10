@@ -15,22 +15,7 @@
   "overrides": [
     {
       "files": ["packages/core/src/ecs/**/*.ts"],
-      "rules": {
-        "no-restricted-imports": [
-          "error",
-          {
-            "patterns": [
-              {
-                "group": ["../engine/*", "../network/*"],
-                "message": "ecs/ is the foundation layer — it cannot depend on engine/ or network/. Move the shared concept down into ecs/, or invert the dependency via a hook (see ecs/entity.ts → registerRemoveHook)."
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "files": ["packages/core/src/engine/**/*.ts"],
+      "excludeFiles": ["**/*.test.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -38,7 +23,7 @@
             "patterns": [
               {
                 "group": ["../network/*"],
-                "message": "engine/ may depend on ecs/ + schema/ + maths/ but NOT on network/ — wire-format concerns are a layer above. If you need network/identity for entity addressing, that module is now in ecs/identity."
+                "message": "ecs/ is the foundation layer — it cannot depend on network/. Authoring, transport, authority and governance all exist because of distribution; they live in network/. Move the shared concept down into ecs/, or invert the dependency via a hook (see ecs/entity.ts → registerRemoveHook)."
               }
             ]
           }

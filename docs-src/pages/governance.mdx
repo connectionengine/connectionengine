@@ -11,7 +11,7 @@ A "rule" in Connection Engine isn't engine code — it's an entity with a constr
 ```ts
 import { addConstraint } from '@connectionengine/core'
 
-const scene = createNamedEntity(world, 'scene:guarded')
+const scene = spawnPrefab(world, 'scene:guarded')
 
 addConstraint(world, scene, 'credential', {
   requiredCredential: 'builder',
@@ -25,7 +25,7 @@ This is the design move that makes governance composable. You can govern a scene
 
 ## Built-in constraint kinds
 
-Core ships three engine-level kinds. None of them require a specific identity provider beyond an opaque DID string:
+Core ships three kinds. None of them require a specific identity provider beyond an opaque DID string:
 
 | Kind         | What it does                                                            |
 |--------------|-------------------------------------------------------------------------|
@@ -49,7 +49,7 @@ network.validateAuthored = (event) =>
   }).allowed
 ```
 
-`validateEvent` walks the scope hierarchy starting at the event's entity, collects every applicable constraint, runs each one's `validate` function, returns `{ allowed, violations }`. Inbound `applyAuthoredEnvelope` consults the gate before applying — failures emit `mutation.reject` trace events with the reason.
+`validateEvent` walks the scope hierarchy starting at the event's entity, collects every applicable constraint, runs each one's `validate` function, returns `{ allowed, violations }`. Inbound `applyAuthoredEnvelope` consults the gate before applying — failures are dropped without being applied or appended to the event log.
 
 The gate runs on **received** events. Local writes go through the authored queue and are emitted optimistically. If you want pre-commit validation of local writes, call `validateEvent` yourself before `setComponent` — but it's almost always cheaper to let the network enforce convergence: bad writes from peers are rejected on apply, your own bad writes will fail the next round-trip review.
 
@@ -98,17 +98,6 @@ resolveConstraints(world, avatar)
 ```
 
 You'd rarely call this from app code. It's primarily a tool for engine-level governance and for showing users why a write was rejected.
-
-## Trace integration
-
-Every governance decision emits a structured trace event:
-
-```ts
-world.trace.byKind('governance.accept') // [{ ts, predicate }, ...]
-world.trace.byKind('governance.reject') // [{ ts, predicate, detail: { violations } }, ...]
-```
-
-Use this in tests to assert which constraints fired and why, in dev tooling to surface rejected mutations to UI, in production telemetry to detect abuse patterns.
 
 ## What governance is NOT
 

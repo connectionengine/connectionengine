@@ -1,7 +1,7 @@
 /**
  * Injectable clock — wall-clock by default, manual for tests.
  *
- * Time-dependent behaviour (trace timestamps, temporal governance, snapshot
+ * Time-dependent behaviour (event timestamps, temporal governance, snapshot
  * metadata) reads from this clock so tests can drive deterministic time.
  */
 

@@ -14,14 +14,16 @@ import { describe, expect, it } from 'vitest'
 import { Schema } from '../src/schema'
 import { defineComponent, getComponent, setComponent } from '../src/ecs/component'
 import { createEntity } from '../src/ecs/entity'
-import { createNamedEntity, getEntityByUID, setUID } from '../src/ecs/identity'
+import { getEntityByUID, setUID } from '../src/ecs/entity'
 import { createPeer, createUser } from '../src/network/peer'
 import { getAuthority, setAuthority, setOwner, transferAuthority } from '../src/network/authority'
+import { spawnPrefab } from '../src/network/prefab'
 import { addConstraint, validateEvent } from '../src/network/governance'
 import { applySnapshot, createSnapshot } from '../src/network/snapshot'
 import { connectInMemory } from '../src/network/lifecycle/connect-memory'
 import { flushAsync } from '../src/network/transport'
 import { createPeerMesh, createPeerPair } from './test-utils/peer-pair'
+import { createEngine } from '../src/ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld } from '../src/ecs/world'
 
 // Components used across scenarios — global definitions, per-world stores.
@@ -51,7 +53,7 @@ describe('Scenario: spawn → replicate → mutate → converge', () => {
     const peers = createPeerPair({ names: ['alice', 'bob'] })
     const { a, b } = peers
 
-    const scene = createNamedEntity(a.world, 'scene:arena')
+    const scene = spawnPrefab(a.world, 'scene:arena')
     for (const name of ['ava', 'bee', 'cee']) {
       const e = createEntity(a.world)
       setUID(a.world, e, name, { parent: scene })
@@ -103,7 +105,7 @@ describe('Scenario: governance rejects unauthorised mutations', () => {
     ;(a.world.localAgent as { did: string }).did = aliceDID
     ;(b.world.localAgent as { did: string }).did = 'did:test:bob'
 
-    const scene = createNamedEntity(a.world, 'scene:guarded')
+    const scene = spawnPrefab(a.world, 'scene:guarded')
     addConstraint(a.world, scene, 'credential', { requiredCredential: 'builder', operations: ['modify'] })
     await peers.tick()
 
@@ -122,8 +124,6 @@ describe('Scenario: governance rejects unauthorised mutations', () => {
     await peers.tick()
 
     expect(getComponent(a.world, ava, Health)?.current).toBe(80)
-    const rejects = a.world.trace.byKind('governance.reject')
-    expect(rejects.length).toBeGreaterThan(0)
 
     peers.dispose()
   })
@@ -135,7 +135,7 @@ describe('Scenario: governance rejects unauthorised mutations', () => {
       }
     })
     const { a, b } = peers
-    const scene = createNamedEntity(a.world, 'scene:contented')
+    const scene = spawnPrefab(a.world, 'scene:contented')
     addConstraint(a.world, scene, 'content', {
       componentType: 'Int.Health',
       fieldConstraints: { current: { min: 0, max: 100 } }
@@ -156,13 +156,13 @@ describe('Scenario: governance rejects unauthorised mutations', () => {
 
 describe('Scenario: authority transfer between peers', () => {
   it('owner-user grants authority to one of their peers', () => {
-    const world = createWorld({ agent: createAnonAgent('owner') })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('owner') })
     const user = createUser(world, { did: 'did:test:owner' })
     const desktopPeer = createPeer(world, { user, peerId: 'desktop', asLocal: true })
     const phonePeer = createPeer(world, { user, peerId: 'phone' })
 
     const vehicle = createEntity(world)
-    setUID(world, vehicle, 'vehicle:1', { parent: createNamedEntity(world, 'scene:roads') })
+    setUID(world, vehicle, 'vehicle:1', { parent: spawnPrefab(world, 'scene:roads') })
     setOwner(world, vehicle, user)
     setAuthority(world, vehicle, desktopPeer)
 
@@ -177,7 +177,7 @@ describe('Scenario: snapshot bootstraps a late-joining peer', () => {
   it('peer C joins after A+B have built state; snapshot brings C in sync', async () => {
     const peers = createPeerPair({ names: ['alice', 'bob'] })
     const { a, b } = peers
-    const scene = createNamedEntity(a.world, 'scene:late')
+    const scene = spawnPrefab(a.world, 'scene:late')
     for (const name of ['one', 'two', 'three']) {
       const e = createEntity(a.world)
       setUID(a.world, e, name, { parent: scene })
@@ -186,7 +186,7 @@ describe('Scenario: snapshot bootstraps a late-joining peer', () => {
     await peers.tick()
     expect(getEntityByUID(b.world, b.world.worldRoot, 'scene:late')).toBeDefined()
 
-    const cWorld = createWorld({ agent: createAnonAgent('carol') })
+    const cWorld = createWorld({ engine: createEngine(), agent: createAnonAgent('carol') })
     const snap = createSnapshot(a.world)
     applySnapshot(cWorld, snap)
 
@@ -215,7 +215,7 @@ describe('Scenario: three-peer mesh convergence', () => {
   it('mutations from any peer reach all others', async () => {
     const mesh = createPeerMesh(3)
     const [alice, bob, carol] = mesh.peers
-    const scene = createNamedEntity(alice.world, 'scene:mesh')
+    const scene = spawnPrefab(alice.world, 'scene:mesh')
     const e = createEntity(alice.world)
     setUID(alice.world, e, 'p', { parent: scene })
     setComponent(alice.world, e, Health, { current: 30 })
@@ -245,17 +245,20 @@ describe('Scenario: three-peer mesh convergence', () => {
 })
 
 describe('Property: origin tag suppresses re-broadcast indefinitely', () => {
-  it('arbitrary ticks after replication produce no further sends from the receiver', async () => {
+  it('arbitrary ticks after replication produce no further authored writes from the receiver', async () => {
     const peers = createPeerPair()
     const { a, b } = peers
-    const scene = createNamedEntity(a.world, 'scene:prop')
+    const scene = spawnPrefab(a.world, 'scene:prop')
     const e = createEntity(a.world)
     setUID(a.world, e, 'x', { parent: scene })
     setComponent(a.world, e, Health, { current: 7 })
     await peers.tick()
-    b.world.trace.clear()
+    const startLog = b.world.eventLog.length
     for (let i = 0; i < 5; i++) await peers.tick()
-    expect(b.world.trace.byKind('transport.send')).toHaveLength(0)
+    // After A's write replicated to B, further ticks must not grow B's log —
+    // B applied with origin='network' which is not re-enqueued for outbound.
+    expect(b.world.eventLog.length).toBe(startLog)
+    expect(b.world.authoredQueue).toHaveLength(0)
     peers.dispose()
   })
 })

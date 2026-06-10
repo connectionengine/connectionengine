@@ -67,12 +67,12 @@ A small set of relations come with core because they're load-bearing for the res
 
 | Relation                | Where                    | Purpose                                            |
 |-------------------------|--------------------------|----------------------------------------------------|
-| `BelongsTo`             | `ecs/identity.ts`        | Identity chain — see [Entities & Identity](/entities-and-identity) |
+| `BelongsTo`             | `ecs/entity.ts`        | Identity chain — see [Entities & Identity](/entities-and-identity) |
 | `OwnedBy`               | `network/authority.ts`   | Provenance — who created this entity               |
 | `AuthoritativeFor`      | `network/authority.ts`   | Who controls runtime mutations for this entity     |
 | `HasConstraint`         | `network/governance.ts`  | Attaches governance constraints to a scope         |
 
-You can define any number more. Conventionally, name them as English-readable predicates (`Likes`, `MemberOf`, `Targets`) — they read better in trace logs and they match the RDF vibe.
+You can define any number more. Conventionally, name them as English-readable predicates (`Likes`, `MemberOf`, `Targets`) — they read well in event logs and match the RDF vibe.
 
 ## Observers
 

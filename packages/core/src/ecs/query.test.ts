@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
+import { createEngine } from '../ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { createEntity } from '../ecs/entity'
 import { defineComponent, setComponent } from '../ecs/component'
@@ -14,7 +15,7 @@ const ChildOf = defineRelation({ name: 'ChildOf', exclusive: true })
 
 describe('Query', () => {
   it('returns entities matching all components', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e1 = createEntity(world)
     const e2 = createEntity(world)
     const e3 = createEntity(world)
@@ -30,7 +31,7 @@ describe('Query', () => {
   })
 
   it('Or matches union of component sets', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e1 = createEntity(world)
     const e2 = createEntity(world)
     const e3 = createEntity(world)
@@ -43,7 +44,7 @@ describe('Query', () => {
   })
 
   it('Not excludes', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e1 = createEntity(world)
     const e2 = createEntity(world)
     setComponent(world, e1, A)
@@ -55,7 +56,7 @@ describe('Query', () => {
   })
 
   it('relation queries match children of a parent', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const parent = createEntity(world)
     const c1 = createEntity(world)
     const c2 = createEntity(world)
@@ -69,7 +70,7 @@ describe('Query', () => {
   })
 
   it('wildcard relation matches any target', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const p1 = createEntity(world)
     const p2 = createEntity(world)
     const c1 = createEntity(world)

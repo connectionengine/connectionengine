@@ -1,6 +1,6 @@
 /**
  * Peer connection lifecycle — joinWorld / leaveWorld / late-join via event-log
- * replay / TransientOnDisconnect deep cleanup.
+ * replay / owner-user sweep on last disconnect.
  *
  * These tests exercise the formal session protocol end-to-end. The simpler
  * `connectInMemory` shortcut is tested in integration.test.ts.
@@ -8,29 +8,46 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  AuthoritativeFor,
   applyAuthoredEnvelope,
   createAnonAgent,
+  createEngine,
   createEntity,
   createMemoryTransport,
-  createNamedEntity,
   createPeer,
   createUser,
   createWorld,
   defineComponent,
   destroyWorld,
+  entityExists,
+  findPeerByIdForUser,
+  findUserByDID,
   flushAsync,
   flushAuthored,
+  getAuthority,
   getComponent,
   getEntityByUID,
-  hasComponent,
+  getNetwork,
   joinWorld,
   leaveWorld,
   Schema,
+  setAuthority,
   setComponent,
-  setOwner,
   setUID,
-  TransientOnDisconnect
+  spawnPrefab
 } from '../src'
+
+/**
+ * Lifecycle tests model multiple physical machines — host + joiner — each
+ * with its own engine. Identity caches live as per-engine WeakMaps on the
+ * UIDComponent / BelongsTo definitions, so each peer's `worldRoot` subtree
+ * stays isolated. The thin wrapper makes the intent explicit at every call.
+ */
+const machine = (name: string): ReturnType<typeof createWorld> =>
+  createWorld({ engine: createEngine(), agent: createAnonAgent(name) })
+
+const machineFor = (did: string): ReturnType<typeof createWorld> =>
+  createWorld({ engine: createEngine(), agent: { did } })
 
 const Health = defineComponent({
   id: 'LC.Health',
@@ -40,11 +57,19 @@ const Health = defineComponent({
   })
 })
 
+/** Local identity bootstrap — equivalent to `createUser + createPeer` with
+ *  asLocal so `spawnPrefab` has defaults to draw on. */
+const bootstrap = (world: ReturnType<typeof createWorld>, name: string) => {
+  const user = createUser(world, { did: world.localAgent.did, asLocal: true })
+  createPeer(world, { user, peerId: `${name}-p`, asLocal: true })
+}
+
 describe('joinWorld — handshake + event-log replay', () => {
   it('joiner catches up by replaying host event log; no snapshot involved', async () => {
     // Host builds state first
-    const host = createWorld({ agent: createAnonAgent('host') })
-    const scene = createNamedEntity(host, 'scene:replay')
+    const host = machine('host')
+    bootstrap(host, 'host')
+    const scene = spawnPrefab(host, 'scene:replay')
     for (const name of ['a', 'b', 'c']) {
       const e = createEntity(host)
       setUID(host, e, name, { parent: scene })
@@ -57,7 +82,7 @@ describe('joinWorld — handshake + event-log replay', () => {
     const hostLogLen = host.eventLog.length
 
     // Joiner is fresh — no state
-    const joiner = createWorld({ agent: createAnonAgent('joiner') })
+    const joiner = machine('joiner')
     expect(joiner.eventLog.length).toBe(0)
 
     // Wire transport + initiate join from BOTH sides
@@ -86,14 +111,15 @@ describe('joinWorld — handshake + event-log replay', () => {
   })
 
   it('replay is idempotent — joining twice does not double-apply', async () => {
-    const host = createWorld({ agent: createAnonAgent('host2') })
-    const scene = createNamedEntity(host, 'scene:idem')
+    const host = machine('host2')
+    bootstrap(host, 'host2')
+    const scene = spawnPrefab(host, 'scene:idem')
     const e = createEntity(host)
     setUID(host, e, 'x', { parent: scene })
     setComponent(host, e, Health, { current: 30 })
     flushAuthored(host)
 
-    const joiner = createWorld({ agent: createAnonAgent('joiner2') })
+    const joiner = machine('joiner2')
 
     const link1 = createMemoryTransport()
     await Promise.all([joinWorld(host, { endpoint: link1.a }), joinWorld(joiner, { endpoint: link1.b })])
@@ -115,14 +141,15 @@ describe('joinWorld — handshake + event-log replay', () => {
   })
 
   it('live envelopes flow after the replay phase completes', async () => {
-    const host = createWorld({ agent: createAnonAgent('live-host') })
-    const scene = createNamedEntity(host, 'scene:live')
+    const host = machine('live-host')
+    bootstrap(host, 'live-host')
+    const scene = spawnPrefab(host, 'scene:live')
     const e = createEntity(host)
     setUID(host, e, 'thing', { parent: scene })
     setComponent(host, e, Health, { current: 10 })
     flushAuthored(host)
 
-    const joiner = createWorld({ agent: createAnonAgent('live-joiner') })
+    const joiner = machine('live-joiner')
 
     const link = createMemoryTransport()
     await Promise.all([joinWorld(host, { endpoint: link.a }), joinWorld(joiner, { endpoint: link.b })])
@@ -131,12 +158,12 @@ describe('joinWorld — handshake + event-log replay', () => {
     setComponent(host, e, Health, { current: 99 })
     // Manually invoke publishAuthored by emulating flush — the lifecycle wires it
     // (joinWorld calls installFanout on the default network)
-    host.networks.get('default')?.publishAuthored?.({
+    getNetwork(host, 'default')?.publishAuthored?.({
       fromPeer: host.localAgent.did,
       events: [
         {
           author: host.localAgent.did,
-          timestamp: host.clock.now(),
+          timestamp: host.engine.clock.now(),
           op: 'set',
           predicate: 'LC.Health',
           entityPath: ['scene:live', 'thing'],
@@ -156,24 +183,26 @@ describe('joinWorld — handshake + event-log replay', () => {
   })
 })
 
-describe('leaveWorld — graceful disconnect + TransientOnDisconnect cleanup', () => {
-  it("sweeps the leaving user's transient-tagged entities when no peers remain", async () => {
-    const host = createWorld({ agent: createAnonAgent('cleanup-host') })
-    const joiner = createWorld({ agent: createAnonAgent('cleanup-joiner') })
+describe('leaveWorld — graceful disconnect + owner-user sweep', () => {
+  it('removes every entity owned by the leaving user when no peers remain', async () => {
+    const host = machine('cleanup-host')
+    const hostUser = createUser(host, { did: host.localAgent.did, asLocal: true })
+    createPeer(host, { user: hostUser, peerId: 'host-p', asLocal: true })
 
-    // Joiner registers a user + peer with its own DID
-    const joinerUser = createUser(joiner, { did: joiner.localAgent.did, uid: 'user:joiner' })
-    createPeer(joiner, { user: joinerUser, peerId: 'p1', uid: 'peer:joiner-p1', asLocal: true })
+    const joiner = machine('cleanup-joiner')
+    const joinerUser = createUser(joiner, { did: joiner.localAgent.did, asLocal: true })
+    createPeer(joiner, { user: joinerUser, peerId: 'joiner-p', asLocal: true })
 
-    // Host also has a record of the joiner user (replicated via authored events
-    // in real life; here we set up directly for the test)
-    const hostJoinerUser = createUser(host, { did: joiner.localAgent.did, uid: 'user:joiner' })
+    // Host also has a record of the joiner user at the same UID the joiner
+    // will encode in HELLO — `user:<did>` is the default.
+    const hostJoinerUser = createUser(host, { did: joiner.localAgent.did })
 
-    // Host creates an avatar OWNED BY the joiner user, tagged TransientOnDisconnect
-    const avatar = createEntity(host)
-    setUID(host, avatar, 'avatar:joiner', { parent: createNamedEntity(host, 'scene:cleanup') })
-    setOwner(host, avatar, hostJoinerUser)
-    setComponent(host, avatar, TransientOnDisconnect, {})
+    // Host creates an avatar OWNED BY the joiner user. No opt-in tag — every
+    // user-owned entity is swept on the user's last disconnect.
+    const avatar = spawnPrefab(host, 'avatar:joiner', {
+      owner: hostJoinerUser,
+      parent: spawnPrefab(host, 'scene:cleanup')
+    })
 
     // Connect
     const link = createMemoryTransport()
@@ -183,14 +212,14 @@ describe('leaveWorld — graceful disconnect + TransientOnDisconnect cleanup', (
     ])
 
     // Pre-leave: avatar exists on host
-    expect(hasComponent(host, avatar, TransientOnDisconnect)).toBe(true)
+    expect(entityExists(host, avatar)).toBe(true)
 
     // Joiner leaves
-    await leaveWorld(joiner, joiner.networks.get('default')!.connections.values().next().value!)
+    await leaveWorld(joiner, getNetwork(joiner, 'default')!.connections.values().next().value!)
     await flushAsync()
 
-    // Host received the leave signal → swept the joiner's transient entities
-    expect(hasComponent(host, avatar, TransientOnDisconnect)).toBe(false)
+    // Host received the leave signal → swept everything the joiner-user owned
+    expect(entityExists(host, avatar)).toBe(false)
 
     void hostConn
     destroyWorld(host)
@@ -198,21 +227,25 @@ describe('leaveWorld — graceful disconnect + TransientOnDisconnect cleanup', (
   })
 
   it('does NOT sweep when the user has another live peer connection', async () => {
-    const host = createWorld({ agent: createAnonAgent('multi-host') })
-    const joinerA = createWorld({ agent: createAnonAgent('multi-A') })
-    const joinerB = createWorld({ agent: createAnonAgent('multi-A') }) // same DID — second device
-
-    // Force agent DIDs to match (same user, two devices)
     const userDID = 'did:test:multi-user'
-    ;(joinerA.localAgent as { did: string }).did = userDID
-    ;(joinerB.localAgent as { did: string }).did = userDID
+    const host = machine('multi-host')
+    const hostUser = createUser(host, { did: host.localAgent.did, asLocal: true })
+    createPeer(host, { user: hostUser, peerId: 'host-p', asLocal: true })
 
-    // Host knows the user + the avatar
-    const user = createUser(host, { did: userDID, uid: 'user:multi' })
-    const avatar = createEntity(host)
-    setUID(host, avatar, 'avatar:multi', { parent: createNamedEntity(host, 'scene:multi') })
-    setOwner(host, avatar, user)
-    setComponent(host, avatar, TransientOnDisconnect, {})
+    const joinerA = machineFor(userDID)
+    const joinerAUser = createUser(joinerA, { did: userDID, asLocal: true })
+    createPeer(joinerA, { user: joinerAUser, peerId: 'device-A', asLocal: true })
+
+    const joinerB = machineFor(userDID)
+    const joinerBUser = createUser(joinerB, { did: userDID, asLocal: true })
+    createPeer(joinerB, { user: joinerBUser, peerId: 'device-B', asLocal: true })
+
+    // Host pre-knows the user under the same UID HELLO will use
+    const user = createUser(host, { did: userDID })
+    const avatar = spawnPrefab(host, 'avatar:multi', {
+      owner: user,
+      parent: spawnPrefab(host, 'scene:multi')
+    })
 
     const link1 = createMemoryTransport()
     const link2 = createMemoryTransport()
@@ -220,18 +253,18 @@ describe('leaveWorld — graceful disconnect + TransientOnDisconnect cleanup', (
     await Promise.all([joinWorld(host, { endpoint: link2.a }), joinWorld(joinerB, { endpoint: link2.b })])
 
     // Joiner A leaves
-    await leaveWorld(joinerA, joinerA.networks.get('default')!.connections.values().next().value!)
+    await leaveWorld(joinerA, getNetwork(joinerA, 'default')!.connections.values().next().value!)
     await flushAsync()
 
     // Avatar should SURVIVE because joiner B still connected for the same user
-    expect(hasComponent(host, avatar, TransientOnDisconnect)).toBe(true)
+    expect(entityExists(host, avatar)).toBe(true)
 
     // Now joiner B leaves too
-    await leaveWorld(joinerB, joinerB.networks.get('default')!.connections.values().next().value!)
+    await leaveWorld(joinerB, getNetwork(joinerB, 'default')!.connections.values().next().value!)
     await flushAsync()
 
     // Now the avatar is swept
-    expect(hasComponent(host, avatar, TransientOnDisconnect)).toBe(false)
+    expect(entityExists(host, avatar)).toBe(false)
 
     destroyWorld(host)
     destroyWorld(joinerA)
@@ -239,10 +272,115 @@ describe('leaveWorld — graceful disconnect + TransientOnDisconnect cleanup', (
   })
 })
 
+describe('Authority — receive-side gate', () => {
+  it('rejects an AuthoritativeFor change from a peer with no standing', () => {
+    const host = machine('rg-host')
+    // Set up the local owner-user + peer
+    const hostUser = createUser(host, { did: 'did:test:host', uid: 'user:host', asLocal: true })
+    const hostPeer = createPeer(host, { user: hostUser, peerId: 'host-p', uid: 'peer:host-p', asLocal: true })
+    // An entity owned by hostUser, authority = hostPeer
+    const scene = spawnPrefab(host, 'scene:rg')
+    const e = spawnPrefab(host, 'thing', { parent: scene })
+    // A rogue user-peer exists locally (e.g. received via prior replay)
+    const rogueUser = createUser(host, { did: 'did:test:rogue', uid: 'user:rogue' })
+    const roguePeer = createPeer(host, { user: rogueUser, peerId: 'rogue-p', uid: 'peer:rogue-p' })
+
+    // Forge an envelope from the rogue DID trying to take authority
+    applyAuthoredEnvelope(host, {
+      fromPeer: 'did:test:rogue',
+      events: [
+        {
+          entityPath: ['scene:rg', 'thing'],
+          predicate: AuthoritativeFor.name,
+          op: 'set',
+          value: { targetPath: ['user:rogue', 'peer:rogue-p'] },
+          author: 'did:test:rogue',
+          timestamp: 0
+        }
+      ]
+    })
+
+    // Authority unchanged — the receive-side standing check dropped the
+    // forged event before applyEvent ran.
+    expect(getAuthority(host, e)).toBe(hostPeer)
+    void roguePeer
+    destroyWorld(host)
+  })
+
+  it('accepts an AuthoritativeFor change from the owner-user DID', () => {
+    const host = machine('ag-host')
+    const hostUser = createUser(host, { did: 'did:test:host2', uid: 'user:host2', asLocal: true })
+    createPeer(host, { user: hostUser, peerId: 'host-p', uid: 'peer:host-p', asLocal: true })
+    const scene = spawnPrefab(host, 'scene:ag')
+    const e = spawnPrefab(host, 'thing2', { parent: scene })
+    // A second device for the same user — owner's DID matches.
+    const otherPeer = createPeer(host, { user: hostUser, peerId: 'host-p2', uid: 'peer:host-p2' })
+
+    applyAuthoredEnvelope(host, {
+      fromPeer: 'did:test:host2',
+      events: [
+        {
+          entityPath: ['scene:ag', 'thing2'],
+          predicate: AuthoritativeFor.name,
+          op: 'set',
+          value: { targetPath: ['user:host2', 'peer:host-p2'] },
+          author: 'did:test:host2',
+          timestamp: 0
+        }
+      ]
+    })
+
+    expect(getAuthority(host, e)).toBe(otherPeer)
+    destroyWorld(host)
+  })
+})
+
+describe('Authority — auto-recovery on disconnect', () => {
+  it('reassigns authority away from the leaving peer via the sweep', async () => {
+    const host = machine('rec-host')
+    const hostUser = createUser(host, { did: 'did:test:rec-host', uid: 'user:rec-host', asLocal: true })
+    const hostPeer = createPeer(host, { user: hostUser, peerId: 'host', uid: 'peer:host', asLocal: true })
+
+    const joiner = machine('rec-joiner')
+    const joinerUser = createUser(joiner, { did: 'did:test:rec-joiner', uid: 'user:rec-joiner', asLocal: true })
+    createPeer(joiner, { user: joinerUser, peerId: 'joiner', uid: 'peer:joiner', asLocal: true })
+
+    // Connect — HELLO materialises remote user+peer entities on each side.
+    const link = createMemoryTransport()
+    await Promise.all([joinWorld(host, { endpoint: link.a }), joinWorld(joiner, { endpoint: link.b })])
+    await flushAsync()
+
+    // On the host, find the materialised joiner peer entity.
+    const hostJoinerUser = findUserByDID(host, 'did:test:rec-joiner')!
+    const hostJoinerPeer = findPeerByIdForUser(host, hostJoinerUser, 'joiner')!
+    expect(hostJoinerPeer).toBeDefined()
+
+    // Host creates an entity, hands authority to the joiner peer.
+    const scene = spawnPrefab(host, 'scene:rec')
+    const e = spawnPrefab(host, 'shared', { parent: scene })
+    // Transfer authority — hostPeer (local) has standing as the current holder.
+    setAuthority(host, e, hostJoinerPeer)
+    expect(getAuthority(host, e)).toBe(hostJoinerPeer)
+
+    // Joiner disconnects
+    await leaveWorld(joiner, getNetwork(joiner, 'default')!.connections.values().next().value!)
+    await flushAsync()
+
+    // Sweep should have moved authority off the disconnected peer.
+    const after = getAuthority(host, e)
+    expect(after).not.toBe(hostJoinerPeer)
+    // Falls back to the lowest available peer of the owner — here, hostPeer.
+    expect(after).toBe(hostPeer)
+
+    destroyWorld(host)
+    destroyWorld(joiner)
+  })
+})
+
 describe('Sanity: applyAuthoredEnvelope works alongside lifecycle', () => {
   it('a joined world still accepts direct envelope applies (for tests)', async () => {
-    const host = createWorld({ agent: createAnonAgent('sanity') })
-    const peer = createWorld({ agent: createAnonAgent('sanity-peer') })
+    const host = machine('sanity')
+    const peer = machine('sanity-peer')
     const link = createMemoryTransport()
     await Promise.all([joinWorld(host, { endpoint: link.a }), joinWorld(peer, { endpoint: link.b })])
 

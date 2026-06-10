@@ -1,99 +1,70 @@
 /**
- * Engine — global runtime container.
+ * Engine — the ECS runtime container.
  *
- * The Engine owns everything that's truly global to a Connection Engine
- * runtime:
+ * The Engine IS the bitECS world plus the ambient runtime state — per-component
+ * storage and time. Systems run at the engine level. Multiple `World` objects
+ * (virtual hierarchy + network scopes) can coexist within one engine — they
+ * share storage and tick together.
  *
- *   - One bitECS world (`bitECS`). Entity IDs are unique across this engine;
- *     all CE Worlds share this storage and scope themselves via `worldRoot`.
- *   - Component / relation type registries (one definition per `id`,
- *     deduplicated globally).
- *   - Per-component storage (SoA typed arrays + instance maps), indexed by
- *     the engine's global entity IDs.
- *   - The ComponentSchema registry (shareable replication metadata).
- *   - `customRegistries` — slot for higher layers (governance constraint
- *     kinds, peer transport dedup) to store their own engine-keyed state
- *     without ecs/ importing from network/.
+ * Owned here:
+ *   - One bitECS world (`bitECS`). Entity IDs are unique within this engine.
+ *   - Per-component storage — SoA arrays live on `ComponentDefinition` (which
+ *     is a module-level singleton); instance maps + view bags live in
+ *     `componentStores`, keyed by engine-global entity ID.
+ *   - Time state: `clock`, `frameTime`, `simulationTime`, `fixedTimeStep`,
+ *     `deltaSeconds`, `accumulator`. The engine ticks; `tickEngine` /
+ *     `runSystems` drive every world rooted in it.
  *
- * The default ambient engine is created lazily and is what `defineComponent`
- * / `defineRelation` / `createWorld` use when no engine is passed
- * explicitly. Create a fresh isolated engine with `createEngine()` for
- * plugin sandboxes or test isolation.
+ * Identity caches (`nameCache`, `uidOf`, `parentOf`) are NOT here — they live
+ * as typed extension properties on `UIDComponent` and `BelongsTo`. The
+ * extension itself is global; the inner maps are keyed by `Engine` via
+ * `WeakMap` so two engines in the same process keep their state isolated
+ * (entity IDs aren't unique across bitECS worlds). `destroyWorld` sweeps a
+ * world's descendants from the engine's caches.
+ *
+ * There is no ambient engine. Every `createWorld` takes an explicit `engine`
+ * — callers decide what to share. Production apps construct one engine and
+ * compose worlds inside it; test harnesses give each peer its own.
  */
 
 import * as bitecs from 'bitecs'
-import type { ComponentDefinition, ComponentSchema, PerComponentStores } from './component'
-import type { RelationDefinition } from './relation'
+import type { ComponentDefinition, PerComponentStores } from './component'
+import type { Clock } from './clock'
+import { wallClock } from './clock'
+
+export interface CreateEngineOptions {
+  /** Simulation tick rate in seconds. Default 1/60. */
+  fixedTimeStep?: number
+  /** Injectable clock — defaults to wall-clock. Tests pass a manual clock. */
+  clock?: Clock
+}
 
 export interface Engine {
-  /** The shared bitECS world — entity ID space + archetype storage. */
+  /** The bitECS world — entity ID space + archetype storage. */
   readonly bitECS: bitecs.World
 
-  /** Component definitions, keyed by `id`. Idempotent on redefinition. */
-  readonly components: Map<string, ComponentDefinition>
-  /** bitECS ref → ComponentDefinition (for observers / query inspection). */
-  readonly componentsByRef: WeakMap<bitecs.ComponentRef, ComponentDefinition>
-  /** Per-component engine-level storage (SoA arrays + instance map). */
+  /** Per-component engine-level storage (SoA arrays + instance map). Component
+   *  *definitions* are global module-level singletons (`componentsById`); this
+   *  is the per-engine STORAGE keyed by definition. */
   readonly componentStores: WeakMap<ComponentDefinition, PerComponentStores>
 
-  /** Relation definitions, keyed by `name`. Idempotent on redefinition. */
-  readonly relations: Map<string, RelationDefinition<unknown>>
-  /** bitECS relation ref → RelationDefinition. */
-  readonly relationsByRef: WeakMap<bitecs.Relation<unknown>, RelationDefinition<unknown>>
-
-  /** Component id → shareable ComponentSchema metadata. */
-  readonly schemas: Map<string, ComponentSchema>
-
-  /**
-   * Open slot for higher-layer engine-keyed registries — governance constraint
-   * kinds, the peer transport dedup table, future plugins. Each owner stamps
-   * its own symbol key + typed value. Keeps `ecs/` decoupled from `network/`
-   * while still letting the engine be the single root of global state.
-   */
-  readonly customRegistries: Map<symbol, unknown>
+  // ── Time ───────────────────────────────────────────────────────────────────
+  clock: Clock
+  frameTime: number
+  simulationTime: number
+  fixedTimeStep: number
+  deltaSeconds: number
+  accumulator: number
 }
 
 /** Create a fresh isolated engine. */
-export const createEngine = (): Engine => ({
+export const createEngine = (options: CreateEngineOptions = {}): Engine => ({
   bitECS: bitecs.createWorld(),
-  components: new Map(),
-  componentsByRef: new WeakMap(),
   componentStores: new WeakMap(),
-  relations: new Map(),
-  relationsByRef: new WeakMap(),
-  schemas: new Map(),
-  customRegistries: new Map()
+  clock: options.clock ?? wallClock,
+  frameTime: 0,
+  simulationTime: 0,
+  fixedTimeStep: options.fixedTimeStep ?? 1 / 60,
+  deltaSeconds: 0,
+  accumulator: 0
 })
-
-let _default: Engine | undefined
-
-/**
- * The ambient default engine. Used by all `defineComponent` / `defineRelation`
- * / `createWorld` callers that don't pass an explicit engine. Lazy-initialised
- * on first access.
- */
-export const getDefaultEngine = (): Engine => {
-  if (!_default) _default = createEngine()
-  return _default
-}
-
-/**
- * Replace the default engine. Test affordance only — production code should
- * pass an explicit engine to `createWorld` if it needs isolation.
- */
-export const setDefaultEngine = (engine: Engine): void => {
-  _default = engine
-}
-
-/**
- * Helper for higher layers (network/governance, network/peers) to lazily
- * stamp an engine-keyed registry of their own type. `key` is a module-level
- * symbol owned by the caller; `factory` runs once per engine.
- */
-export const getOrCreateRegistry = <T>(engine: Engine, key: symbol, factory: () => T): T => {
-  const existing = engine.customRegistries.get(key) as T | undefined
-  if (existing !== undefined) return existing
-  const fresh = factory()
-  engine.customRegistries.set(key, fresh as unknown)
-  return fresh
-}

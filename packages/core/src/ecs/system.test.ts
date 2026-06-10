@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { createComputed, createSignal, createRoot, onCleanup } from 'solid-js'
-import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
+import { createAnonAgent, createWorld, destroyWorld } from './world'
+import { createEngine } from './engine'
 import { defineSystem, injectSystem, listSystems, removeSystem, reorderSystem, runSystems } from './system'
 
 describe('System scheduler', () => {
   it('runs systems in phase order: Input → Simulation → Animation → Render', () => {
-    const world = createWorld({ agent: createAnonAgent(), fixedTimeStep: 1 / 60 })
+    const world = createWorld({ engine: createEngine({ fixedTimeStep: 1 / 60 }), agent: createAnonAgent() })
     const calls: string[] = []
     defineSystem(world, { name: 'render', phase: 'Render', execute: () => calls.push('render') })
     defineSystem(world, { name: 'sim', phase: 'Simulation', execute: () => calls.push('sim') })
@@ -18,7 +19,7 @@ describe('System scheduler', () => {
   })
 
   it('Simulation phase runs N times per frame at fixed timestep', () => {
-    const world = createWorld({ agent: createAnonAgent(), fixedTimeStep: 1 / 60 })
+    const world = createWorld({ engine: createEngine({ fixedTimeStep: 1 / 60 }), agent: createAnonAgent() })
     let count = 0
     defineSystem(world, { name: 'sim', phase: 'Simulation', execute: () => count++ })
     runSystems(world, 4 / 60) // 4 substeps
@@ -27,7 +28,7 @@ describe('System scheduler', () => {
   })
 
   it('orders within phase by before/after constraints', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const calls: string[] = []
     defineSystem(world, { name: 'middle', phase: 'Render', execute: () => calls.push('middle') })
     defineSystem(world, { name: 'last', phase: 'Render', after: ['middle'], execute: () => calls.push('last') })
@@ -38,7 +39,7 @@ describe('System scheduler', () => {
   })
 
   it('removeSystem stops execution and disposes reactor', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     let count = 0
     const handle = defineSystem(world, { name: 's', phase: 'Render', execute: () => count++ })
     runSystems(world, 0)
@@ -50,7 +51,7 @@ describe('System scheduler', () => {
   })
 
   it('reactor: mounts a Solid reactive root and tears down on removeSystem', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     let mounted = false
     let disposed = false
     const handle = defineSystem(world, {
@@ -88,7 +89,7 @@ describe('System scheduler', () => {
   })
 
   it('listSystems enumerates by phase or all', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     defineSystem(world, { name: 'a', phase: 'Render' })
     defineSystem(world, { name: 'b', phase: 'Simulation' })
     expect(
@@ -101,7 +102,7 @@ describe('System scheduler', () => {
   })
 
   it('reorderSystem updates ordering at runtime', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const calls: string[] = []
     defineSystem(world, { name: 'a', phase: 'Render', execute: () => calls.push('a') })
     const b = defineSystem(world, { name: 'b', phase: 'Render', execute: () => calls.push('b') })
@@ -115,7 +116,7 @@ describe('System scheduler', () => {
   })
 
   it('injectSystem re-attaches a removed system, re-mounts its reactor', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     let executeCalls = 0
     let mountCount = 0
     let disposeCount = 0
@@ -145,7 +146,7 @@ describe('System scheduler', () => {
   })
 
   it('injectSystem is idempotent for already-injected handles', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const handle = defineSystem(world, { name: 'idem', phase: 'Render', execute: () => {} })
     expect(() => injectSystem(world, handle)).not.toThrow()
     expect(listSystems(world).filter((h) => h.name === 'idem')).toHaveLength(1)
@@ -153,9 +154,9 @@ describe('System scheduler', () => {
   })
 
   it('injectSystem throws if a different system already uses the name', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     defineSystem(world, { name: 'duplicate', phase: 'Render', execute: () => {} })
-    const otherWorld = createWorld({ agent: createAnonAgent() })
+    const otherWorld = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const otherHandle = defineSystem(otherWorld, { name: 'duplicate', phase: 'Render', execute: () => {} })
     removeSystem(otherWorld, otherHandle)
     expect(() => injectSystem(world, otherHandle)).toThrow(/already injected/i)

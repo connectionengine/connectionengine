@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
+import { createEngine } from './engine'
 import { createAnonAgent, createWorld, destroyWorld } from './world'
 import { createEntity } from './entity'
 import {
@@ -73,7 +74,7 @@ describe('defineComponent — replication channel', () => {
 
 describe('setComponent / getComponent / removeComponent', () => {
   it('round-trips value-typed fields with defaults', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Health)
     const h = getComponent(world, e, Health)
@@ -82,7 +83,7 @@ describe('setComponent / getComponent / removeComponent', () => {
   })
 
   it('partial set merges into existing instance', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Health, { current: 50 })
     expect(getComponent(world, e, Health)).toEqual({ current: 50, max: 100 })
@@ -92,7 +93,7 @@ describe('setComponent / getComponent / removeComponent', () => {
   })
 
   it('writes and reads SoA fields via Vec3/Quat helpers', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 2, 3], rotation: [0, 0, 0, 1] })
     const t = getComponent(world, e, Transform)
@@ -109,7 +110,7 @@ describe('setComponent / getComponent / removeComponent', () => {
   })
 
   it('getComponent returns a stable object reference across calls', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     // Event component — instance store is the live data
     setComponent(world, e, Health, { current: 50 })
@@ -132,7 +133,7 @@ describe('setComponent / getComponent / removeComponent', () => {
   })
 
   it('hasComponent toggles correctly across set/remove', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     expect(hasComponent(world, e, Health)).toBe(false)
     setComponent(world, e, Health)
@@ -143,30 +144,26 @@ describe('setComponent / getComponent / removeComponent', () => {
     destroyWorld(world)
   })
 
-  it('registers ComponentSchema with the engine at definition time', () => {
-    const world = createWorld({ agent: createAnonAgent() })
-    expect(world.engine.schemas.get('Health')).toBe(Health.$componentSchema)
-    destroyWorld(world)
+  it('attaches a ComponentSchema to the definition at definition time', () => {
+    expect(Health.$componentSchema).toBeDefined()
+    expect(Health.$componentSchema.id).toBe('Health')
+    expect(Health.$componentSchema.channel).toBe('event')
   })
 
-  it('emits trace events with origin tag', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+  it('origin: network skips the authored queue (suppresses re-broadcast)', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Health, { current: 80 })
-    const events = world.trace.byKind('component.set')
-    expect(events).toHaveLength(1)
-    expect(events[0].predicate).toBe('Health')
-    expect(events[0].origin).toBe('local')
-    expect(events[0].entity).toBe(e)
+    expect(world.authoredQueue).toHaveLength(1)
     setComponent(world, e, Health, { current: 70 }, { origin: 'network' })
-    expect(world.trace.byKind('component.set')[1].origin).toBe('network')
+    expect(world.authoredQueue).toHaveLength(1)
     destroyWorld(world)
   })
 })
 
 describe('runtime dirty tracking', () => {
   it('marks dirty on runtime-category set, drains atomically', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const a = createEntity(world)
     const b = createEntity(world)
     setComponent(world, a, Transform, { position: [0, 0, 0] })
@@ -179,7 +176,7 @@ describe('runtime dirty tracking', () => {
   })
 
   it('does not mark dirty for authored or local components', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Health)
     setComponent(world, e, Debug, { label: 'x' })
@@ -188,7 +185,7 @@ describe('runtime dirty tracking', () => {
   })
 
   it('clears dirty flag when component removed', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [0, 0, 0] })
     expect(world.runtimeDirty.get('Transform')?.has(e)).toBe(true)
@@ -200,7 +197,7 @@ describe('runtime dirty tracking', () => {
 
 describe('property invariants', () => {
   it('setComponent then getComponent round-trips a value field', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     for (let i = 0; i < 50; i++) {
       const e = createEntity(world)
       const cur = Math.floor(Math.random() * 1000)
@@ -211,7 +208,7 @@ describe('property invariants', () => {
   })
 
   it('idempotent registration: defining same id twice yields the same definition', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     setComponent(world, createEntity(world), Health)
     setComponent(world, createEntity(world), Health)
     const Health2 = defineComponent({

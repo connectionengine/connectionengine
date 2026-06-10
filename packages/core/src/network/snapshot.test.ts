@@ -2,10 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { defineComponent, getComponent, hasComponent, setComponent } from '../ecs/component'
 import { defineRelation, addRelation, getRelationTargets } from '../ecs/relation'
-import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
-import { createNamedEntity, getEntityByUID, setUID } from '../ecs/identity'
+import { createAnonAgent, createWorld, destroyWorld, type Entity, type World } from '../ecs/world'
+import { createEngine } from '../ecs/engine'
+import { getEntityByUID, setUID } from '../ecs/entity'
 import { createEntity } from '../ecs/entity'
 import { applySnapshot, createSnapshot } from './snapshot'
+
+const named = (world: World, uid: string, parent?: Entity): Entity => {
+  const e = createEntity(world)
+  setUID(world, e, uid, parent !== undefined ? { parent } : undefined)
+  return e
+}
 
 const Health = defineComponent({
   id: 'Health-snap',
@@ -19,8 +26,8 @@ const ChildOf = defineRelation({ name: 'ChildOf-snap', exclusive: true })
 
 describe('Snapshot', () => {
   it('createSnapshot captures named entities + components + relations', () => {
-    const world = createWorld({ agent: createAnonAgent() })
-    const scene = createNamedEntity(world, 'scene:snap')
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const scene = named(world, 'scene:snap')
     const a = createEntity(world)
     setUID(world, a, 'a', { parent: scene })
     setComponent(world, a, Health, { current: 75 })
@@ -42,8 +49,8 @@ describe('Snapshot', () => {
   })
 
   it('applySnapshot to fresh world rebuilds equivalent state', () => {
-    const source = createWorld({ agent: createAnonAgent() })
-    const scene = createNamedEntity(source, 'scene:snap2')
+    const source = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const scene = named(source, 'scene:snap2')
     const a = createEntity(source)
     setUID(source, a, 'a', { parent: scene })
     setComponent(source, a, Health, { current: 42 })
@@ -51,7 +58,7 @@ describe('Snapshot', () => {
 
     const snap = createSnapshot(source)
 
-    const target = createWorld({ agent: createAnonAgent() })
+    const target = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     applySnapshot(target, snap)
 
     const tScene = getEntityByUID(target, target.worldRoot, 'scene:snap2')
@@ -68,15 +75,15 @@ describe('Snapshot', () => {
   })
 
   it('snapshot round-trip preserves relations', () => {
-    const source = createWorld({ agent: createAnonAgent() })
-    const scene = createNamedEntity(source, 'scene:rel')
+    const source = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const scene = named(source, 'scene:rel')
     const a = createEntity(source)
     setUID(source, a, 'a', { parent: scene })
     const b = createEntity(source)
     setUID(source, b, 'b', { parent: scene })
     addRelation(source, b, ChildOf, a)
     const snap = createSnapshot(source)
-    const target = createWorld({ agent: createAnonAgent() })
+    const target = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     applySnapshot(target, snap)
     const tScene = getEntityByUID(target, target.worldRoot, 'scene:rel')!
     const tA = getEntityByUID(target, tScene, 'a')!
@@ -87,8 +94,8 @@ describe('Snapshot', () => {
   })
 
   it('filter restricts captured components', () => {
-    const world = createWorld({ agent: createAnonAgent() })
-    const e = createNamedEntity(world, 'x')
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const e = named(world, 'x')
     setComponent(world, e, Health)
     setComponent(world, e, Transform, { position: [0, 0, 0] })
     const snap = createSnapshot(world, { filter: ['Health-snap'] })
@@ -98,8 +105,8 @@ describe('Snapshot', () => {
   })
 
   it('replace mode clears prior named entities', () => {
-    const world = createWorld({ agent: createAnonAgent() })
-    const a = createNamedEntity(world, 'a')
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const a = named(world, 'a')
     setComponent(world, a, Health, { current: 1 })
     const snap = createSnapshot(world)
     setComponent(world, a, Health, { current: 999 })

@@ -16,10 +16,12 @@ import { Ad4mClient, ExpressionProof, Link, LinkExpression, PerspectiveProxy } f
 import {
   applyAuthoredEnvelope,
   type AuthoredEvent,
+  createEngine,
   defineComponent,
   destroyWorld,
   getComponent,
   getEntityByUID,
+  getNetwork,
   Schema
 } from '@connectionengine/core'
 import { createAd4mAgent, eventToLink, linkExpressionToEvent } from '../src'
@@ -129,9 +131,9 @@ describe('connectAd4m — outbound', () => {
   it('publishAuthored calls perspective.addLinks with encoded events', async () => {
     const client = mockClient('did:ad4m:alice')
     const { proxy, added } = mockPerspective()
-    const { world } = await createAd4mRuntime(client, proxy)
+    const { world } = await createAd4mRuntime(client, proxy, { engine: createEngine() })
 
-    world.networks.get('default')?.publishAuthored?.({
+    getNetwork(world, 'default')?.publishAuthored?.({
       fromPeer: 'did:ad4m:alice',
       events: [
         {
@@ -159,7 +161,7 @@ describe('connectAd4m — inbound', () => {
   it('link-added listener decodes the LinkExpression and applies to the world', async () => {
     const client = mockClient('did:ad4m:bob')
     const { proxy, listeners } = mockPerspective()
-    const { world } = await createAd4mRuntime(client, proxy)
+    const { world } = await createAd4mRuntime(client, proxy, { engine: createEngine() })
 
     const aliceEvent: AuthoredEvent = {
       entityPath: ['scene:ad4m', 'avatar'],
@@ -185,7 +187,7 @@ describe('connectAd4m — inbound', () => {
   it('echoes from our own DID are ignored', async () => {
     const client = mockClient('did:ad4m:bob')
     const { proxy, listeners } = mockPerspective()
-    const { world } = await createAd4mRuntime(client, proxy)
+    const { world } = await createAd4mRuntime(client, proxy, { engine: createEngine() })
 
     const ownEvent: AuthoredEvent = {
       entityPath: ['echo'],
@@ -205,12 +207,12 @@ describe('Ad4mTransportHandle.close', () => {
   it('detaches the listener and clears publishAuthored', async () => {
     const client = mockClient('did:ad4m:bob')
     const { proxy, listeners } = mockPerspective()
-    const { world, transport } = await createAd4mRuntime(client, proxy)
+    const { world, transport } = await createAd4mRuntime(client, proxy, { engine: createEngine() })
     expect(listeners.size).toBe(1)
-    expect(world.networks.get('default')?.publishAuthored).toBeDefined()
+    expect(getNetwork(world, 'default')?.publishAuthored).toBeDefined()
     await transport.close()
     expect(listeners.size).toBe(0)
-    expect(world.networks.get('default')?.publishAuthored).toBeUndefined()
+    expect(getNetwork(world, 'default')?.publishAuthored).toBeUndefined()
     destroyWorld(world)
   })
 })
@@ -219,7 +221,7 @@ describe('Sanity: applyAuthoredEnvelope still works alongside the bridge', () =>
   it('a bridge-installed world still accepts direct envelope applies', async () => {
     const client = mockClient('did:ad4m:carol')
     const { proxy } = mockPerspective()
-    const { world } = await createAd4mRuntime(client, proxy)
+    const { world } = await createAd4mRuntime(client, proxy, { engine: createEngine() })
     applyAuthoredEnvelope(world, {
       fromPeer: 'did:test:other',
       events: [

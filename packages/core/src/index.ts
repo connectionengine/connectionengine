@@ -1,16 +1,23 @@
 /**
  * @connectionengine/core — public API surface.
  *
- * Organised by domain (matching the on-disk structure):
- *   schema/  — unified Schema namespace (TypeBox + SoA tags)
+ * Two domain layers, matching the on-disk structure:
+ *
+ *   ecs/     — Engine, World, Entity, Component, Relation, Observer, Query,
+ *              Identity (UID + BelongsTo), System scheduler, Prefab.
+ *              Pure local runtime — knows nothing about authoring, replication,
+ *              peers, or governance.
+ *
+ *   network/ — Mutation pipeline (authored queue + event log + flush + apply),
+ *              Transport, Lifecycle (handshake / replay / sweep / fanout),
+ *              Binary delta codec, Snapshot, User / Peer, Authority,
+ *              Governance, Peers registry. Everything that exists *because*
+ *              state is distributed across peers.
+ *
+ *   schema/  — TypeBox + SoA tag kinds (Vec3, Quat, ArrayBuffer, SoAStore, …)
  *   maths/   — Vec/Quat SoA classes
- *   ecs/     — World, Entity, Components, Relations, Observers, Identity, Query
- *              (foundational graph + addressing; identity addressing lives here
- *              because it's the engine's entity-naming scheme, not a wire concern)
- *   engine/  — System scheduler, Mutation pipeline, Prefab, Snapshot
- *   network/ — Transport endpoints, Peer / Authority / Governance,
- *              authored-channel string codec, binary runtime codec
- *              (cursor + per-component delta encoding)
+ *
+ * Layering enforced mechanically: `ecs/` cannot import from `network/`.
  *
  * Core is identity- and crypto-agnostic. For Ed25519 / did:key identity + ZCAP
  * capabilities, depend on @connectionengine/local. For AD4M-backed identity,
@@ -40,7 +47,6 @@ export * from './ecs/engine'
 export * from './ecs/world'
 export * from './ecs/entity'
 export * from './ecs/clock'
-export * from './ecs/trace'
 export * from './ecs/component'
 export * from './ecs/relation'
 // Observers: re-export only the unique hook constructors. The operator
@@ -48,18 +54,15 @@ export * from './ecs/relation'
 // import path; observers compose them via the same names.
 export { observe, onAdd, onRemove, onSet, onGet } from './ecs/observer'
 export type { ObserverTerm } from './ecs/observer'
-export * from './ecs/identity'
 export * from './ecs/query'
 
-// ── Engine ────────────────────────────────────────────────────────────────────
-export * from './engine/system'
-export * from './engine/mutation'
-export * from './engine/prefab'
+// ── ECS scheduling ────────────────────────────────────────────────────────────
+export * from './ecs/system'
 
-// ── Network ───────────────────────────────────────────────────────────────────
+// ── Network — everything distribution-related ────────────────────────────────-
 export * from './network/transport'
 export * from './network/network'
-export * from './network/peers'
+export * from './network/mutation'
 export * from './network/lifecycle/index'
 export * from './network/cursor'
 export * from './network/codec'
@@ -69,3 +72,4 @@ export * from './network/snapshot'
 export * from './network/peer'
 export * from './network/authority'
 export * from './network/governance'
+export * from './network/prefab'

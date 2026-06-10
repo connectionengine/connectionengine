@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { Worlds, createAnonAgent, createWorld, destroyWorld, tickWorld } from './world'
+import { Worlds, createAnonAgent, createWorld, destroyWorld, tickEngine } from './world'
+import { createEngine } from './engine'
 import { createManualClock } from './clock'
+import { getNetworks } from '../network/network'
 
 describe('World', () => {
-  it('initialises with default time state and empty bindings', () => {
-    const world = createWorld({ agent: createAnonAgent() })
-    expect(world.frameTime).toBe(0)
-    expect(world.simulationTime).toBe(0)
-    expect(world.fixedTimeStep).toBeCloseTo(1 / 60)
-    expect(world.deltaSeconds).toBe(0)
-    expect(world.accumulator).toBe(0)
-    expect(world.networks.size).toBe(0)
+  it('initialises with default time state on the engine and empty bindings', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    expect(world.engine.frameTime).toBe(0)
+    expect(world.engine.simulationTime).toBe(0)
+    expect(world.engine.fixedTimeStep).toBeCloseTo(1 / 60)
+    expect(world.engine.deltaSeconds).toBe(0)
+    expect(world.engine.accumulator).toBe(0)
+    expect(getNetworks(world).size).toBe(0)
     expect(world.eventLog).toEqual([])
     expect(world.authoredQueue).toEqual([])
     expect(world.runtimeDirty.size).toBe(0)
@@ -18,19 +20,20 @@ describe('World', () => {
     destroyWorld(world)
   })
 
-  it('respects custom fixedTimeStep, clock, and trace sink', () => {
+  it('respects custom fixedTimeStep and clock at engine construction', () => {
     const clock = createManualClock(1000)
-    const world = createWorld({ agent: createAnonAgent(), fixedTimeStep: 1 / 30, clock })
-    expect(world.fixedTimeStep).toBeCloseTo(1 / 30)
-    expect(world.clock.now()).toBe(1000)
+    const engine = createEngine({ fixedTimeStep: 1 / 30, clock })
+    const world = createWorld({ engine, agent: createAnonAgent() })
+    expect(world.engine.fixedTimeStep).toBeCloseTo(1 / 30)
+    expect(world.engine.clock.now()).toBe(1000)
     clock.advance(50)
-    expect(world.clock.now()).toBe(1050)
+    expect(world.engine.clock.now()).toBe(1050)
     destroyWorld(world)
   })
 
   it('isolates state across multiple worlds', () => {
-    const a = createWorld({ agent: createAnonAgent() })
-    const b = createWorld({ agent: createAnonAgent() })
+    const a = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const b = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     expect(a).not.toBe(b)
     expect(Worlds.has(a) && Worlds.has(b)).toBe(true)
     destroyWorld(a)
@@ -40,9 +43,9 @@ describe('World', () => {
   })
 
   it('destroyWorld is idempotent and clears networks', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     destroyWorld(world)
-    expect(world.networks.size).toBe(0)
+    expect(getNetworks(world).size).toBe(0)
     expect(Worlds.has(world)).toBe(false)
     // calling again is a noop
     destroyWorld(world)
@@ -50,43 +53,40 @@ describe('World', () => {
   })
 })
 
-describe('tickWorld', () => {
+describe('tickEngine', () => {
   it('drives fixed substeps in Simulation phase, runs variable once per frame', () => {
-    const world = createWorld({ agent: createAnonAgent(), fixedTimeStep: 1 / 60 })
+    const engine = createEngine({ fixedTimeStep: 1 / 60 })
     let fixedCount = 0
     let varCount = 0
     // 4 frames of 1/30s — should run 2 fixed substeps per frame
     for (let i = 0; i < 4; i++) {
-      tickWorld(world, 1 / 30, {
+      tickEngine(engine, 1 / 30, {
         fixed: () => fixedCount++,
         variable: () => varCount++
       })
     }
     expect(fixedCount).toBe(8) // 4 frames * 2 substeps
     expect(varCount).toBe(4)
-    expect(world.simulationTime).toBeCloseTo(8 * (1 / 60))
-    destroyWorld(world)
+    expect(engine.simulationTime).toBeCloseTo(8 * (1 / 60))
   })
 
   it('accumulates leftover time without dropping substeps', () => {
-    const world = createWorld({ agent: createAnonAgent(), fixedTimeStep: 1 / 60 })
+    const engine = createEngine({ fixedTimeStep: 1 / 60 })
     let fixed = 0
     // 1/120s — under fixed step; no substep yet
-    tickWorld(world, 1 / 120, { fixed: () => fixed++, variable: () => {} })
+    tickEngine(engine, 1 / 120, { fixed: () => fixed++, variable: () => {} })
     expect(fixed).toBe(0)
     // another 1/120s — now total is 1/60, one substep
-    tickWorld(world, 1 / 120, { fixed: () => fixed++, variable: () => {} })
+    tickEngine(engine, 1 / 120, { fixed: () => fixed++, variable: () => {} })
     expect(fixed).toBe(1)
-    destroyWorld(world)
   })
 
   it('runs no fixed substeps when frame time is zero', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const engine = createEngine()
     let fixed = 0
     let variable = 0
-    tickWorld(world, 0, { fixed: () => fixed++, variable: () => variable++ })
+    tickEngine(engine, 0, { fixed: () => fixed++, variable: () => variable++ })
     expect(fixed).toBe(0)
     expect(variable).toBe(1)
-    destroyWorld(world)
   })
 })

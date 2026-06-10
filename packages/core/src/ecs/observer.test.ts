@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
+import { createEngine } from './engine'
 import { createAnonAgent, createWorld, destroyWorld } from './world'
 import { createEntity, removeEntity } from './entity'
 import { defineComponent, removeComponent, setComponent } from './component'
@@ -11,7 +12,7 @@ const Static = defineComponent({ id: 'Static', schema: Schema.Object({ flag: Sch
 
 describe('Observers', () => {
   it('onAdd fires once when entity gains all required components', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const seen: number[] = []
     observe(world, onAdd(A, B), (e) => seen.push(e))
     const e1 = createEntity(world)
@@ -23,7 +24,7 @@ describe('Observers', () => {
   })
 
   it('onRemove fires when entity stops matching', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const gone: number[] = []
     observe(world, onRemove(A), (e) => gone.push(e))
     const e1 = createEntity(world)
@@ -34,13 +35,12 @@ describe('Observers', () => {
   })
 
   it('onSet fires with the value being written', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const writes: Array<{ e: number; value: unknown }> = []
     observe(world, onSet(A), (e, params) => writes.push({ e, value: params }))
     const e1 = createEntity(world)
     // bitECS onSet fires from bitecs.set/setComponent — our setComponent wraps
     // addComponent + writes stores directly so it does NOT trigger bitECS onSet.
-    // Instead, our component.set trace event is the canonical hook (see trace).
     // Here we verify the bitECS-native onSet still fires for components added
     // via bitecs.setComponent path (not used by our public API). This proves
     // re-export wiring is correct.
@@ -51,7 +51,7 @@ describe('Observers', () => {
   })
 
   it('composes with Or and Not', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const matched: number[] = []
     observe(world, onAdd(Or(A, B)), (e) => matched.push(e))
     const e1 = createEntity(world)
@@ -73,7 +73,7 @@ describe('Observers', () => {
   })
 
   it('observer unsubscribe stops further callbacks', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const seen: number[] = []
     const unsub = observe(world, onAdd(A), (e) => seen.push(e))
     const e1 = createEntity(world)
@@ -86,7 +86,7 @@ describe('Observers', () => {
   })
 
   it('onRemove fires when entity is removed entirely', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const gone: number[] = []
     observe(world, onRemove(A), (e) => gone.push(e))
     const e1 = createEntity(world)

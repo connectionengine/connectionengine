@@ -11,17 +11,16 @@
  *
  *   const aliceAgent = createLocalAgent({ seed: 'alice' })
  *   const bobAgent   = createLocalAgent({ seed: 'bob' })
- *   const worldA = createWorld({ agent: aliceAgent })
- *   const worldB = createWorld({ agent: bobAgent })
+ *   const worldA = createWorld({ engine: createEngine(), agent: aliceAgent })
+ *   const worldB = createWorld({ engine: createEngine(), agent: bobAgent })
  *   connectLocalInMemory(worldA, worldB)
  *
  * After this, any setComponent on worldA → signed → delivered to worldB →
- * verified → applied. Tampered events are dropped (emit a `mutation.reject`
- * trace event with `reason: 'signature'`).
+ * verified → applied. Tampered events are dropped silently.
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Connection, World } from '@connectionengine/core'
-import { applyAuthoredEnvelope, connectInMemory, type MemoryConnectionPair } from '@connectionengine/core'
+import { applyAuthoredEnvelope, connectInMemory, getNetwork, type MemoryConnectionPair } from '@connectionengine/core'
 import { type KeyPair, fromHex, sign, stableStringify, toHex, verifyByDID } from './did'
 import type { LocalAgent } from './agent'
 
@@ -63,7 +62,7 @@ const signEnvelope = (envelope: AuthoredEnvelope, kp: KeyPair): SignedAuthoredEn
   fromPeer: envelope.fromPeer
 })
 
-const verifyAndUnwrap = (world: World, signed: SignedAuthoredEnvelope): AuthoredEnvelope | null => {
+const verifyAndUnwrap = (signed: SignedAuthoredEnvelope): AuthoredEnvelope | null => {
   const valid: AuthoredEvent[] = []
   let rejected = 0
   for (const se of signed.signedEvents) {
@@ -72,12 +71,6 @@ const verifyAndUnwrap = (world: World, signed: SignedAuthoredEnvelope): Authored
       valid.push(event)
     } else {
       rejected++
-      world.trace.emit({
-        kind: 'mutation.reject',
-        ts: world.clock.now(),
-        predicate: se.predicate,
-        detail: { reason: 'signature' }
-      })
     }
   }
   if (rejected > 0 && valid.length === 0) return null
@@ -137,7 +130,7 @@ export const connectLocalInMemory = (
 const installSigningOverride = (world: World, kp: KeyPair): void => {
   // Replace the default network's authored fanout with signing fanout. The
   // continuous-channel binary path stays as installFanout wired it.
-  const network = world.networks.get('default')
+  const network = getNetwork(world, 'default')
   if (!network) return
   network.publishAuthored = (envelope: AuthoredEnvelope) => {
     const signed = signEnvelope(envelope, kp)
@@ -146,10 +139,10 @@ const installSigningOverride = (world: World, kp: KeyPair): void => {
 }
 
 const attachVerifier = (world: World, connection: Connection): void => {
-  const network = world.networks.get('default')
+  const network = getNetwork(world, 'default')
   connection.events.onMessage((payload) => {
     if (!isSignedAuthored(payload)) return
-    const unwrapped = verifyAndUnwrap(world, payload)
+    const unwrapped = verifyAndUnwrap(payload)
     if (unwrapped) applyAuthoredEnvelope(world, unwrapped, network)
   })
 }

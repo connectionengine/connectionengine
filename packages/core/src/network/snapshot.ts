@@ -5,18 +5,19 @@
  * shipped over any transport and reapplied to bootstrap a late-joining peer or
  * roll back to a checkpoint.
  *
- * Strategy: walk every named entity (entries in world.uidOf), serialise its
- * components + outgoing relations. Apply rebuilds the entity graph from
- * scratch via ensureEntityPath (resolveEntityPath + setUID chain) so entity
- * IDs are remapped automatically — no idMap parameter required.
+ * Strategy: walk every named entity for this world's engine (entries in
+ * `uidOfFor(engine)`), serialise its components + outgoing relations. Apply
+ * rebuilds the entity graph from scratch via ensureEntityPath
+ * (resolveEntityPath + setUID chain) so entity IDs are remapped automatically
+ * — no idMap parameter required.
  */
 
 import type { ComponentDefinition } from '../ecs/component'
 import { getComponent, getComponentById, hasComponent, setComponent } from '../ecs/component'
-import { getEntityByUID, getEntityPath, setUID } from '../ecs/identity'
+import { getEntityByUID, getEntityPath, setUID, uidOfFor } from '../ecs/entity'
 import { addRelation, getRelationByName, getRelationTargets } from '../ecs/relation'
 import { createEntity, removeEntity } from '../ecs/entity'
-import { worldComponents, worldRelations } from '../engine/mutation'
+import { worldComponents, worldRelations } from './mutation'
 import type { Entity, World } from '../ecs/world'
 
 export interface SnapshotEntity {
@@ -47,11 +48,11 @@ export interface CreateSnapshotOptions {
 export const createSnapshot = (world: World, options: CreateSnapshotOptions = {}): Snapshot => {
   const entities: SnapshotEntity[] = []
   const includeIds = options.filter ? new Set(options.filter) : undefined
-  const componentDefs = worldComponents(world)
-  const relationDefs = worldRelations(world)
+  const componentDefs = worldComponents()
+  const relationDefs = worldRelations()
   const seenComponents = new Set<string>()
 
-  for (const entity of world.uidOf.keys()) {
+  for (const entity of uidOfFor(world.engine).keys()) {
     const path = getEntityPath(world, entity)
     if (path.length === 0) continue
     const components: Record<string, unknown> = {}
@@ -75,12 +76,10 @@ export const createSnapshot = (world: World, options: CreateSnapshotOptions = {}
     entities.push({ path, components, relations })
   }
 
-  world.trace.emit({ kind: 'snapshot.create', ts: world.clock.now(), detail: { entityCount: entities.length } })
-
   return {
     metadata: {
-      simulationTime: world.simulationTime,
-      timestamp: world.clock.now(),
+      simulationTime: world.engine.simulationTime,
+      timestamp: world.engine.clock.now(),
       entityCount: entities.length,
       components: Array.from(seenComponents)
     },
@@ -95,24 +94,16 @@ export interface ApplySnapshotOptions {
 
 export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySnapshotOptions = {}): void => {
   if (options.replace) {
-    const named = Array.from(world.uidOf.keys())
-    for (const e of named) removeEntity(world, e, { silent: true })
+    const named = Array.from(uidOfFor(world.engine).keys())
+    for (const e of named) removeEntity(world, e)
   }
-  // Resolve component / relation definitions — prefer this world's pipeline
-  // registry, fall back to the global definition registry (so applySnapshot
-  // can rebuild components that haven't been touched on this world yet).
-  const resolveComponent = (id: string) =>
-    worldComponents(world).find((c) => c.$id === id) ?? getComponentById(id, world.engine)
-  const resolveRelation = (name: string) =>
-    worldRelations(world).find((r) => r.name === name) ?? getRelationByName(name, world.engine)
-
   // Pass 1: ensure all entities exist with their UID + parent chain
   for (const ent of snapshot.entities) ensureEntityPath(world, ent.path)
   // Pass 2: apply components
   for (const ent of snapshot.entities) {
     const entity = ensureEntityPath(world, ent.path)
     for (const [componentId, value] of Object.entries(ent.components)) {
-      const def = resolveComponent(componentId)
+      const def = getComponentById(componentId)
       if (!def) continue
       setComponent(world, entity, def, value as Record<string, unknown>, { origin: 'network' })
     }
@@ -121,7 +112,7 @@ export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySn
   for (const ent of snapshot.entities) {
     const entity = ensureEntityPath(world, ent.path)
     for (const [relName, targetPaths] of Object.entries(ent.relations)) {
-      const rel = resolveRelation(relName)
+      const rel = getRelationByName(relName)
       if (!rel) continue
       for (const targetPath of targetPaths) {
         const target = ensureEntityPath(world, targetPath)
@@ -129,12 +120,6 @@ export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySn
       }
     }
   }
-
-  world.trace.emit({
-    kind: 'snapshot.apply',
-    ts: world.clock.now(),
-    detail: { entityCount: snapshot.entities.length, components: snapshot.metadata.components }
-  })
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -147,7 +132,7 @@ const ensureEntityPath = (world: World, path: string[]): Entity => {
     if (existing !== undefined) {
       cursor = existing
     } else {
-      cursor = createEntity(world, { silent: true })
+      cursor = createEntity(world)
       if (parent === world.worldRoot) setUID(world, cursor, uid, { origin: 'network' })
       else setUID(world, cursor, uid, { parent, origin: 'network' })
     }

@@ -16,15 +16,21 @@
  * `BinaryChannel`, point-to-point.
  *
  * The session is per-Network — a peer with both voice and gameplay channels
- * has two distinct connections, one per network. The underlying physical
- * transport may be shared (via `engine.peers.acquire`).
+ * has two distinct connections, one per network. Whether they share an
+ * underlying physical transport is a transport-layer concern.
  */
 
-import type { AuthoredEnvelope, Connection, World } from '../../ecs/world'
+import type { AuthoredEnvelope, Entity, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
-import { applyAuthoredEnvelope, flushAuthored } from '../../engine/mutation'
+import { getComponent, setComponent } from '../../ecs/component'
+import { applyAuthoredEnvelope, flushAuthored } from '../mutation'
+import { createEntity } from '../../ecs/entity'
+import { getEntityByUID, getEntityPath, setUID } from '../../ecs/entity'
+import { addRelation } from '../../ecs/relation'
+import { AuthoritativeFor, OwnedBy } from '../authority'
+import { PeerComponent, UserComponent } from '../agents'
 import type { RuntimeTransportConfig, TransportEndpoint } from '../transport'
-import type { Network } from '../network'
+import type { Connection, Network } from '../network'
 import { ensureDefaultNetwork } from '../network'
 import { createBinaryChannel, isBindControl } from './binary-channel'
 import { getConnectionChannel, installFanout, rebroadcastAuthored, setConnectionChannel } from './fanout'
@@ -37,6 +43,15 @@ import { sweepDisconnectedPeer } from './sweep'
 interface HelloMessage {
   type: 'hello'
   agentDID: string
+  /** Stable per-engine peer id. */
+  peerId: string
+  /** Entity paths of the sender's local User and Peer entities. Receiver uses
+   *  these to materialise its local view of the remote peer at the same UID
+   *  the sender's own authored events will use — preventing duplicate user/
+   *  peer entities when replay later re-creates them. Empty when the sender
+   *  hasn't established local identity (test / solo flows). */
+  userPath: string[]
+  peerPath: string[]
   knownEventCount: number
   bindings: NetworkIdBinding[]
 }
@@ -124,6 +139,7 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
       switch (payload.type) {
         case 'hello': {
           connection.remoteDID = payload.agentDID
+          connection.peer = ensureRemotePeerEntity(world, payload)
           getChannelOrNull(connection)?.registerBindings(payload.bindings)
           flushAuthored(world)
           if (wantReplay && payload.knownEventCount < world.eventLog.length) {
@@ -177,6 +193,9 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
   endpoint.events.send({
     type: 'hello',
     agentDID: world.localAgent.did,
+    peerId: localPeerId(world),
+    userPath: world.localUser !== undefined ? getEntityPath(world, world.localUser) : [],
+    peerPath: world.localPeer !== undefined ? getEntityPath(world, world.localPeer) : [],
     knownEventCount: myKnownCount,
     bindings: localBindings
   } satisfies HelloMessage)
@@ -205,3 +224,67 @@ export const leaveWorld = async (world: World, connection: Connection): Promise<
 }
 
 const getChannelOrNull = (connection: Connection) => getConnectionChannel(connection) ?? null
+
+/**
+ * Resolve the local engine's peerId — the value sent in HELLO so the remote
+ * side can locate (or create) a Peer entity that uniquely represents this
+ * engine instance. Falls back to the agent DID when no local Peer entity is
+ * set up yet (test / solo flows).
+ */
+const localPeerId = (world: World): string => {
+  if (world.localPeer !== undefined) {
+    const value = getComponent(world, world.localPeer, PeerComponent) as { peerId?: string } | undefined
+    if (value?.peerId) return value.peerId
+  }
+  return world.localAgent.did
+}
+
+/**
+ * Find (or create) the local representation of the remote peer using the
+ * paths the sender encoded in their HELLO. Walking by path (the same scheme
+ * `ensureEntityPath` uses for replay) means an entity materialised here is
+ * the same entity replay will reuse — no duplicate user/peer rows.
+ *
+ * Falls back to `user:<did>` / `peer:<peerId>` UIDs when the sender hasn't
+ * set up local identity (legacy / solo flows).
+ */
+const ensureRemotePeerEntity = (world: World, hello: HelloMessage): Entity => {
+  const userPath = hello.userPath.length > 0 ? hello.userPath : [`user:${hello.agentDID}`]
+  const peerPath = hello.peerPath.length > 0 ? hello.peerPath : [...userPath, `peer:${hello.peerId}`]
+  const user = ensureAgentPath(world, userPath, (cursor) => {
+    setComponent(world, cursor, UserComponent, { did: hello.agentDID, displayName: '' }, { origin: 'network' })
+    addRelation(world, cursor, OwnedBy, cursor, { origin: 'network' })
+  })
+  return ensureAgentPath(world, peerPath, (cursor) => {
+    setComponent(world, cursor, PeerComponent, { peerId: hello.peerId, latency: 0 }, { origin: 'network' })
+    addRelation(world, cursor, OwnedBy, user, { origin: 'network' })
+    addRelation(world, cursor, AuthoritativeFor, cursor, { origin: 'network' })
+  })
+}
+
+/**
+ * Walk a UID path, creating any missing nodes silently. Runs `decorate` on
+ * the leaf when (and only when) it was freshly created — pre-existing leaves
+ * already carry their components from replay or earlier setup.
+ */
+const ensureAgentPath = (world: World, path: string[], decorate: (entity: Entity) => void): Entity => {
+  let parent: Entity = world.worldRoot
+  let cursor: Entity = world.worldRoot
+  let freshLeaf = false
+  for (let i = 0; i < path.length; i++) {
+    const uid = path[i]
+    const existing = getEntityByUID(world, parent, uid)
+    if (existing !== undefined) {
+      cursor = existing
+      freshLeaf = false
+    } else {
+      cursor = createEntity(world)
+      if (parent === world.worldRoot) setUID(world, cursor, uid, { origin: 'network' })
+      else setUID(world, cursor, uid, { parent, origin: 'network' })
+      freshLeaf = i === path.length - 1
+    }
+    parent = cursor
+  }
+  if (freshLeaf) decorate(cursor)
+  return cursor
+}

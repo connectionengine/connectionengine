@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { createEngine } from './engine'
 import { createAnonAgent, createWorld, destroyWorld } from './world'
 import { createEntity, removeEntity } from './entity'
 import { addRelation, defineRelation, getRelationTargets, hasRelation, removeRelation } from './relation'
@@ -21,7 +22,7 @@ const Friend = defineRelation({
 
 describe('Relation', () => {
   it('adds and removes a relationship pair', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const parent = createEntity(world)
     const child = createEntity(world)
     addRelation(world, child, ChildOf, parent)
@@ -33,7 +34,7 @@ describe('Relation', () => {
   })
 
   it('exclusive relation auto-replaces existing target', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const child = createEntity(world)
     const a = createEntity(world)
     const b = createEntity(world)
@@ -45,7 +46,7 @@ describe('Relation', () => {
   })
 
   it('autoRemoveSubject cascades when target removed', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const parent = createEntity(world)
     const child = createEntity(world)
     addRelation(world, child, ChildOf, parent)
@@ -58,7 +59,7 @@ describe('Relation', () => {
   })
 
   it('non-exclusive relation supports multiple targets', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const me = createEntity(world)
     const a = createEntity(world)
     const b = createEntity(world)
@@ -69,7 +70,7 @@ describe('Relation', () => {
   })
 
   it('per-pair store data is allocated and writable', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const item = createEntity(world)
     const owner = createEntity(world)
     addRelation(world, item, EquippedBy, owner)
@@ -80,16 +81,15 @@ describe('Relation', () => {
     destroyWorld(world)
   })
 
-  it('emits trace events with origin', () => {
-    const world = createWorld({ agent: createAnonAgent() })
+  it('local-origin adds enqueue authored writes; network-origin does not', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const child = createEntity(world)
     const parent = createEntity(world)
     addRelation(world, child, ChildOf, parent)
-    const events = world.trace.byKind('relation.add')
-    expect(events).toHaveLength(1)
-    expect(events[0].predicate).toBe('ChildOf')
-    expect(events[0].origin).toBe('local')
-    expect(events[0].detail?.target).toBe(parent)
+    expect(world.authoredQueue).toHaveLength(1)
+    expect(world.authoredQueue[0].predicate).toBe('ChildOf')
+    addRelation(world, child, ChildOf, parent, { origin: 'network' })
+    expect(world.authoredQueue).toHaveLength(1)
     destroyWorld(world)
   })
 

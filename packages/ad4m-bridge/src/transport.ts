@@ -24,19 +24,7 @@ export interface Ad4mTransportHandle {
 export const connectAd4m = async (world: World, perspective: PerspectiveProxy): Promise<Ad4mTransportHandle> => {
   const network = ensureDefaultNetwork(world)
   network.publishAuthored = (envelope: AuthoredEnvelope) => {
-    void perspective.addLinks(envelope.events.map(eventToLink)).catch((err) => {
-      world.trace.emit({
-        kind: 'transport.send',
-        ts: world.clock.now(),
-        detail: { kind: 'ad4m-error', error: String(err) }
-      })
-    })
-    world.trace.emit({
-      kind: 'transport.send',
-      ts: world.clock.now(),
-      peer: world.localAgent.did,
-      detail: { kind: 'authored', count: envelope.events.length }
-    })
+    void perspective.addLinks(envelope.events.map(eventToLink))
   }
 
   // Inbound — link-added subscription. AD4M's LinkCallback returns null by

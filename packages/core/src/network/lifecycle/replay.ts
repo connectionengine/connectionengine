@@ -8,7 +8,7 @@
 import type { AuthoredEvent, World } from '../../ecs/world'
 import type { TransportEndpoint } from '../transport'
 import type { Network } from '../network'
-import { applyAuthoredEnvelope } from '../../engine/mutation'
+import { applyAuthoredEnvelope } from '../mutation'
 
 export interface ReplayChunkMessage {
   type: 'replay-chunk'

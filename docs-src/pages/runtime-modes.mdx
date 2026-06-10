@@ -11,9 +11,10 @@ The same `@connectionengine/core` runs in three increasingly-integrated modes. Y
 No identity. No transport. Single world running in one process.
 
 ```ts
-import { createWorld, createAnonAgent } from '@connectionengine/core'
+import { createEngine, createWorld, createAnonAgent } from '@connectionengine/core'
 
-const world = createWorld({ agent: createAnonAgent() })
+const engine = createEngine()
+const world = createWorld({ engine, agent: createAnonAgent() })
 ```
 
 `createAnonAgent()` returns `{ did: 'did:anon:abc123' }` — an opaque, unsignable identity. Useful for:
@@ -31,12 +32,12 @@ Real Ed25519 identity, signed authored events, capability-based authorisation, i
 
 ```ts
 import { createLocalAgent } from '@connectionengine/local'
-import { createWorld } from '@connectionengine/core'
+import { createEngine, createWorld } from '@connectionengine/core'
 
 const alice = createLocalAgent({ seed: 'alice' })
 // → { did: 'did:key:z6Mk...', keyPair: { publicKey, privateKey }, sign }
 
-const world = createWorld({ agent: alice })
+const world = createWorld({ engine: createEngine(), agent: alice })
 ```
 
 A `LocalAgent` has a real `sign` hook. When `connectLocalInMemory(worldA, worldB)` is used, every outbound authored event is signed with the local keypair; inbound events are verified against the event's `author` DID before apply. Tampered events emit `mutation.reject` with reason `'signature'`.
@@ -56,11 +57,11 @@ Identity, transport, and persistence all come from a running [AD4M](https://gith
 ```ts
 import { Ad4mClient } from '@coasys/ad4m'
 import { createAd4mAgent, connectAd4m } from '@connectionengine/ad4m-bridge'
-import { createWorld } from '@connectionengine/core'
+import { createEngine, createWorld } from '@connectionengine/core'
 
 const ad4m = new Ad4mClient(/* ... */)
 const agent = await createAd4mAgent(ad4m)
-const world = createWorld({ agent })
+const world = createWorld({ engine: createEngine(), agent })
 
 const perspective = await ad4m.perspective.get('uuid:...')
 await connectAd4m(world, perspective)
@@ -82,13 +83,13 @@ Because the only thing core knows about identity is the `Agent` interface — `{
 
 ```ts
 // Solo:
-createWorld({ agent: createAnonAgent() })
+createWorld({ engine, agent: createAnonAgent() })
 
 // Local:
-createWorld({ agent: createLocalAgent({ seed: 'alice' }) })
+createWorld({ engine, agent: createLocalAgent({ seed: 'alice' }) })
 
 // AD4M:
-createWorld({ agent: await createAd4mAgent(ad4mClient) })
+createWorld({ engine, agent: await createAd4mAgent(ad4mClient) })
 ```
 
 This is intentional. The three-mode design lets you start solo for prototyping, move to local once you have multi-user requirements, and graduate to AD4M when you want decentralised persistence and ecosystem interop — without rewriting your component schemas, your systems, your governance, or anything else.

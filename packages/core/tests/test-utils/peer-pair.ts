@@ -11,10 +11,20 @@
  */
 
 import { createManualClock, type ManualClock } from '../../src/ecs/clock'
+import { createEngine } from '../../src/ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld, type World } from '../../src/ecs/world'
-import { runSystems } from '../../src/engine/system'
+import { runSystems } from '../../src/ecs/system'
+import { flushAuthored, flushRuntime } from '../../src/network/mutation'
+import { createPeer, createUser } from '../../src/network/peer'
 import { connectInMemory, type MemoryConnectionPair } from '../../src/network/lifecycle/connect-memory'
 import { flushAsync, type MemoryTransportOptions } from '../../src/network/transport'
+
+/** Bootstrap a world's local user + peer so `spawnPrefab` and the authority
+ *  pipeline have a default identity to work with. */
+const bootstrapIdentity = (world: World, name: string): void => {
+  const user = createUser(world, { did: world.localAgent.did, asLocal: true })
+  createPeer(world, { user, peerId: `${name}-p`, asLocal: true })
+}
 
 export interface PeerHandle {
   name: string
@@ -46,10 +56,18 @@ export interface CreatePeerPairOptions {
 export const createPeerPair = (options: CreatePeerPairOptions = {}): PeerPair => {
   const [nameA, nameB] = options.names ?? ['alice', 'bob']
   const start = options.startTime ?? 0
+  // Each peer gets its own engine — clocks, time, and bitECS storage are
+  // engine-level. Identity caches live as per-engine WeakMaps on the
+  // UIDComponent / BelongsTo definitions, so the two engines stay isolated
+  // even though the definitions are shared.
   const clockA = createManualClock(start)
   const clockB = createManualClock(start)
-  const worldA = createWorld({ clock: clockA, agent: createAnonAgent(nameA) })
-  const worldB = createWorld({ clock: clockB, agent: createAnonAgent(nameB) })
+  const engineA = createEngine({ clock: clockA })
+  const engineB = createEngine({ clock: clockB })
+  const worldA = createWorld({ engine: engineA, agent: createAnonAgent(nameA) })
+  const worldB = createWorld({ engine: engineB, agent: createAnonAgent(nameB) })
+  bootstrapIdentity(worldA, nameA)
+  bootstrapIdentity(worldB, nameB)
   const link = connectInMemory(worldA, worldB, options.transport)
 
   return {
@@ -61,6 +79,13 @@ export const createPeerPair = (options: CreatePeerPairOptions = {}): PeerPair =>
       clockB.advance(deltaSeconds * 1000)
       runSystems(worldA, deltaSeconds)
       runSystems(worldB, deltaSeconds)
+      // runSystems is pure ECS; the harness drives the network flush after
+      // the frame settles. Authored first so receivers see new entities
+      // before binary packets reference them.
+      flushAuthored(worldA)
+      flushRuntime(worldA)
+      flushAuthored(worldB)
+      flushRuntime(worldB)
       await flushAsync()
     },
     flush: async () => {
@@ -85,10 +110,13 @@ export interface PeerMesh {
 export const createPeerMesh = (n: number, options: CreatePeerPairOptions = {}): PeerMesh => {
   const peers: PeerHandle[] = []
   const start = options.startTime ?? 0
+  // Each peer gets its own engine — see createPeerPair for the rationale.
   for (let i = 0; i < n; i++) {
     const name = `peer-${i}`
     const clock = createManualClock(start)
-    const world = createWorld({ clock, agent: createAnonAgent(name) })
+    const engine = createEngine({ clock })
+    const world = createWorld({ engine, agent: createAnonAgent(name) })
+    bootstrapIdentity(world, name)
     peers.push({ name, world, clock })
   }
   const links: MemoryConnectionPair[] = []
@@ -104,6 +132,8 @@ export const createPeerMesh = (n: number, options: CreatePeerPairOptions = {}): 
       for (const p of peers) {
         p.clock.advance(deltaSeconds * 1000)
         runSystems(p.world, deltaSeconds)
+        flushAuthored(p.world)
+        flushRuntime(p.world)
       }
       await flushAsync()
     },

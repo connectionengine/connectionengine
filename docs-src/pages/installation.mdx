@@ -31,6 +31,7 @@ The smallest interesting Connection Engine program — one world, one entity, on
 import {
   Schema,
   createAnonAgent,
+  createEngine,
   createWorld,
   createEntity,
   defineComponent,
@@ -46,7 +47,8 @@ const Health = defineComponent({
   })
 })
 
-const world = createWorld({ agent: createAnonAgent('me') })
+const engine = createEngine()
+const world = createWorld({ engine, agent: createAnonAgent('me') })
 const player = createEntity(world)
 setComponent(world, player, Health, { current: 75 })
 
@@ -66,13 +68,13 @@ A world isn't very interesting alone. Wire two together with the in-memory trans
 ```ts
 import { connectInMemory, flushAsync } from '@connectionengine/core'
 
-const a = createWorld({ agent: createAnonAgent('alice') })
-const b = createWorld({ agent: createAnonAgent('bob') })
+const a = createWorld({ engine: createEngine(), agent: createAnonAgent('alice') })
+const b = createWorld({ engine: createEngine(), agent: createAnonAgent('bob') })
 
 connectInMemory(a, b)
 
 // On 'a':
-const scene = createNamedEntity(a, 'scene:main')
+const scene = spawnPrefab(a, 'scene:main')
 const alicePlayer = createEntity(a)
 setUID(a, alicePlayer, 'alice', { parent: scene })
 setComponent(a, alicePlayer, Health, { current: 80 })

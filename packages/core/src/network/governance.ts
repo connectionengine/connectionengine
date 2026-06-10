@@ -15,16 +15,11 @@
  */
 
 import { Schema } from '../schema'
-import {
-  componentEntities,
-  defineComponent,
-  getComponent,
-  setComponent,
-  type ComponentDefinition
-} from '../ecs/component'
+import { defineComponent, getComponent, setComponent, type ComponentDefinition } from '../ecs/component'
 import { defineRelation, addRelation, getRelationTargets } from '../ecs/relation'
-import { resolveEntityPath } from '../ecs/identity'
+import { parentOfFor, resolveEntityPath } from '../ecs/entity'
 import { createEntity, entityExists } from '../ecs/entity'
+import { query } from '../ecs/query'
 import type { AuthoredEvent, Entity, World } from '../ecs/world'
 
 // ── Constraint components ─────────────────────────────────────────────────────
@@ -76,13 +71,13 @@ export interface ConstraintViolation {
 }
 
 export interface ConstraintKindEntry {
-  /** Stable name on the wire + in trace. */
+  /** Stable name on the wire. */
   kind: string
   /** The component carrying this kind's data. */
   component: ComponentDefinition
   /**
    * Validate one event against one resolved instance of this constraint kind.
-   * Push any violations. Use `world.eventLog` + `world.clock` for stateful
+   * Push any violations. Use `world.eventLog` + `world.engine.clock` for stateful
    * rules (temporal, rate-limits). The constraint scope is provided in case
    * a kind cares about it (e.g. ownership-scoped rules).
    */
@@ -134,7 +129,7 @@ registerConstraintKind({
     const cfg = data as { minIntervalMs: number; maxCountPerWindow: number; windowMs: number; appliesTo: string }
     const predicates = cfg.appliesTo.split(',').filter(Boolean)
     if (predicates.length > 0 && !predicates.includes(event.predicate)) return
-    const cutoff = world.clock.now() - cfg.windowMs
+    const cutoff = world.engine.clock.now() - cfg.windowMs
     let count = 0
     let lastTs: number | undefined
     for (const entry of world.eventLog) {
@@ -295,7 +290,7 @@ export const resolveConstraints = (world: World, entity: Entity): ResolvedConstr
       const kindData = constraintKindFor(world, candidate)
       if (kindData) out.push({ entity: candidate, kind: kindData.kind, data: kindData.data, scope })
     }
-    scope = world.parentOf.get(scope)
+    scope = parentOfFor(world.engine).get(scope)
   }
   return out
 }
@@ -304,7 +299,7 @@ export const resolveConstraints = (world: World, entity: Entity): ResolvedConstr
 const constraintEntities = (world: World): Entity[] => {
   const set = new Set<Entity>()
   for (const entry of kindRegistry.values()) {
-    for (const e of componentEntities(world, entry.component)) {
+    for (const e of query(world, [entry.component])) {
       if (entityExists(world, e)) set.add(e)
     }
   }
@@ -338,14 +333,5 @@ export const validateEvent = (
     if (!entry) continue
     entry.validate({ world, event, data: c.data, scope: c.scope, context, violations })
   }
-  const allowed = violations.length === 0
-  if (allowed) world.trace.emit({ kind: 'governance.accept', ts: world.clock.now(), predicate: event.predicate })
-  else
-    world.trace.emit({
-      kind: 'governance.reject',
-      ts: world.clock.now(),
-      predicate: event.predicate,
-      detail: { violations }
-    })
-  return { allowed, violations }
+  return { allowed: violations.length === 0, violations }
 }

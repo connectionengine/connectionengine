@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
+import { createEngine } from '../ecs/engine'
 import { createEntity } from '../ecs/entity'
 import { defineComponent, setComponent } from '../ecs/component'
 import { createBinaryPipeline } from './binary'
@@ -38,8 +39,8 @@ const soaGet = (component: Record<string, unknown>, entity: number, field: strin
 
 describe('createBinaryPipeline — paired write + read', () => {
   it('round-trips multiple entities + components between two worlds', () => {
-    const source = createWorld({ agent: createAnonAgent('pipe-src') })
-    const target = createWorld({ agent: createAnonAgent('pipe-tgt') })
+    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-src') })
+    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-tgt') })
 
     const sourcePipe = createBinaryPipeline(source, [Transform, Velocity])
     const targetPipe = createBinaryPipeline(target, [Transform, Velocity])
@@ -80,7 +81,7 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('persists shadow state across writes so unchanged entities emit zero payload', () => {
-    const world = createWorld({ agent: createAnonAgent('pipe-shadow') })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-shadow') })
     const pipe = createBinaryPipeline(world, [Velocity])
     const e = createEntity(world)
     setComponent(world, e, Velocity, { linear: [1, 2, 3] })
@@ -100,7 +101,7 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('forceFullSync re-sends all fields regardless of shadow', () => {
-    const world = createWorld({ agent: createAnonAgent('pipe-full') })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-full') })
     const pipe = createBinaryPipeline(world, [Velocity])
     const e = createEntity(world)
     setComponent(world, e, Velocity, { linear: [1, 2, 3] })
@@ -114,7 +115,7 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('resetShadow forces a full snapshot on the next write', () => {
-    const world = createWorld({ agent: createAnonAgent('pipe-reset') })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-reset') })
     const pipe = createBinaryPipeline(world, [Velocity])
     const e = createEntity(world)
     setComponent(world, e, Velocity, { linear: [1, 2, 3] })
@@ -128,8 +129,8 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('unknown networkId on read still parses cleanly (cursor stays in sync)', () => {
-    const source = createWorld({ agent: createAnonAgent('pipe-unknown-src') })
-    const target = createWorld({ agent: createAnonAgent('pipe-unknown-tgt') })
+    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-unknown-src') })
+    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-unknown-tgt') })
     const sourcePipe = createBinaryPipeline(source, [Velocity])
     const targetPipe = createBinaryPipeline(target, [Velocity])
     const t = createEntity(target)
@@ -153,7 +154,7 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('Transform with one changed field emits ~6 bytes per entity (mask + 1 float)', () => {
-    const world = createWorld({ agent: createAnonAgent('pipe-delta-size') })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-delta-size') })
     const pipe = createBinaryPipeline(world, [Transform])
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 1, 1], rotation: [0, 0, 0, 1] })
@@ -170,13 +171,13 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('throws if constructed with empty components list', () => {
-    const world = createWorld({ agent: createAnonAgent('pipe-empty') })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-empty') })
     expect(() => createBinaryPipeline(world, [])).toThrow(/at least one component/i)
     destroyWorld(world)
   })
 
   it('exposes the components list in registration order', () => {
-    const world = createWorld({ agent: createAnonAgent('pipe-order') })
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-order') })
     const pipe = createBinaryPipeline(world, [Transform, Velocity])
     expect(pipe.components).toEqual([Transform, Velocity])
     destroyWorld(world)

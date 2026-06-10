@@ -7,7 +7,7 @@
  * - `fanout.ts`   — outbound publish hooks (authored mesh + per-peer binary)
  * - `network-id.ts` — entity ↔ networkId tables (local + remote)
  * - `binary-channel.ts` — per-connection binary pipeline + bindings sync
- * - `sweep.ts`    — TransientOnDisconnect cleanup on disconnect
+ * - `sweep.ts`    — owner-user entity cleanup + authority recovery on disconnect
  */
 
 export type { JoinNetworkOptions, JoinResult, JoinWorldOptions } from './session'

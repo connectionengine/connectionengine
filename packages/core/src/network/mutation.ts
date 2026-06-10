@@ -1,5 +1,8 @@
 /**
- * Mutation pipeline — flush + apply (engine-level, no crypto).
+ * Mutation pipeline — flush + apply, no crypto.
+ *
+ * Lives in `network/` because the entire pipeline (authored queue, event log,
+ * dispatch, receive-and-apply) only exists because state is distributed.
  *
  * Two paths share one schema:
  *   `event` channel    — reliable, governance-validated, event-sourced. Local
@@ -15,7 +18,9 @@
  *
  * Receive paths:
  *   `event` — applyAuthoredEnvelope (here). Runtime mode verifies + unwraps
- *             before calling. Per-network governance gate filters.
+ *             before calling. Per-network governance gate filters; the
+ *             authority module's standing check (`checkAuthorityChangeStanding`)
+ *             runs inline for `AuthoritativeFor` events.
  *   `continuous` — the binary pipeline reads directly into SoA stores; no
  *                  separate apply function.
  *
@@ -23,13 +28,15 @@
  * topology, not data space — same events, different connections.
  */
 
-import type { AuthoredEnvelope, AuthoredEvent, Entity, Network, World } from '../ecs/world'
+import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
 import type { ComponentDefinition } from '../ecs/component'
 import { allComponents, getComponentById, removeComponent, setComponent } from '../ecs/component'
 import type { RelationDefinition } from '../ecs/relation'
-import { addRelation, getRelationByName, removeRelation } from '../ecs/relation'
-import { getEntityByUID, getEntityPath, resolveEntityPath, setUID } from '../ecs/identity'
-import { createEntity, removeEntity } from '../ecs/entity'
+import { addRelation, allRelations, getRelationByName, removeRelation } from '../ecs/relation'
+import { createEntity, getEntityByUID, getEntityPath, removeEntity, resolveEntityPath, setUID } from '../ecs/entity'
+import { checkAuthorityChangeStanding } from './authority'
+import type { Network } from './network'
+import { getNetwork, getNetworks } from './network'
 
 /**
  * Routing strategy: which networks receive a mutation for the given entity?
@@ -38,25 +45,23 @@ import { createEntity, removeEntity } from '../ecs/entity'
  */
 const routeNetworks = (world: World, _entity: Entity): Network[] => {
   void _entity
-  return Array.from(world.networks.values())
+  return Array.from(getNetworks(world).values())
 }
 
 // ── Predicate resolution ─────────────────────────────────────────────────────-
 //
-// Components and relations are engine-global; resolving a predicate id from
-// an incoming event is just an engine-registry lookup.
+// Components and relations are module-level global singletons; resolving a
+// predicate id from an incoming event is just a registry lookup.
 
-const findComponent = (world: World, id: string): ComponentDefinition | undefined => getComponentById(id, world.engine)
+const findComponent = (id: string): ComponentDefinition | undefined => getComponentById(id)
 
-const findRelation = (world: World, name: string): RelationDefinition<unknown> | undefined =>
-  getRelationByName(name, world.engine)
+const findRelation = (name: string): RelationDefinition<unknown> | undefined => getRelationByName(name)
 
-/** Iterate every component defined on this world's engine (for snapshot / walks). */
-export const worldComponents = (world: World): ComponentDefinition[] => allComponents(world.engine)
+/** Iterate every component ever defined (for snapshot / walks). */
+export const worldComponents = (): ComponentDefinition[] => allComponents()
 
-/** Iterate every relation defined on this world's engine. */
-export const worldRelations = (world: World): RelationDefinition<unknown>[] =>
-  Array.from(world.engine.relations.values())
+/** Iterate every relation ever defined. */
+export const worldRelations = (): RelationDefinition<unknown>[] => allRelations()
 
 // ── Event log append (idempotent on signature) ───────────────────────────────-
 
@@ -91,7 +96,7 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
   // receives what's relevant. Today routing is broadcast — the per-network
   // grouping collapses to "every event goes to every network".
   const eventsByEntity: Array<{ entity: Entity; event: AuthoredEvent }> = []
-  const now = world.clock.now()
+  const now = world.engine.clock.now()
   const author = world.localAgent.did
   for (const queued of world.authoredQueue) {
     if (queued.origin !== 'local') continue
@@ -114,14 +119,6 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
     if (!appendEventLog(world, event)) continue
     events.push(event)
     eventsByEntity.push({ entity: queued.entity, event })
-    world.trace.emit({
-      kind: 'mutation.emit',
-      ts: now,
-      origin: 'local',
-      predicate: queued.predicate,
-      entity: queued.entity,
-      peer: author
-    })
   }
   world.authoredQueue.length = 0
   if (events.length === 0) return undefined
@@ -136,30 +133,24 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
     }
   }
   for (const [networkId, networkEvents] of perNetwork) {
-    const network = world.networks.get(networkId)
+    const network = getNetwork(world, networkId)
     if (!network) continue
     const envelope: AuthoredEnvelope = { events: networkEvents, fromPeer: author }
     network.publishAuthored?.(envelope)
-    world.trace.emit({
-      kind: 'transport.send',
-      ts: world.clock.now(),
-      peer: envelope.fromPeer,
-      detail: { kind: 'authored', count: envelope.events.length, network: networkId }
-    })
   }
   return { events, fromPeer: author }
 }
 
 /**
  * Drain the runtime dirty set and publish to every routed network's binary
- * channel. Returns the snapshot for trace / inspection.
+ * channel. Returns the snapshot for inspection.
  */
 export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined => {
   if (world.runtimeDirty.size === 0) return undefined
   const snapshot = new Map<string, Set<Entity>>()
   for (const [componentId, entities] of world.runtimeDirty) {
     if (entities.size === 0) continue
-    const def = findComponent(world, componentId)
+    const def = findComponent(componentId)
     if (!def || !def.$isBinary) {
       entities.clear()
       continue
@@ -188,17 +179,9 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
     }
   }
   for (const [networkId, dirty] of perNetwork) {
-    const network = world.networks.get(networkId)
+    const network = getNetwork(world, networkId)
     if (!network) continue
     network.publishRuntime?.(dirty)
-    let count = 0
-    for (const set of dirty.values()) count += set.size
-    world.trace.emit({
-      kind: 'transport.send',
-      ts: world.clock.now(),
-      peer: world.localAgent.did,
-      detail: { kind: 'runtime', count, network: networkId }
-    })
   }
   return snapshot
 }
@@ -210,37 +193,16 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
  * responsible for verifying signatures / unwrapping before calling this. If
  * `network` is provided, its `validateAuthored` gate runs per event.
  */
-export const applyAuthoredEnvelope = (
-  world: World,
-  envelope: AuthoredEnvelope,
-  network?: import('../network/network').Network
-): void => {
-  world.trace.emit({
-    kind: 'transport.receive',
-    ts: world.clock.now(),
-    peer: envelope.fromPeer,
-    detail: { kind: 'authored', count: envelope.events.length, network: network?.id }
-  })
+export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope, network?: Network): void => {
   const gate = network?.validateAuthored
   for (const event of envelope.events) {
-    if (gate && !gate(event)) {
-      world.trace.emit({
-        kind: 'mutation.reject',
-        ts: world.clock.now(),
-        predicate: event.predicate,
-        detail: { reason: 'governance' }
-      })
-      continue
-    }
+    if (gate && !gate(event)) continue
+    // Authority transfers must come from a peer with standing (owner-user's
+    // peer or current authority holder). Direct call into the authority module
+    // — both live in network/, no cross-layer plumbing.
+    if (checkAuthorityChangeStanding(world, event) !== undefined) continue
     if (!appendEventLog(world, event)) continue
     applyEvent(world, event)
-    world.trace.emit({
-      kind: 'mutation.receive',
-      ts: world.clock.now(),
-      origin: 'network',
-      predicate: event.predicate,
-      detail: { author: event.author }
-    })
   }
 }
 
@@ -256,7 +218,7 @@ const applyEvent = (world: World, event: AuthoredEvent): void => {
     entity = ensureEntityPath(world, event.entityPath)
   }
 
-  const component = findComponent(world, event.predicate)
+  const component = findComponent(event.predicate)
   if (component) {
     if (event.op === 'set') {
       setComponent(world, entity, component, (event.value ?? {}) as Record<string, unknown>, { origin: 'network' })
@@ -266,7 +228,7 @@ const applyEvent = (world: World, event: AuthoredEvent): void => {
     return
   }
 
-  const relation = findRelation(world, event.predicate)
+  const relation = findRelation(event.predicate)
   if (relation) {
     const targetPath = (event.value as { targetPath?: string[] } | null)?.targetPath
     if (!targetPath) return
@@ -284,7 +246,7 @@ const ensureEntityPath = (world: World, path: string[]): Entity => {
     if (existing !== undefined) {
       cursor = existing
     } else {
-      cursor = createEntity(world, { silent: true })
+      cursor = createEntity(world)
       if (parent === world.worldRoot) setUID(world, cursor, uid, { origin: 'network' })
       else setUID(world, cursor, uid, { parent, origin: 'network' })
     }

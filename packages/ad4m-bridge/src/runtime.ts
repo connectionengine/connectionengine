@@ -26,10 +26,10 @@ export interface Ad4mRuntime {
 export const createAd4mRuntime = async (
   client: Ad4mClient,
   perspective: PerspectiveProxy,
-  options: Omit<CreateWorldOptions, 'agent'> = {}
+  options: Omit<CreateWorldOptions, 'agent'>
 ): Promise<Ad4mRuntime> => {
   const agent = await createAd4mAgent(client)
-  const world = createWorld({ agent, ...options })
+  const world = createWorld({ ...options, agent })
   const transport = await connectAd4m(world, perspective)
   return { world, agent, transport }
 }

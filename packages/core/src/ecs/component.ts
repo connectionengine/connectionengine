@@ -1,19 +1,23 @@
 /**
  * ComponentDefinition — schema-driven, SHACL-shape-bearing.
  *
- * One `defineComponent({ id, label, schema, sync?, engine? })` produces:
+ * One `defineComponent({ id, label, schema, sync? })` produces:
  *   - SoA stores (typed arrays) for SoA-tagged fields (Vec3, Quat, Float32, ...).
  *     These are spread directly onto the ComponentDefinition object — so you
  *     can write `Transform.position.x[eid]` for the bitECS-style hot path with
  *     zero indirection.
  *   - per-entity instance store for value-typed fields (string, boolean, ...).
  *     Lives on the Engine, keyed by component+entity.
- *   - a ComponentSchema (jsonSchema + shaclShape + channel) registered in the
- *     engine's schema map for replication metadata.
+ *   - a ComponentSchema (jsonSchema + shaclShape + channel) attached to the
+ *     definition as `$componentSchema` for replication metadata.
+ *
+ * Definitions are module-level singletons — global, not per-engine. The same
+ * `ComponentDefinition` object is shared across every engine that uses the
+ * component, with per-engine storage in `engine.componentStores`.
  *
  * Storage shape:
  *   - SoA arrays    → on the definition itself, single source of truth, shared
- *                     across worlds attached to the same engine.
+ *                     across every engine that uses the component.
  *   - Instance map  → on the engine, per (component, entity). Stable object
  *                     reference per entity.
  *
@@ -37,6 +41,12 @@
  *
  * All meta fields on the definition use a `$` prefix (`$id`, `$schema`,
  * `$channel`, ...) so the bare keys are reserved for schema fields.
+ *
+ * Extension properties: any field on the `defineComponent` options object
+ * that isn't a reserved key (`id`, `label`, `schema`, `sync`) is spread
+ * straight onto the definition with its type preserved — used by built-in
+ * components to attach their own indexes (e.g. `UIDComponent.nameCache`,
+ * `UIDComponent.uidOf`) and available for user code to do the same.
  */
 
 import * as bitecs from 'bitecs'
@@ -46,14 +56,13 @@ import { resizableArray, type ResizableArray, type TypedArrayConstructor } from 
 import type { ArrayBufferKind, SoAStoreKind } from '../schema/kinds'
 import type { World, Entity } from './world'
 import type { Engine } from './engine'
-import { getDefaultEngine } from './engine'
-import type { Origin } from './trace'
+import type { Origin } from './world'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /**
- * Shareable replication metadata. One entry per component lives in
- * `engine.schemas`, keyed by component id.
+ * Shareable replication metadata. Attached directly to its
+ * `ComponentDefinition` as `$componentSchema`.
  */
 export interface ComponentSchema {
   readonly id: string
@@ -84,9 +93,16 @@ export interface ComponentOptions<T extends TSchema = TSchema> {
   schema: T
   /** Whether this component replicates across the network. Default `true`. */
   sync?: boolean
-  /** Engine to register against. Defaults to the ambient engine. */
-  engine?: Engine
 }
+
+/** Reserved option keys consumed by `defineComponent` itself. Any other keys
+ *  passed to `defineComponent` become typed extension properties on the
+ *  resulting definition. */
+type ReservedComponentOptionKey = keyof ComponentOptions
+
+/** Fields on an options object that are *not* part of `ComponentOptions` —
+ *  these are passed straight through onto the definition. */
+export type ComponentExtensions<O> = Omit<O, ReservedComponentOptionKey>
 
 /**
  * Meta fields on a ComponentDefinition. All prefixed `$` so the bare keys on
@@ -243,13 +259,32 @@ const toShaclShape = (id: string, schema: TSchema, channel: ReplicationChannel):
   }
 }
 
+// ── Global component registry ────────────────────────────────────────────────-
+//
+// Component definitions are module-level singletons — global, not per-engine.
+// Each engine has its own STORAGE (componentStores keyed by definition) but
+// the definition itself is one JS object shared across every engine that uses
+// it. Means components defined at module load work for any engine that comes
+// or goes, with no per-engine registration step.
+
+const componentsById = new Map<string, ComponentDefinition>()
+const componentsByRef = new WeakMap<bitecs.ComponentRef, ComponentDefinition>()
+
 // ── defineComponent ───────────────────────────────────────────────────────────
 
-export const defineComponent = <T extends TSchema>(options: ComponentOptions<T>): ComponentDefinition<T> => {
-  const engine = options.engine ?? getDefaultEngine()
-  const { id, label = id, schema, sync = true } = options
-  const existing = engine.components.get(id)
-  if (existing) return existing as ComponentDefinition<T>
+export const defineComponent = <O extends ComponentOptions<TSchema>>(
+  options: O
+): ComponentDefinition<O['schema']> & ComponentExtensions<O> => {
+  type T = O['schema']
+  const {
+    id,
+    label = id,
+    schema,
+    sync = true,
+    ...extensions
+  } = options as ComponentOptions<T> & Record<string, unknown>
+  const existing = componentsById.get(id)
+  if (existing) return existing as ComponentDefinition<T> & ComponentExtensions<O>
   const { soaFields, valueFields } = classifyFields(schema)
 
   if (soaFields.length > 0 && valueFields.length > 0) {
@@ -291,30 +326,23 @@ export const defineComponent = <T extends TSchema>(options: ComponentOptions<T>)
     $valueFields: valueFields
   }
 
-  const definition = { ...meta, ...soaStores } as ComponentDefinition<T>
+  const definition = { ...meta, ...soaStores, ...extensions } as unknown as ComponentDefinition<T> &
+    ComponentExtensions<O>
 
-  engine.componentsByRef.set($ref, definition as ComponentDefinition)
-  engine.components.set(id, definition as ComponentDefinition)
-  engine.schemas.set(id, $componentSchema)
+  componentsByRef.set($ref, definition as ComponentDefinition)
+  componentsById.set(id, definition as ComponentDefinition)
   return definition
 }
 
-/** Resolve a ComponentDefinition from its bitECS ref. Uses the world's engine. */
-export const getComponentDefinition = (
-  worldOrEngine: World | Engine,
-  ref: bitecs.ComponentRef
-): ComponentDefinition | undefined => engineOf(worldOrEngine).componentsByRef.get(ref)
+/** Resolve a ComponentDefinition from its bitECS ref. */
+export const getComponentDefinition = (ref: bitecs.ComponentRef): ComponentDefinition | undefined =>
+  componentsByRef.get(ref)
 
-/** Resolve a ComponentDefinition by its id. Uses the world's engine if given, else the ambient engine. */
-export const getComponentById = (id: string, engine?: Engine): ComponentDefinition | undefined =>
-  (engine ?? getDefaultEngine()).components.get(id)
+/** Resolve a ComponentDefinition by its id. */
+export const getComponentById = (id: string): ComponentDefinition | undefined => componentsById.get(id)
 
-/** Iterate every ComponentDefinition defined on the given engine (default: ambient). */
-export const allComponents = (engine?: Engine): ComponentDefinition[] =>
-  Array.from((engine ?? getDefaultEngine()).components.values())
-
-const engineOf = (worldOrEngine: World | Engine): Engine =>
-  'bitECS' in worldOrEngine ? worldOrEngine : worldOrEngine.engine
+/** Iterate every ComponentDefinition ever defined. */
+export const allComponents = (): ComponentDefinition[] => Array.from(componentsById.values())
 
 // ── Engine-level instance + view storage ──────────────────────────────────────
 
@@ -346,20 +374,6 @@ export const getInstanceStore = (
   world: World,
   component: ComponentDefinition
 ): Record<Entity, Record<string, unknown>> => getStores(world.engine, component).store
-
-/**
- * Iterate every entity in `world` that currently has the component. Filters the
- * engine-level instance map by `world.entities` membership.
- */
-export const componentEntities = (world: World, component: ComponentDefinition): Entity[] => {
-  const store = getStores(world.engine, component).store
-  const out: Entity[] = []
-  for (const key of Object.keys(store)) {
-    const e = Number(key)
-    if (world.entities.has(e)) out.push(e)
-  }
-  return out
-}
 
 // ── set / get / remove ────────────────────────────────────────────────────────
 
@@ -444,14 +458,6 @@ export const setComponent = <T extends TSchema>(
       })
     }
   }
-
-  world.trace.emit({
-    kind: 'component.set',
-    ts: world.clock.now(),
-    entity,
-    predicate: component.$id,
-    origin
-  })
 }
 
 interface SoAViewSource {
@@ -537,13 +543,6 @@ export const removeComponent = <T extends TSchema>(
       origin
     })
   }
-  world.trace.emit({
-    kind: 'component.remove',
-    ts: world.clock.now(),
-    entity,
-    predicate: component.$id,
-    origin
-  })
 }
 
 // ── Runtime dirty flag helpers (consumed by mutation.ts runtime pipeline) ─────

@@ -71,7 +71,7 @@ registerConstraintKind({
     const trustedIssuers = (context as CapabilityValidationContext).trustedIssuers
     const ok =
       cap.invoker === event.author &&
-      verifyCapability(cap, { now: world.clock.now(), trustedIssuers }) &&
+      verifyCapability(cap, { now: world.engine.clock.now(), trustedIssuers }) &&
       capabilityAllows(cap, event.predicate, event.entityPath)
     if (!ok) {
       violations.push({ kind: 'capability', reason: 'capability does not authorise this predicate' })

@@ -8,10 +8,11 @@
  * network's connections.
  */
 
-import type { AuthoredEnvelope, Connection, Entity, World } from '../../ecs/world'
+import type { AuthoredEnvelope, Entity, World } from '../../ecs/world'
 import { allComponents } from '../../ecs/component'
-import { hasEventBeenSeen } from '../../engine/mutation'
-import type { Network } from '../network'
+import { hasEventBeenSeen } from '../mutation'
+import type { Connection, Network } from '../network'
+import { getNetworks } from '../network'
 import { createBinaryChannel, type BinaryChannel } from './binary-channel'
 
 const channels = new WeakMap<Connection, BinaryChannel>()
@@ -32,7 +33,7 @@ export const getConnectionChannel = (connection: Connection): BinaryChannel | un
 export const ensureChannel = (world: World, connection: Connection): BinaryChannel | undefined => {
   let channel = channels.get(connection)
   if (channel) return channel
-  const components = allComponents(world.engine)
+  const components = allComponents()
     .filter((c) => c.$isBinary)
     .sort((a, b) => (a.$id < b.$id ? -1 : a.$id > b.$id ? 1 : 0))
   if (components.length === 0) return undefined
@@ -75,7 +76,7 @@ export const rebroadcastAuthored = (world: World, source: Connection, envelope: 
   const fresh = envelope.events.filter((e) => !hasEventBeenSeen(world, e))
   if (fresh.length === 0) return
   const out: AuthoredEnvelope = { fromPeer: envelope.fromPeer, events: fresh }
-  for (const network of world.networks.values()) {
+  for (const network of getNetworks(world).values()) {
     for (const conn of network.connections) {
       if (conn === source) continue
       conn.events.send(out)

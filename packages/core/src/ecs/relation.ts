@@ -7,15 +7,19 @@
  *
  * Built on bitECS's createRelation; we wrap it to:
  *   - carry a stable name (predicate URI)
- *   - thread relation add/remove into the authored mutation queue (engine layer)
- *   - emit trace events
+ *   - push relation add/remove onto `world.authoredQueue` (drained by the
+ *     network-layer mutation pipeline at end of tick)
+ *
+ * Extension properties: any field on the `defineRelation` options object
+ * that isn't a reserved key (`name`, `sync`, `exclusive`, `autoRemoveSubject`,
+ * `store`, `onTargetRemoved`) is spread straight onto the definition with
+ * its type preserved — used by built-in relations to attach their own
+ * indexes (e.g. `BelongsTo.parentOf`) and available for user code to do the
+ * same.
  */
 
 import * as bitecs from 'bitecs'
-import type { Entity, World } from './world'
-import type { Engine } from './engine'
-import { getDefaultEngine } from './engine'
-import type { Origin } from './trace'
+import type { Entity, Origin, World } from './world'
 
 export interface RelationOptions<T = void> {
   /** Predicate name (used as the relation URI in semantic triples) */
@@ -33,8 +37,6 @@ export interface RelationOptions<T = void> {
   store?: () => T
   /** Hook fired when the target entity is removed. */
   onTargetRemoved?: (subject: Entity, target: Entity) => void
-  /** Engine to register against. Defaults to the ambient engine. */
-  engine?: Engine
 }
 
 export interface RelationDefinition<T = void> {
@@ -47,39 +49,60 @@ export interface RelationDefinition<T = void> {
   readonly $relation: bitecs.Relation<T>
 }
 
-export const defineRelation = <T = void>(options: RelationOptions<T>): RelationDefinition<T> => {
-  const engine = options.engine ?? getDefaultEngine()
-  const { name, sync = true, exclusive = false, autoRemoveSubject = false, store, onTargetRemoved } = options
-  const existing = engine.relations.get(name)
-  if (existing) return existing as RelationDefinition<T>
+/** Reserved option keys consumed by `defineRelation` itself. Any other keys
+ *  passed to `defineRelation` become typed extension properties on the
+ *  resulting definition. */
+type ReservedRelationOptionKey = keyof RelationOptions<unknown>
+
+/** Fields on an options object that are *not* part of `RelationOptions` —
+ *  these are passed straight through onto the definition. */
+export type RelationExtensions<O> = Omit<O, ReservedRelationOptionKey>
+
+// ── Global relation registry ─────────────────────────────────────────────────-
+// Relation definitions are module-level singletons, same as components.
+const relationsByName = new Map<string, RelationDefinition<unknown>>()
+const relationsByRef = new WeakMap<bitecs.Relation<unknown>, RelationDefinition<unknown>>()
+
+export const defineRelation = <T = void, O extends RelationOptions<T> = RelationOptions<T>>(
+  options: O
+): RelationDefinition<T> & RelationExtensions<O> => {
+  const {
+    name,
+    sync = true,
+    exclusive = false,
+    autoRemoveSubject = false,
+    store,
+    onTargetRemoved,
+    ...extensions
+  } = options as RelationOptions<T> & Record<string, unknown>
+  const existing = relationsByName.get(name)
+  if (existing) return existing as RelationDefinition<T> & RelationExtensions<O>
   const $relation = bitecs.createRelation<T>({
     exclusive,
     autoRemoveSubject,
     store,
     onTargetRemoved
   })
-  const def: RelationDefinition<T> = {
+  const def = {
     name,
     sync,
     exclusive,
     autoRemoveSubject,
-    $relation
-  }
-  engine.relationsByRef.set($relation as bitecs.Relation<unknown>, def as RelationDefinition<unknown>)
-  engine.relations.set(name, def as RelationDefinition<unknown>)
+    $relation,
+    ...extensions
+  } as RelationDefinition<T> & RelationExtensions<O>
+  relationsByRef.set($relation as bitecs.Relation<unknown>, def as RelationDefinition<unknown>)
+  relationsByName.set(name, def as RelationDefinition<unknown>)
   return def
 }
 
-export const getRelationDefinition = (
-  worldOrEngine: World | Engine,
-  relation: bitecs.Relation<unknown>
-): RelationDefinition<unknown> | undefined => {
-  const engine = 'bitECS' in worldOrEngine ? worldOrEngine : worldOrEngine.engine
-  return engine.relationsByRef.get(relation)
-}
+export const getRelationDefinition = (relation: bitecs.Relation<unknown>): RelationDefinition<unknown> | undefined =>
+  relationsByRef.get(relation)
 
-export const getRelationByName = (name: string, engine?: Engine): RelationDefinition<unknown> | undefined =>
-  (engine ?? getDefaultEngine()).relations.get(name)
+export const getRelationByName = (name: string): RelationDefinition<unknown> | undefined => relationsByName.get(name)
+
+/** Iterate every RelationDefinition ever defined. */
+export const allRelations = (): RelationDefinition<unknown>[] => Array.from(relationsByName.values())
 
 // ── add / remove pair ────────────────────────────────────────────────────────-
 
@@ -105,14 +128,6 @@ export const addRelation = <T>(
       origin
     })
   }
-  world.trace.emit({
-    kind: 'relation.add',
-    ts: world.clock.now(),
-    entity: subject,
-    predicate: relation.name,
-    origin,
-    detail: { target }
-  })
 }
 
 export const removeRelation = <T>(
@@ -133,14 +148,6 @@ export const removeRelation = <T>(
       origin
     })
   }
-  world.trace.emit({
-    kind: 'relation.remove',
-    ts: world.clock.now(),
-    entity: subject,
-    predicate: relation.name,
-    origin,
-    detail: { target }
-  })
 }
 
 export const getRelationTargets = <T>(world: World, subject: Entity, relation: RelationDefinition<T>): Entity[] =>
