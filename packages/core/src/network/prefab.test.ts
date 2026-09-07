@@ -32,8 +32,12 @@ describe('Prefab', () => {
     const Avatar = definePrefab('Avatar', { components: [Transform, Health, Tag] })
     expect(Avatar.components).toHaveLength(3)
     expect(Avatar.composedSchema.id).toBe('prefab:Avatar')
-    // Has a continuous component (Transform) → composed channel is continuous
-    expect(Avatar.composedSchema.channel).toBe('continuous')
+    // The composed jsonSchema keys each constituent by component id.
+    expect(Object.keys((Avatar.composedSchema.jsonSchema as { properties: object }).properties)).toEqual([
+      Transform.$id,
+      Health.$id,
+      Tag.$id
+    ])
   })
 })
 

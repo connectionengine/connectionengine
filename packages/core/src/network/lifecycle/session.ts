@@ -8,11 +8,9 @@
  * Wire protocol over `events`:
  *
  *   1. HELLO    — exchange { agentDID, knownEventCount, bindings }
- *   2. SNAPSHOT — full state baseline (all components, every channel). This is
- *                 what bootstraps continuous-channel components, which have no
- *                 event-log representation and are only ever delta-shipped
- *                 while dirty.
- *   3. REPLAY   — host streams its event log from joiner's known cursor.
+ *   2. REPLAY   — host streams its event log from joiner's known cursor.
+ *   3. SNAPSHOT — current state (all components, every channel), applied over
+ *                 the replayed history.
  *   4. LIVE     — authored envelopes + bind controls. Authored is rebroadcast
  *                 (mesh flood) to every other connection on every network.
  *
@@ -42,6 +40,7 @@ import { getNetworkIdTable, type NetworkIdBinding } from './network-id'
 import {
   applyReplayChunk,
   applyStateSnapshot,
+  endReplay,
   streamEventLog,
   streamStateSnapshot,
   type ReplayChunkMessage,
@@ -170,23 +169,16 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
           connection.peer = ensureRemotePeerEntity(world, payload)
           getChannelOrNull(connection)?.registerBindings(payload.bindings)
           flushAuthored(world)
-          // Snapshot before replay: it establishes the full entity graph
-          // (including continuous-only entities that no authored event would
-          // ever create) so subsequent binary bindings resolve, and replay
-          // then layers authored history on top of the same baseline.
-          if (wantSnapshot) streamStateSnapshot(world, endpoint)
+          // History, then present — see `replay.ts` for why the order matters.
           if (wantReplay && payload.knownEventCount < world.eventLog.length) {
             streamEventLog(world, endpoint, payload.knownEventCount, chunkSize)
-          } else if (wantReplay) {
-            endpoint.events.send({
-              type: 'replay-end',
-              totalEvents: world.eventLog.length
-            } satisfies ReplayEndMessage)
           }
+          if (wantSnapshot) streamStateSnapshot(world, endpoint)
+          if (wantReplay) endReplay(world, endpoint)
           break
         }
         case 'snapshot':
-          snapshotEntityCount += applyStateSnapshot(world, payload.snapshot)
+          snapshotEntityCount += applyStateSnapshot(world, payload.snapshot, connection.remoteDID, network)
           break
         case 'replay-chunk':
           replayedEventCount += applyReplayChunk(world, connection.remoteDID, payload.events, network)

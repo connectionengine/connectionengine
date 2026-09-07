@@ -2,21 +2,22 @@
  * Join-time catch-up — two halves, both streamed over the ordered `events`
  * channel before live traffic starts.
  *
- * 1. **State snapshot** (`streamStateSnapshot`) — a point-in-time capture of
- *    every named entity and *all* of its components, regardless of channel.
- *    This is the only bootstrap path for continuous-channel components: they
- *    never enter the event log, and the binary delta channel only ships
- *    entities that are currently dirty, so an entity at rest would otherwise
- *    stay invisible to a late joiner forever.
- * 2. **Event-log replay** (`streamEventLog`) — the host's authored events from
+ * 1. **Event-log replay** (`streamEventLog`) — the host's authored events from
  *    the joiner's cursor onwards, in ordered chunks. The receiver applies each
  *    with `origin='network'` via the standard `applyAuthoredEnvelope` path
- *    (itself idempotent via `appendEventLog`).
+ *    (itself idempotent via `appendEventLog`). This reconstructs history: every
+ *    component's existence, and the state it was created with.
+ * 2. **State snapshot** (`streamStateSnapshot`) — a point-in-time capture of
+ *    every named entity and *all* of its components, regardless of channel.
+ *    This is what carries *current* continuous state. Motion never authors, so
+ *    replay can only ever reproduce the pose a component was created with, and
+ *    the binary delta channel only ships entities that are currently dirty —
+ *    leaving an entity at rest stale by however far it has moved.
  *
- * Snapshot goes first so the joiner has a complete baseline; replay then
- * layers authored history on top and lands on the same state. Both are
- * idempotent sets, so the overlap costs a redundant write, not correctness.
- * Neither re-emits — everything applies with `origin='network'`.
+ * Replay goes first, snapshot last: history, then present. The reverse order
+ * would let a replayed creation event clobber the newer snapshot. Both are
+ * idempotent sets and neither re-emits — everything applies with
+ * `origin='network'`.
  */
 
 import type { AuthoredEvent, World } from '../../ecs/world'
@@ -53,13 +54,27 @@ export const streamStateSnapshot = (world: World, endpoint: TransportEndpoint): 
   return true
 }
 
-/** Apply a received bootstrap snapshot. Merges — never clears local state. */
-export const applyStateSnapshot = (world: World, snapshot: Snapshot): number => {
-  applySnapshot(world, snapshot)
+/** Mark the end of the catch-up phase; the joiner resolves its join on this. */
+export const endReplay = (world: World, endpoint: TransportEndpoint): void => {
+  endpoint.events.send({ type: 'replay-end', totalEvents: world.eventLog.length } satisfies ReplayEndMessage)
+}
+
+/**
+ * Apply a bootstrap snapshot received from `fromPeer`. Merges — never clears
+ * local state — and admits each write through the same gates an authored event
+ * from that peer would face.
+ */
+export const applyStateSnapshot = (world: World, snapshot: Snapshot, fromPeer: string, network?: Network): number => {
+  applySnapshot(world, snapshot, { from: { author: fromPeer, network } })
   return snapshot.entities.length
 }
 
-/** Stream the host's eventLog (from `fromIndex` onwards) over an endpoint. */
+/**
+ * Stream the host's eventLog (from `fromIndex` onwards) over an endpoint as
+ * ordered chunks. Does **not** send `replay-end` — the caller owns that marker,
+ * because the state snapshot has to land between the last chunk and the end of
+ * the catch-up phase.
+ */
 export const streamEventLog = (
   world: World,
   endpoint: TransportEndpoint,
@@ -73,7 +88,6 @@ export const streamEventLog = (
       events: events.slice(i, i + chunkSize)
     } satisfies ReplayChunkMessage)
   }
-  endpoint.events.send({ type: 'replay-end', totalEvents: world.eventLog.length } satisfies ReplayEndMessage)
 }
 
 /** Apply one replay chunk to the world; returns how many events were newly applied. */

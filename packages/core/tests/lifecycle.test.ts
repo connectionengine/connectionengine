@@ -196,10 +196,12 @@ describe('joinWorld — handshake + event-log replay', () => {
 
 describe('joinWorld — continuous-channel bootstrap via state snapshot', () => {
   /**
-   * Continuous components have no event-log representation, and the binary
-   * channel only ships entities present in the dirty map. An entity that has
-   * stopped moving is therefore unreachable by both live paths — the join
-   * snapshot is its only route to a late joiner.
+   * Replay carries a continuous component's *existence* and the pose it was
+   * created with — that write is authored. What it cannot carry is any
+   * subsequent motion, which only ever rides the binary delta channel. And that
+   * channel only ships entities in the current dirty set, so an entity that has
+   * since stopped moving is reachable by neither live path. The join snapshot
+   * is what closes the gap between the creation pose and the current one.
    */
   const restingHost = (name: string) => {
     const host = machine(name)
@@ -209,8 +211,11 @@ describe('joinWorld — continuous-channel bootstrap via state snapshot', () => 
     setUID(host, rock, 'rock', { parent: scene })
     setComponent(host, rock, Position, { position: [1, 2, 3] })
     setComponent(host, rock, Health, { current: 42 })
+    // Then it moves — this write authors nothing, it only marks dirty.
+    setComponent(host, rock, Position, { position: [9, 9, 9] })
     // End of tick: authored writes land in the log, the runtime dirty set is
-    // drained with no connections attached. The rock is now at rest.
+    // drained with no connections attached. The rock is now at rest, and the
+    // event log's record of it is stale by one move.
     flushAuthored(host)
     flushRuntime(host)
     expect(host.runtimeDirty.get('LC.Position')?.size ?? 0).toBe(0)
@@ -232,7 +237,8 @@ describe('joinWorld — continuous-channel bootstrap via state snapshot', () => 
     const jScene = getEntityByUID(joiner, joiner.worldRoot, 'scene:snap-host')!
     const jRock = getEntityByUID(joiner, jScene, 'rock')!
     expect(hasComponent(joiner, jRock, Position)).toBe(true)
-    expect(Array.from(Position.position.to(jRock))).toEqual([1, 2, 3])
+    // The *current* pose, not the one the creating event recorded.
+    expect(Array.from(Position.position.to(jRock))).toEqual([9, 9, 9])
     // Event-channel state still arrives, unchanged by the snapshot phase.
     expect(getComponent(joiner, jRock, Health)?.current).toBe(42)
 
@@ -241,7 +247,7 @@ describe('joinWorld — continuous-channel bootstrap via state snapshot', () => 
     destroyWorld(joiner)
   })
 
-  it('without the snapshot only event-channel state replays — the regression this guards', async () => {
+  it('without the snapshot the joiner is stuck at the creation pose', async () => {
     const host = restingHost('nosnap-host')
     const joiner = machine('nosnap-joiner')
 
@@ -255,10 +261,11 @@ describe('joinWorld — continuous-channel bootstrap via state snapshot', () => 
 
     const jScene = getEntityByUID(joiner, joiner.worldRoot, 'scene:nosnap-host')!
     const jRock = getEntityByUID(joiner, jScene, 'rock')!
-    // The entity exists (authored UID event replayed) and its event-channel
-    // component arrived — but the continuous component never did.
     expect(getComponent(joiner, jRock, Health)?.current).toBe(42)
-    expect(hasComponent(joiner, jRock, Position)).toBe(false)
+    // Replay establishes the component and the pose it was created with — the
+    // move that followed was never authored, so the joiner never learns of it.
+    expect(hasComponent(joiner, jRock, Position)).toBe(true)
+    expect(Array.from(Position.position.to(jRock))).toEqual([1, 2, 3])
 
     link.close()
     destroyWorld(host)

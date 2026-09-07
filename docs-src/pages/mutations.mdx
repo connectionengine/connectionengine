@@ -6,16 +6,19 @@ description: One schema, two channels. How writes become packets, packets become
 
 ## The shape
 
-A local write goes through one of two queues, depending on the component's channel (which the schema decided at definition time):
+A local write dispatches to one or both queues:
 
 ```
 setComponent(world, e, Health, { current: 50 })
         │
         ▼
-channel = 'event'       →  push into world.authoredQueue (entity, predicate, op, value, origin)
-channel = 'continuous'  →  mark world.runtimeDirty[componentId].add(entity)
-channel = 'local'       →  no-op (sync: false, never replicated)
+has SoA fields   →  mark world.runtimeDirty[componentId].add(entity)
+create / remove /
+write value field →  push into world.authoredQueue (entity, predicate, op, value, origin)
+sync: false      →  no-op (never replicated)
 ```
+
+One write can land in both queues. The authored event carries the **whole** component — SoA fields included, as plain arrays — so the creating write is governable in full. A write that only moves SoA fields on an existing component marks dirty and never reaches the event log; that's the per-tick case. See [Components](/components).
 
 The driver explicitly flushes both queues at end-of-frame (after `runSystems` returns):
 
@@ -65,7 +68,7 @@ applyAuthoredEnvelope(world, envelope, network?)
 
 Two gates run before an event is applied. The optional per-network `validateAuthored` is the governance hook (different networks can have different rules — credential, temporal, content, capability). The authority-transfer standing check is unconditional — `network/mutation.ts` calls `checkAuthorityChangeStanding` from `network/authority.ts` directly. Both modules live in `network/`, so it's an ordinary named import, not a runtime hook.
 
-For `continuous` components, **there is no separate "apply runtime envelope" function**. The binary pipeline (`network/binary.ts`) is the receive path — it reads packets and writes directly into SoA storage, calling `setComponent(world, entity, component, {}, { origin: 'network' })` only as needed to register bitECS presence.
+For `continuous` state, **there is no separate "apply runtime envelope" function**. The binary pipeline (`network/binary.ts`) is the receive path — it reads packets and writes directly into SoA storage, never going through `setComponent` at all.
 
 This is one of the simplifications that justifies the dual channels. The `event` side gets a proper apply pipeline because events are first-class semantic things. The `continuous` side is pure data: arrays in, arrays out, no event objects to construct.
 
@@ -109,6 +112,8 @@ But normally you don't — the mutation pipeline handles it.
 The `continuous` channel has no governance gate. A binary packet from peer X arrives and updates SoA fields, full stop. Authority is enforced **structurally** via the `AuthoritativeFor` relation: a system that runs locally checks "do I have authority over this entity for this component?" before processing physics or moving things. See [Authority & Ownership](/authority-and-ownership).
 
 This split is intentional. Per-packet signature verification at the simulation tick rate is too expensive. Per-event signature verification on authored events (sub-Hz cadence) is fine. Authority on `continuous` is a property of the entity graph, not the wire.
+
+The gate that *does* apply here is one of existence: a delta may only modify a component that already exists. If the entity lacks it, the delta is decoded into a scratch slot and dropped. No component is ever materialised by a packet.
 
 ## A complete flow
 

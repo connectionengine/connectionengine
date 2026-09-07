@@ -70,8 +70,8 @@ The interface is mechanism-agnostic — the backend (WebRTC, WebSocket, in-memor
 
 ```
 1. HELLO    — both sides send { agentDID, knownEventCount, networkId bindings }
-2. SNAPSHOT — each side sends a full state baseline (all components, every channel)
-3. REPLAY   — each host streams its eventLog from joiner's cursor as chunks
+2. REPLAY   — each host streams its eventLog from joiner's cursor as chunks
+3. SNAPSHOT — each side sends current state (all components, every channel)
 4. LIVE     — authored envelopes + binary packets flow over the same endpoint
 ```
 
@@ -89,23 +89,23 @@ console.log(joinerResult.snapshotEntityCount) // entities in the peer's baseline
 console.log(joinerResult.replayedEventCount) // number of events caught up
 ```
 
-`joinWorld` resolves once replay-end fires. The snapshot precedes the replay chunks on the ordered `events` channel, so it has already been applied by then. After that, the same endpoint carries live envelopes — no further setup.
+`joinWorld` resolves once replay-end fires. The snapshot precedes that marker on the ordered `events` channel, so it has already been applied by then. After that, the same endpoint carries live envelopes — no further setup.
 
-## Late join: replay for authored state, snapshot for continuous state
+## Late join: replay for history, snapshot for the present
 
-The two replication channels need different bootstrap routes, because only one of them is event-sourced.
+**Replay reconstructs history.** The joiner sends `knownEventCount: 0` (or whatever cursor it has from a previous session) and the host streams the missing events. The joiner applies each via the normal mutation pipeline. That works because:
 
-**Event-channel components replay.** The joiner sends `knownEventCount: 0` (or whatever cursor it has from a previous session) and the host streams the missing events. The joiner applies each via the normal mutation pipeline. That works because:
-
-- The event log is **canonical** for authored state — every causally-meaningful authored change passes through it.
+- The event log is **canonical** for causal change — every component's creation and removal passes through it, whatever its schema.
 - `appendEventLog` is **idempotent** on event signature — events the joiner already has are dropped silently on apply.
 - Apply itself is **convergent** — `setComponent` with the same value twice is a no-op; `addRelation` of an existing pair is a no-op.
 
-**Continuous-channel components cannot replay.** They never enter the event log by design ([Components](/components)), and the binary delta channel only ships entities that are in the current dirty set. An entity that has stopped moving is in neither — so without a baseline it would stay invisible to a late joiner indefinitely, not just until its next update.
+**Replay cannot reconstruct motion.** A creating event carries the whole component, continuous fields included — but every SoA write after it is deliberately unauthored ([Components](/components)). So replay leaves a joiner holding the pose each component was *created* with, and the delta channel can't help: it only ships entities in the current dirty set, so anything at rest stays stale indefinitely rather than until its next update.
 
-That's what the SNAPSHOT step is for. `createSnapshot` walks every named entity and serialises **all** its components regardless of channel — SoA fields read straight out of the typed arrays into plain arrays — and the receiver applies it with `origin: 'network'`, so nothing echoes back. Because it also rebuilds the entity graph by UID path, it doubles as the thing that makes later binary `networkId` bindings resolve for entities no authored event ever created.
+That's the SNAPSHOT step. `createSnapshot` walks every named entity and serialises **all** its components regardless of channel — SoA fields straight out of the typed arrays as plain arrays — and the receiver applies it with `origin: 'network'`, so nothing echoes back.
 
-Snapshot goes first, replay layers authored history on top, and both land on the same state. The overlap costs a redundant write, not correctness. Opt out with `sendStateSnapshot: false` when the peer bootstraps state out-of-band — but then continuous components will not reach it.
+**Order matters: replay first, snapshot last.** History, then present. Reversed, a replayed creation event would clobber the newer snapshot. Opt out with `sendStateSnapshot: false` and the joiner is correct about what exists, stale about where it is.
+
+**A snapshot carries no more authority than its sender.** Every component and relation in it passes the same two gates an authored event from that peer would — `validateAuthored`, and the standing check guarding `AuthoritativeFor` — and rejected writes are skipped, so the bootstrap path can't smuggle in what the authored path refuses. A local `applySnapshot` omits the `from` option and is trusted.
 
 The same `Snapshot` API in `network/snapshot.ts` remains useful on its own for persistence, debugging, checkpoint/rollback, and hot-reload.
 

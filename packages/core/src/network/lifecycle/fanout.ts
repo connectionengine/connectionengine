@@ -9,7 +9,7 @@
  */
 
 import type { AuthoredEnvelope, Entity, World } from '../../ecs/world'
-import { allComponents } from '../../ecs/component'
+import { allComponents, hasSyncedSoA } from '../../ecs/component'
 import { hasEventBeenSeen } from '../mutation'
 import type { Connection, Network } from '../network'
 import { getNetworks } from '../network'
@@ -34,7 +34,7 @@ export const ensureChannel = (world: World, connection: Connection): BinaryChann
   let channel = channels.get(connection)
   if (channel) return channel
   const components = allComponents()
-    .filter((c) => c.$isBinary)
+    .filter(hasSyncedSoA)
     .sort((a, b) => (a.$id < b.$id ? -1 : a.$id > b.$id ? 1 : 0))
   if (components.length === 0) return undefined
   channel = createBinaryChannel(world, connection, { components })

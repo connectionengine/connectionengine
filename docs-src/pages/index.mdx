@@ -26,10 +26,11 @@ Once you accept the equivalence, a lot of complexity disappears:
 ## What you get
 
 - **bitECS-based runtime** with schema-driven components (TypeBox), structure-of-arrays storage for hot fields (Vec3/Quat/Float32/...).
-- **Two replication channels** that share one schema:
+- **Two replication channels** that share one schema, split by one rule — *existence is governed, values are governed only where they are discrete*:
   - **`event`** — reliable, event-sourced, governance-validated. Spawns, deletes, ownership transfers, anything causal.
   - **`continuous`** — binary, per-field delta encoding, per-peer shadow maps. Transforms, velocities, anything driven at the simulation tick rate.
-- **Event-sourced late join** — a new peer catches up by replaying the host's signed event log, idempotent on top of itself, plus a channel-agnostic state snapshot that bootstraps continuous components (which never enter the log).
+  - A component can hold both. Either way its existence is governed; its continuous fields run free, constrained by systems rather than by admission.
+- **Event-sourced late join** — a new peer replays the host's signed event log, idempotent on top of itself, then a channel-agnostic state snapshot brings continuous values from their creation pose up to the present.
 - **Three runtime modes** that share the same core:
   - **Solo** — anonymous agent, no transport, runs offline.
   - **Local** — `@connectionengine/local` adds Ed25519 / ZCAP / `did:key` signing.

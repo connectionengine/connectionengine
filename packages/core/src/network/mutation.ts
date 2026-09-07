@@ -30,7 +30,7 @@
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
 import type { ComponentDefinition } from '../ecs/component'
-import { allComponents, getComponentById, removeComponent, setComponent } from '../ecs/component'
+import { allComponents, getComponentById, hasSyncedSoA, removeComponent, setComponent } from '../ecs/component'
 import type { RelationDefinition } from '../ecs/relation'
 import { addRelation, allRelations, getRelationByName, removeRelation } from '../ecs/relation'
 import { createEntity, getEntityByUID, getEntityPath, removeEntity, resolveEntityPath, setUID } from '../ecs/entity'
@@ -151,7 +151,7 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
   for (const [componentId, entities] of world.runtimeDirty) {
     if (entities.size === 0) continue
     const def = findComponent(componentId)
-    if (!def || !def.$isBinary) {
+    if (!def || !hasSyncedSoA(def)) {
       entities.clear()
       continue
     }

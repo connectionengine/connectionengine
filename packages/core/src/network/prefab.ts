@@ -42,13 +42,6 @@ export interface DefinePrefabOptions {
 }
 
 export const definePrefab = (name: string, options: DefinePrefabOptions): PrefabDefinition => {
-  // Surface the broadest channel for SHACL metadata only: continuous > event > local.
-  const channels = new Set(options.components.map((c) => c.$channel))
-  const channel: ComponentSchema['channel'] = channels.has('continuous')
-    ? 'continuous'
-    : channels.has('event')
-      ? 'event'
-      : 'local'
   const composedSchema: ComponentSchema = {
     id: `prefab:${name}`,
     jsonSchema: {
@@ -60,8 +53,7 @@ export const definePrefab = (name: string, options: DefinePrefabOptions): Prefab
       '@type': 'sh:NodeShape',
       targetClass: `prefab:${name}`,
       components: options.components.map((c) => c.$componentSchema.shaclShape)
-    },
-    channel
+    }
   }
   return {
     name,

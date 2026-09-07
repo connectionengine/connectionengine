@@ -12,13 +12,14 @@
  * — no idMap parameter required.
  */
 
-import type { ComponentDefinition } from '../ecs/component'
-import { getComponent, getComponentById, hasComponent, setComponent } from '../ecs/component'
+import { getComponentById, hasComponent, serialiseComponentValue, setComponent } from '../ecs/component'
 import { getEntityByUID, getEntityPath, setUID, uidOfFor } from '../ecs/entity'
 import { addRelation, getRelationByName, getRelationTargets } from '../ecs/relation'
 import { createEntity, removeEntity } from '../ecs/entity'
 import { worldComponents, worldRelations } from './mutation'
-import type { Entity, World } from '../ecs/world'
+import { checkAuthorityChangeStanding } from './authority'
+import type { Network } from './network'
+import type { AuthoredEvent, Entity, World } from '../ecs/world'
 
 export interface SnapshotEntity {
   path: string[]
@@ -60,7 +61,7 @@ export const createSnapshot = (world: World, options: CreateSnapshotOptions = {}
     for (const def of componentDefs) {
       if (!hasComponent(world, entity, def)) continue
       if (includeIds && !includeIds.has(def.$id)) continue
-      components[def.$id] = serialiseComponent(world, entity, def)
+      components[def.$id] = serialiseComponentValue(world, entity, def)
       seenComponents.add(def.$id)
     }
     for (const rel of relationDefs) {
@@ -90,6 +91,22 @@ export const createSnapshot = (world: World, options: CreateSnapshotOptions = {}
 export interface ApplySnapshotOptions {
   /** Clear all existing named entities before applying. Default false (merge). */
   replace?: boolean
+  /**
+   * Who sent this snapshot. Supply it for anything arriving over the wire: each
+   * component and relation then passes the same two gates an authored event
+   * does — the network's `validateAuthored`, and the standing check guarding
+   * `AuthoritativeFor` — and rejected writes are skipped, not applied.
+   *
+   * Omit it for a trusted local apply: persistence, rollback, hot-reload.
+   */
+  from?: SnapshotOrigin
+}
+
+export interface SnapshotOrigin {
+  /** DID credited as the author of the snapshot's writes. */
+  author: string
+  /** Network whose `validateAuthored` gate applies. */
+  network?: Network
 }
 
 export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySnapshotOptions = {}): void => {
@@ -97,28 +114,59 @@ export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySn
     const named = Array.from(uidOfFor(world.engine).keys())
     for (const e of named) removeEntity(world, e)
   }
-  // Pass 1: ensure all entities exist with their UID + parent chain
+  const admit = admitter(world, snapshot, options.from)
+  // Pass 1: the entity graph — every path, with its UID + parent chain. This is
+  // the addressing substrate that the later passes and the binary channel's
+  // networkId bindings resolve against, so it is laid down whole and ungated,
+  // exactly as an authored event materialises its own entity path.
   for (const ent of snapshot.entities) ensureEntityPath(world, ent.path)
-  // Pass 2: apply components
+  // Pass 2: components
   for (const ent of snapshot.entities) {
     const entity = ensureEntityPath(world, ent.path)
     for (const [componentId, value] of Object.entries(ent.components)) {
       const def = getComponentById(componentId)
-      if (!def) continue
+      if (!def || !admit(ent.path, componentId, value)) continue
       setComponent(world, entity, def, value as Record<string, unknown>, { origin: 'network' })
     }
   }
-  // Pass 3: apply relations (entities all exist now)
+  // Pass 3: relations (every entity exists by now, so targets always resolve)
   for (const ent of snapshot.entities) {
     const entity = ensureEntityPath(world, ent.path)
     for (const [relName, targetPaths] of Object.entries(ent.relations)) {
       const rel = getRelationByName(relName)
       if (!rel) continue
       for (const targetPath of targetPaths) {
-        const target = ensureEntityPath(world, targetPath)
-        addRelation(world, entity, rel, target, { origin: 'network' })
+        if (!admit(ent.path, relName, { targetPath })) continue
+        addRelation(world, entity, rel, ensureEntityPath(world, targetPath), { origin: 'network' })
       }
     }
+  }
+}
+
+/**
+ * Build the predicate deciding whether one of a snapshot's writes may land.
+ * Each write is expressed as the `AuthoredEvent` that would have carried it, so
+ * the gates see exactly what they see on the authored path — same author, same
+ * predicate, same value shape. With no origin, everything is admitted.
+ */
+const admitter = (
+  world: World,
+  snapshot: Snapshot,
+  from: SnapshotOrigin | undefined
+): ((entityPath: string[], predicate: string, value: unknown) => boolean) => {
+  if (!from) return () => true
+  const gate = from.network?.validateAuthored
+  return (entityPath, predicate, value) => {
+    const event: AuthoredEvent = {
+      entityPath,
+      predicate,
+      op: 'set',
+      value,
+      author: from.author,
+      timestamp: snapshot.metadata.timestamp
+    }
+    if (gate && !gate(event)) return false
+    return checkAuthorityChangeStanding(world, event) === undefined
   }
 }
 
@@ -139,38 +187,6 @@ const ensureEntityPath = (world: World, path: string[]): Entity => {
     parent = cursor
   }
   return cursor
-}
-
-interface SoAToable {
-  to?: (entity: number) => ArrayLike<number>
-}
-
-/**
- * Serialise a single component to a JSON-safe value. SoA fields are read
- * straight from the definition's SoA stores into plain arrays; value fields
- * come from the engine's instance store via `getComponent`.
- */
-const serialiseComponent = (world: World, entity: number, def: ComponentDefinition): unknown => {
-  if (def.$soaFields.length === 0) {
-    return serialiseValue(getComponent(world, entity, def))
-  }
-  const out: Record<string, unknown> = {}
-  for (const field of def.$soaFields) {
-    const soa = def[field] as SoAToable | undefined
-    if (soa && typeof soa.to === 'function') {
-      out[field] = Array.from(soa.to(entity))
-    }
-  }
-  return out
-}
-
-const serialiseValue = (value: unknown): unknown => {
-  if (value === null || typeof value !== 'object') return value
-  if (ArrayBuffer.isView(value)) return Array.from(value as unknown as ArrayLike<number>)
-  if (Array.isArray(value)) return value.map(serialiseValue)
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = serialiseValue(v)
-  return out
 }
 
 // Component/relation enumeration uses worldComponents/worldRelations from mutation.ts.

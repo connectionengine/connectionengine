@@ -21,26 +21,28 @@
  *   - Instance map  → on the engine, per (component, entity). Stable object
  *                     reference per entity.
  *
- * `getComponent` returns:
- *   - For event components:      the instance object directly (live data).
- *   - For continuous components: a cached per-entity view bag whose fields are
- *                                the SoA `.view(entity)` projections. Same
- *                                object every call, no refresh, no allocation,
- *                                always-live via getter/setter delegation.
+ * `getComponent` returns a stable per-entity object: the instance store itself
+ * for value-only components, otherwise a cached view bag delegating to the SoA
+ * arrays (and, for mixed components, to the instance store as well).
  *
- * The replication channel is derived from the schema alone:
- *   - any SoA-tagged field  → `continuous` (binary delta path, no event log,
- *                              last-write-wins, no governance gate)
- *   - else                  → `event`      (authored path: event-sourced,
- *                              signed, governance-validated, replayed on
- *                              late join)
- *   - `sync: false`         → `local`      (never replicated)
+ * How a component replicates follows from its schema, on one rule:
  *
- * Schema-only is strict: mixing SoA and non-SoA fields in one component throws
- * at definition. Split it instead.
+ *   **Existence is governed. Values are governed only where they are discrete.**
+ *
+ * Creating or removing any synced component authors an event, whatever its
+ * schema — that is causal. So does writing a value-typed field. The creating
+ * event carries the whole component, so even its initial SoA state passes the
+ * gate. Only writes to SoA fields on a component that already exists escape:
+ * those ride the binary delta channel (`hasSyncedSoA`), which may modify a
+ * component but never create one (enforced in `network/binary.ts`).
+ *
+ * Continuous constraints belong in systems, which make an invalid state
+ * unreachable rather than inadmissible. The cost of mixing both kinds of field
+ * in one component is that the halves travel at different cadences, so
+ * `getComponent` can return an object whose halves are from different moments.
  *
  * All meta fields on the definition use a `$` prefix (`$id`, `$schema`,
- * `$channel`, ...) so the bare keys are reserved for schema fields.
+ * `$sync`, ...) so the bare keys are reserved for schema fields.
  *
  * Extension properties: any field on the `defineComponent` options object
  * that isn't a reserved key (`id`, `label`, `schema`, `sync`) is spread
@@ -68,24 +70,7 @@ export interface ComponentSchema {
   readonly id: string
   readonly jsonSchema: object
   readonly shaclShape: object
-  /**
-   * Replication channel — derived from the schema in `defineComponent`.
-   * `event` for authored events, `continuous` for binary delta SoA fields,
-   * `local` if the component is opted out of replication.
-   */
-  readonly channel: 'event' | 'continuous' | 'local'
 }
-
-/**
- * Replication channel for a component. Derived from the schema:
- *   - `'continuous'` — has SoA-tagged fields, ships via binary delta pipeline,
- *                      not in event log, last-write-wins.
- *   - `'event'`      — no SoA fields, ships as authored event, in event log,
- *                      signed, replayed on late join.
- *   - `'local'`      — opt-out via `defineComponent({ sync: false })`. Never
- *                      replicates.
- */
-export type ReplicationChannel = 'event' | 'continuous' | 'local'
 
 export interface ComponentOptions<T extends TSchema = TSchema> {
   id: string
@@ -114,10 +99,6 @@ export interface ComponentDefinitionMeta<T extends TSchema = TSchema> {
   readonly $schema: T
   /** Whether this component replicates. Defaults to `true` at definition time. */
   readonly $sync: boolean
-  /** Replication channel — derived from schema + `$sync`. */
-  readonly $channel: ReplicationChannel
-  /** True iff this component uses the binary delta path. */
-  readonly $isBinary: boolean
   readonly $componentSchema: ComponentSchema
   /** Default values per field, applied on first set. */
   readonly $defaults: Record<string, unknown>
@@ -128,6 +109,15 @@ export interface ComponentDefinitionMeta<T extends TSchema = TSchema> {
   /** Internal: value-typed (instance store) field names. */
   readonly $valueFields: readonly string[]
 }
+
+/**
+ * Does this component put state on the binary delta channel?
+ *
+ * There is no counterpart asking "is it authored" — every synced component is.
+ * Existence is always causal; only continuous *values* escape the gate.
+ */
+export const hasSyncedSoA = (component: Pick<ComponentDefinitionMeta, '$sync' | '$soaFields'>): boolean =>
+  component.$sync && component.$soaFields.length > 0
 
 /**
  * Map a single schema field to the SoA store type it would produce at runtime.
@@ -237,7 +227,7 @@ const buildDefaults = (schema: TSchema): Record<string, unknown> => {
 
 const SHACL_NS = 'https://connectionengine.dev/shacl#'
 
-const toShaclShape = (id: string, schema: TSchema, channel: ReplicationChannel): object => {
+const toShaclShape = (id: string, schema: TSchema): object => {
   const properties: object[] = []
   if (schema.type === 'object' && schema.properties) {
     for (const [name, prop] of Object.entries(schema.properties as Record<string, TSchema>)) {
@@ -254,7 +244,6 @@ const toShaclShape = (id: string, schema: TSchema, channel: ReplicationChannel):
     '@id': `${SHACL_NS}${id}`,
     '@type': 'sh:NodeShape',
     targetClass: id,
-    channel,
     properties
   }
 }
@@ -287,27 +276,13 @@ export const defineComponent = <O extends ComponentOptions<TSchema>>(
   if (existing) return existing as ComponentDefinition<T> & ComponentExtensions<O>
   const { soaFields, valueFields } = classifyFields(schema)
 
-  if (soaFields.length > 0 && valueFields.length > 0) {
-    throw new Error(
-      `defineComponent('${id}'): components cannot mix SoA-tagged fields (${soaFields.join(
-        ', '
-      )}) with value-typed fields (${valueFields.join(
-        ', '
-      )}). Split into two components — SoA fields ship via the binary delta channel; value-typed fields ship as authored events.`
-    )
-  }
-
   const $defaults = buildDefaults(schema)
-  const isBinary = sync && soaFields.length > 0
-  const channel: ReplicationChannel = !sync ? 'local' : isBinary ? 'continuous' : 'event'
-
   const $ref: bitecs.ComponentRef = { __ce: id } as bitecs.ComponentRef
 
   const $componentSchema: ComponentSchema = {
     id,
     jsonSchema: schema as object,
-    shaclShape: toShaclShape(id, schema, channel),
-    channel
+    shaclShape: toShaclShape(id, schema)
   }
 
   const soaStores = buildSoAStores(schema)
@@ -317,8 +292,6 @@ export const defineComponent = <O extends ComponentOptions<TSchema>>(
     $label: label,
     $schema: schema,
     $sync: sync,
-    $channel: channel,
-    $isBinary: isBinary,
     $componentSchema,
     $defaults,
     $ref,
@@ -382,13 +355,23 @@ export interface SetComponentOptions {
   origin?: Origin
 }
 
+/**
+ * Structural view of an SoA store (Vec3SoA, QuatSoA, a bare typed array, …) as
+ * this module uses it. The stores are spread onto the definition itself, so
+ * `soaStoresOf` is just the cast that admits it.
+ */
 interface SoAStoreLike {
   from?: (entity: number, data: ArrayLike<number>) => void
+  to?: (entity: number) => ArrayLike<number>
+  view?: (entity: number) => unknown
   resize?: (n: number) => void
 }
 
+const soaStoresOf = (component: ComponentDefinition): Record<string, SoAStoreLike | undefined> =>
+  component as unknown as Record<string, SoAStoreLike | undefined>
+
 const writeSoA = (component: ComponentDefinition, entity: Entity, value: Record<string, unknown>): void => {
-  const stores = component as unknown as Record<string, SoAStoreLike | undefined>
+  const stores = soaStoresOf(component)
   for (const field of component.$soaFields) {
     if (!(field in value)) continue
     const v = (value as Record<string, unknown>)[field]
@@ -446,22 +429,21 @@ export const setComponent = <T extends TSchema>(
   }
 
   if (origin === 'local' && component.$sync) {
-    if (component.$isBinary) {
-      markRuntimeDirty(world, entity, component.$id)
-    } else {
+    if (hasSyncedSoA(component)) markRuntimeDirty(world, entity, component.$id)
+    // Two occasions author: the component coming into being, and any write
+    // naming a discrete field. A write that only moves SoA fields on an
+    // existing component — the per-tick case — rides the binary channel alone.
+    const touchesDiscrete = component.$valueFields.some((f) => f in (value as Record<string, unknown>))
+    if (!wasPresent || touchesDiscrete) {
       world.authoredQueue.push({
         entity,
         predicate: component.$id,
         op: 'set',
-        value: getComponent(world, entity, component),
+        value: serialiseComponentValue(world, entity, component as ComponentDefinition),
         origin
       })
     }
   }
-}
-
-interface SoAViewSource {
-  view?: (entity: number) => unknown
 }
 
 /**
@@ -493,29 +475,77 @@ export const getComponent = <T extends TSchema>(
     // Event-channel component: instance store IS the live data.
     return stores.store[entity] as Static<T>
   }
-  let view = stores.views[entity]
-  if (!view) {
-    view = {}
-    const soaStores = def as unknown as Record<string, SoAViewSource | undefined>
-    for (const field of def.$soaFields) {
-      const soa = soaStores[field]
-      if (soa && typeof soa.view === 'function') {
-        view[field] = soa.view(entity)
-      } else if (soa) {
-        // Scalar SoA — expose a getter/setter that delegates to typed array index.
-        const arr = soa as unknown as { [k: number]: number }
-        Object.defineProperty(view, field, {
-          get: () => arr[entity],
-          set: (n: number) => {
-            arr[entity] = n
-          },
-          enumerable: true
-        })
-      }
-    }
-    stores.views[entity] = view
+  return (stores.views[entity] ??= buildView(def, stores, entity)) as Static<T>
+}
+
+/**
+ * Build the cached per-entity view bag: SoA fields become live `.view(entity)`
+ * projections (or a getter/setter pair for scalar stores), and value fields
+ * delegate to the instance store.
+ *
+ * Those value accessors re-read `stores.store[entity]` every time rather than
+ * capturing the instance, because `removeComponent` drops it and a later
+ * `setComponent` may install a different one — a view held across that cycle
+ * would otherwise be writing into an orphan.
+ */
+const buildView = (def: ComponentDefinition, stores: PerComponentStores, entity: Entity): Record<string, unknown> => {
+  const view: Record<string, unknown> = {}
+  const delegate = (field: string, get: () => unknown, set: (v: never) => void): void => {
+    Object.defineProperty(view, field, { get, set, enumerable: true })
   }
-  return view as Static<T>
+  for (const field of def.$valueFields) {
+    delegate(
+      field,
+      () => stores.store[entity]?.[field],
+      (v) => ((stores.store[entity] ??= {})[field] = v)
+    )
+  }
+  const soaStores = soaStoresOf(def)
+  for (const field of def.$soaFields) {
+    const soa = soaStores[field]
+    if (typeof soa?.view === 'function') view[field] = soa.view(entity)
+    // Scalar SoA — the store is the typed array itself, indexed by entity.
+    else if (soa) {
+      const arr = soa as unknown as Record<number, number>
+      delegate(
+        field,
+        () => arr[entity],
+        (n: never) => (arr[entity] = n)
+      )
+    }
+  }
+  return view
+}
+
+const deepPlain = (value: unknown): unknown => {
+  if (value === null || typeof value !== 'object') return value
+  if (ArrayBuffer.isView(value)) return Array.from(value as unknown as ArrayLike<number>)
+  if (Array.isArray(value)) return value.map(deepPlain)
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, deepPlain(v)]))
+}
+
+/**
+ * Read a component as plain, JSON-safe data — value fields deep-copied, SoA
+ * fields as number arrays. This is the shape that travels in an authored event
+ * and in a `Snapshot`. Unlike `getComponent` it allocates, and it captures the
+ * values as of *now* instead of staying live.
+ */
+export const serialiseComponentValue = (
+  world: World,
+  entity: Entity,
+  component: ComponentDefinition
+): Record<string, unknown> => {
+  const out: Record<string, unknown> = {}
+  const instance = getStores(world.engine, component).store[entity]
+  const soaStores = soaStoresOf(component)
+  for (const field of component.$valueFields) {
+    if (instance && field in instance) out[field] = deepPlain(instance[field])
+  }
+  for (const field of component.$soaFields) {
+    const soa = soaStores[field]
+    if (typeof soa?.to === 'function') out[field] = Array.from(soa.to(entity))
+  }
+  return out
 }
 
 export const hasComponent = (world: World, entity: Entity, component: ComponentDefinition): boolean =>
@@ -533,8 +563,10 @@ export const removeComponent = <T extends TSchema>(
   bitecs.removeComponent(world.engine.bitECS, entity, component.$ref)
   delete stores.store[entity]
   delete stores.views[entity]
-  if (component.$isBinary) clearRuntimeDirty(world, entity, component.$id)
-  if (origin === 'local' && component.$sync && !component.$isBinary) {
+  if (hasSyncedSoA(component)) clearRuntimeDirty(world, entity, component.$id)
+  // Ceasing to exist is causal, so removal always authors — one event, taking
+  // whatever halves the component had.
+  if (origin === 'local' && component.$sync) {
     world.authoredQueue.push({
       entity,
       predicate: component.$id,

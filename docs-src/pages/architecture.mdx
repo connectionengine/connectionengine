@@ -77,21 +77,21 @@ A consumer picks one (or none) at the edge. Core itself stays identity- and cryp
 
 ## The two replication channels
 
-The single most important mental model in Connection Engine. Every component lands on exactly one **replication channel**, derived from its schema at definition time. The channel decides everything about how the component travels.
+The single most important mental model in Connection Engine. How a component replicates follows from its schema — nothing is stored on the definition to say so.
 
-| `channel`     | Wire shape                       | Cadence       | Use for                                 |
+| Channel       | Wire shape                       | Cadence       | Use for                                 |
 |---------------|----------------------------------|---------------|-----------------------------------------|
 | `event`       | Authored envelope (JSON-shaped)  | Per-event     | Spawns, ownership, governance, intent   |
 | `continuous`  | Binary delta, per-field mask     | Per-tick      | Transforms, velocities, anything at the simulation tick rate |
 | `local`       | Never replicated                 | n/a           | Caches, view-state, machine-local data  |
 
-The channel is **derived from the schema**. Any SoA-tagged field (Vec3, Quat, Float32, …) puts the component on `continuous`; anything else lands on `event`. `defineComponent({ sync: false })` forces `local`.
+SoA-tagged fields (Vec3, Quat, Float32, …) give a component a `continuous` half; value-typed fields give it an `event` half; a schema can have both. `defineComponent({ sync: false })` opts out of all of it.
 
-Mixing SoA and non-SoA fields in one component throws at definition time. You split into two components — one continuous, one event — because they have different replication contracts. See [Components](/components) for the rationale.
+One rule covers both — **existence is governed, values are governed only where they are discrete**. Creation and removal always author, whatever the schema, and the creating event carries the whole component. Only per-tick SoA writes escape the gate; a binary delta may modify a component but never create one. Continuous constraints belong in systems instead. See [Components](/components).
 
 ## Mutation routing across networks
 
-A write to a component on an entity goes to the world's event log (for `event` channel) or marks the entity dirty (for `continuous` channel). At flush time the mutation pipeline runs `routeNetworks(world, entity)` to decide which networks receive the mutation. Today this is a hardcoded broadcast-to-all; tomorrow, a spatial layer will replace it with proximity-based routing without touching `mutation.ts`.
+A write to a component on an entity goes to the world's event log (if it creates, removes, or changes a discrete field), marks the entity dirty (if it moves SoA fields), or both. At flush time the mutation pipeline runs `routeNetworks(world, entity)` to decide which networks receive the mutation. Today this is a hardcoded broadcast-to-all; tomorrow, a spatial layer will replace it with proximity-based routing without touching `mutation.ts`.
 
 Same event log; many sync topologies on top.
 

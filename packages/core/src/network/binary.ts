@@ -36,7 +36,7 @@
 
 import type { TypedArray } from '../maths/common'
 import type { ComponentDefinition } from '../ecs/component'
-import { hasComponent, setComponent } from '../ecs/component'
+import { hasComponent } from '../ecs/component'
 import type { World } from '../ecs/world'
 import {
   type ViewCursor,
@@ -284,12 +284,11 @@ const readComponent = (
   entity: number,
   compressionForComponent: Record<string, FieldCompressionSpec> | undefined
 ): void => {
-  // Ensure the component is present on the entity. Without this, the SoA store
-  // values are written but `hasComponent` returns false and `getComponent`
-  // returns undefined.
-  if (entity !== 0 && !hasComponent(world, entity, component)) {
-    setComponent(world, entity, component, {}, { origin: 'network' })
-  }
+  // Existence is governed: a delta may modify a component, never create one.
+  // An absent component decodes into scratch slot 0, so the cursor still
+  // advances and the rest of the packet stays readable. Its creating event is
+  // already in flight on the authored channel, carrying the initial state.
+  if (entity !== 0 && !hasComponent(world, entity, component)) entity = 0
   const props = flattenProps(world, component, compressionForComponent)
   const width = maskWidthFor(props.length)
   const mask = readMaskOf(width)(view)
