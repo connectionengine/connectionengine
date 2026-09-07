@@ -97,15 +97,18 @@ Same event log; many sync topologies on top.
 
 ## The session protocol
 
-Two peers connect over a `TransportEndpoint` (dual-channel: `events` for reliable control + authored envelopes, `stream` for binary `ArrayBuffer` packets). The lifecycle layer wraps the endpoint as a `Connection`, attaches it to a Network on the local World, and runs a three-step session:
+Two peers connect over a `TransportEndpoint` (dual-channel: `events` for reliable control + authored envelopes, `stream` for binary `ArrayBuffer` packets). The lifecycle layer wraps the endpoint as a `Connection`, attaches it to a Network on the local World, and runs a four-step session:
 
 ```
 1. HELLO    — exchange { agentDID, knownEventCount, networkId bindings }
-2. REPLAY   — host streams authored events from joiner's cursor (idempotent)
-3. LIVE     — both sides forward authored envelopes + binary runtime packets
+2. SNAPSHOT — full state baseline: every named entity, all components, every channel
+3. REPLAY   — host streams authored events from joiner's cursor (idempotent)
+4. LIVE     — both sides forward authored envelopes + binary runtime packets
 ```
 
-Late join is **purely event-sourced**. There is no snapshot in the join protocol — the joiner brings itself up to date by replaying signed events. Each event has a composite signature, and `appendEventLog` is idempotent on that signature, so the same event delivered twice is dropped silently.
+Late join is **event-sourced for authored state**: the joiner replays signed events to catch up. Each event has a composite signature, and `appendEventLog` is idempotent on that signature, so the same event delivered twice is dropped silently.
+
+Continuous-channel components have no event-log representation, so replay cannot bootstrap them — and the binary channel only ships entities that are currently dirty, which leaves an entity at rest permanently invisible to a late joiner. The SNAPSHOT step covers that gap with a channel-agnostic baseline, applied with `origin: 'network'` so it never echoes back. See [Peers & Sessions](/networking).
 
 ## Identity is a path
 

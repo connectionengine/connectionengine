@@ -7,10 +7,14 @@
  *
  * Wire protocol over `events`:
  *
- *   1. HELLO   — exchange { agentDID, knownEventCount, bindings }
- *   2. REPLAY  — host streams its event log from joiner's known cursor.
- *   3. LIVE    — authored envelopes + bind controls. Authored is rebroadcast
- *                (mesh flood) to every other connection on every network.
+ *   1. HELLO    — exchange { agentDID, knownEventCount, bindings }
+ *   2. SNAPSHOT — full state baseline (all components, every channel). This is
+ *                 what bootstraps continuous-channel components, which have no
+ *                 event-log representation and are only ever delta-shipped
+ *                 while dirty.
+ *   3. REPLAY   — host streams its event log from joiner's known cursor.
+ *   4. LIVE     — authored envelopes + bind controls. Authored is rebroadcast
+ *                 (mesh flood) to every other connection on every network.
  *
  * Wire protocol over `stream`: binary packets from the per-connection
  * `BinaryChannel`, point-to-point.
@@ -35,7 +39,15 @@ import { ensureDefaultNetwork } from '../network'
 import { createBinaryChannel, isBindControl } from './binary-channel'
 import { getConnectionChannel, installFanout, rebroadcastAuthored, setConnectionChannel } from './fanout'
 import { getNetworkIdTable, type NetworkIdBinding } from './network-id'
-import { applyReplayChunk, streamEventLog, type ReplayChunkMessage, type ReplayEndMessage } from './replay'
+import {
+  applyReplayChunk,
+  applyStateSnapshot,
+  streamEventLog,
+  streamStateSnapshot,
+  type ReplayChunkMessage,
+  type ReplayEndMessage,
+  type SnapshotMessage
+} from './replay'
 import { sweepDisconnectedPeer } from './sweep'
 
 // ── Control messages ─────────────────────────────────────────────────────────-
@@ -61,7 +73,7 @@ interface LeaveMessage {
   agentDID: string
 }
 
-type ControlMessage = HelloMessage | LeaveMessage | ReplayChunkMessage | ReplayEndMessage
+type ControlMessage = HelloMessage | LeaveMessage | ReplayChunkMessage | ReplayEndMessage | SnapshotMessage
 
 const isControl = (payload: unknown): payload is ControlMessage =>
   !!payload && typeof payload === 'object' && typeof (payload as { type?: unknown }).type === 'string'
@@ -77,6 +89,13 @@ export interface JoinNetworkOptions {
   network?: Network
   /** Replay remote event log on join. Default true. */
   replayEventLog?: boolean
+  /**
+   * Send a full state snapshot to the peer on join. Default true. Required
+   * for continuous-channel components to reach a late joiner at all — they
+   * are absent from the event log and the binary channel only ships dirty
+   * entities. Disable only when the peer bootstraps state out-of-band.
+   */
+  sendStateSnapshot?: boolean
   /** Cursor: skip events at or before this index in the remote log. Default 0. */
   knownEventCount?: number
   /** Hard cap on events streamed per chunk during replay. Default 256. */
@@ -92,6 +111,8 @@ export interface JoinResult {
   network: Network
   remoteDID: string
   replayedEventCount: number
+  /** Entities received in the peer's bootstrap snapshot. */
+  snapshotEntityCount: number
 }
 
 const wrapEndpoint = (endpoint: TransportEndpoint): Connection => ({
@@ -109,11 +130,17 @@ const wrapEndpoint = (endpoint: TransportEndpoint): Connection => ({
  * network, auto-created on first call). Resolves after the replay phase
  * completes; live envelopes flow over the same endpoint with no further
  * setup.
+ *
+ * The peer's bootstrap snapshot precedes its replay chunks on the ordered
+ * events channel, so by the time this resolves the snapshot has been applied.
+ * With `replayEventLog: false` there is nothing to await — the snapshot then
+ * lands some time after the returned promise resolves.
  */
 export const joinNetwork = async (world: World, options: JoinNetworkOptions): Promise<JoinResult> => {
   const { endpoint } = options
   const network = options.network ?? ensureDefaultNetwork(world)
   const wantReplay = options.replayEventLog !== false
+  const wantSnapshot = options.sendStateSnapshot !== false
   const chunkSize = options.replayChunkSize ?? 256
   const myKnownCount = options.knownEventCount ?? 0
 
@@ -129,6 +156,7 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
   }
 
   let replayedEventCount = 0
+  let snapshotEntityCount = 0
   let resolveReplay!: () => void
   const replayPromise = new Promise<void>((r) => {
     resolveReplay = r
@@ -142,6 +170,11 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
           connection.peer = ensureRemotePeerEntity(world, payload)
           getChannelOrNull(connection)?.registerBindings(payload.bindings)
           flushAuthored(world)
+          // Snapshot before replay: it establishes the full entity graph
+          // (including continuous-only entities that no authored event would
+          // ever create) so subsequent binary bindings resolve, and replay
+          // then layers authored history on top of the same baseline.
+          if (wantSnapshot) streamStateSnapshot(world, endpoint)
           if (wantReplay && payload.knownEventCount < world.eventLog.length) {
             streamEventLog(world, endpoint, payload.knownEventCount, chunkSize)
           } else if (wantReplay) {
@@ -152,6 +185,9 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
           }
           break
         }
+        case 'snapshot':
+          snapshotEntityCount += applyStateSnapshot(world, payload.snapshot)
+          break
         case 'replay-chunk':
           replayedEventCount += applyReplayChunk(world, connection.remoteDID, payload.events, network)
           break
@@ -202,7 +238,7 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
 
   if (wantReplay) await replayPromise
 
-  return { connection, network, remoteDID: connection.remoteDID, replayedEventCount }
+  return { connection, network, remoteDID: connection.remoteDID, replayedEventCount, snapshotEntityCount }
 }
 
 /** Back-compat alias — `joinWorld` is `joinNetwork` over the default network. */

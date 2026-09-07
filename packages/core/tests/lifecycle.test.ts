@@ -24,10 +24,12 @@ import {
   findUserByDID,
   flushAsync,
   flushAuthored,
+  flushRuntime,
   getAuthority,
   getComponent,
   getEntityByUID,
   getNetwork,
+  hasComponent,
   joinWorld,
   leaveWorld,
   Schema,
@@ -57,6 +59,15 @@ const Health = defineComponent({
   })
 })
 
+/**
+ * Continuous-channel component — SoA-tagged, so it never enters the event log
+ * and only ever ships as a binary delta while dirty.
+ */
+const Position = defineComponent({
+  id: 'LC.Position',
+  schema: Schema.Object({ position: Schema.Vec3() })
+})
+
 /** Local identity bootstrap — equivalent to `createUser + createPeer` with
  *  asLocal so `spawnPrefab` has defaults to draw on. */
 const bootstrap = (world: ReturnType<typeof createWorld>, name: string) => {
@@ -65,7 +76,7 @@ const bootstrap = (world: ReturnType<typeof createWorld>, name: string) => {
 }
 
 describe('joinWorld — handshake + event-log replay', () => {
-  it('joiner catches up by replaying host event log; no snapshot involved', async () => {
+  it('joiner catches up by replaying host event log', async () => {
     // Host builds state first
     const host = machine('host')
     bootstrap(host, 'host')
@@ -176,6 +187,98 @@ describe('joinWorld — handshake + event-log replay', () => {
     const jScene = getEntityByUID(joiner, joiner.worldRoot, 'scene:live')!
     const jThing = getEntityByUID(joiner, jScene, 'thing')!
     expect(getComponent(joiner, jThing, Health)?.current).toBe(99)
+
+    link.close()
+    destroyWorld(host)
+    destroyWorld(joiner)
+  })
+})
+
+describe('joinWorld — continuous-channel bootstrap via state snapshot', () => {
+  /**
+   * Continuous components have no event-log representation, and the binary
+   * channel only ships entities present in the dirty map. An entity that has
+   * stopped moving is therefore unreachable by both live paths — the join
+   * snapshot is its only route to a late joiner.
+   */
+  const restingHost = (name: string) => {
+    const host = machine(name)
+    bootstrap(host, name)
+    const scene = spawnPrefab(host, `scene:${name}`)
+    const rock = createEntity(host)
+    setUID(host, rock, 'rock', { parent: scene })
+    setComponent(host, rock, Position, { position: [1, 2, 3] })
+    setComponent(host, rock, Health, { current: 42 })
+    // End of tick: authored writes land in the log, the runtime dirty set is
+    // drained with no connections attached. The rock is now at rest.
+    flushAuthored(host)
+    flushRuntime(host)
+    expect(host.runtimeDirty.get('LC.Position')?.size ?? 0).toBe(0)
+    return host
+  }
+
+  it('late joiner receives continuous state for an entity that is no longer dirty', async () => {
+    const host = restingHost('snap-host')
+    const joiner = machine('snap-joiner')
+
+    const link = createMemoryTransport()
+    const [, joinerResult] = await Promise.all([
+      joinWorld(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
+      joinWorld(joiner, { endpoint: link.b, knownEventCount: 0 })
+    ])
+
+    expect(joinerResult.snapshotEntityCount).toBeGreaterThan(0)
+
+    const jScene = getEntityByUID(joiner, joiner.worldRoot, 'scene:snap-host')!
+    const jRock = getEntityByUID(joiner, jScene, 'rock')!
+    expect(hasComponent(joiner, jRock, Position)).toBe(true)
+    expect(Array.from(Position.position.to(jRock))).toEqual([1, 2, 3])
+    // Event-channel state still arrives, unchanged by the snapshot phase.
+    expect(getComponent(joiner, jRock, Health)?.current).toBe(42)
+
+    link.close()
+    destroyWorld(host)
+    destroyWorld(joiner)
+  })
+
+  it('without the snapshot only event-channel state replays — the regression this guards', async () => {
+    const host = restingHost('nosnap-host')
+    const joiner = machine('nosnap-joiner')
+
+    const link = createMemoryTransport()
+    const [, joinerResult] = await Promise.all([
+      joinWorld(host, { endpoint: link.a, knownEventCount: host.eventLog.length, sendStateSnapshot: false }),
+      joinWorld(joiner, { endpoint: link.b, knownEventCount: 0, sendStateSnapshot: false })
+    ])
+
+    expect(joinerResult.snapshotEntityCount).toBe(0)
+
+    const jScene = getEntityByUID(joiner, joiner.worldRoot, 'scene:nosnap-host')!
+    const jRock = getEntityByUID(joiner, jScene, 'rock')!
+    // The entity exists (authored UID event replayed) and its event-channel
+    // component arrived — but the continuous component never did.
+    expect(getComponent(joiner, jRock, Health)?.current).toBe(42)
+    expect(hasComponent(joiner, jRock, Position)).toBe(false)
+
+    link.close()
+    destroyWorld(host)
+    destroyWorld(joiner)
+  })
+
+  it('applying the snapshot does not re-emit — joiner authors nothing of its own', async () => {
+    const host = restingHost('quiet-host')
+    const joiner = machine('quiet-joiner')
+
+    const link = createMemoryTransport()
+    await Promise.all([
+      joinWorld(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
+      joinWorld(joiner, { endpoint: link.b, knownEventCount: 0 })
+    ])
+
+    // Snapshot applies with origin='network': no authored queue entries, no
+    // runtime dirty flags, so nothing echoes back to the host.
+    expect(joiner.authoredQueue.length).toBe(0)
+    expect(joiner.runtimeDirty.get('LC.Position')?.size ?? 0).toBe(0)
 
     link.close()
     destroyWorld(host)

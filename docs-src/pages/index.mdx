@@ -29,7 +29,7 @@ Once you accept the equivalence, a lot of complexity disappears:
 - **Two replication channels** that share one schema:
   - **`event`** — reliable, event-sourced, governance-validated. Spawns, deletes, ownership transfers, anything causal.
   - **`continuous`** — binary, per-field delta encoding, per-peer shadow maps. Transforms, velocities, anything driven at the simulation tick rate.
-- **Pure event-sourced late join** — no snapshot protocol. A new peer catches up by replaying the host's signed event log. Idempotent on top of itself.
+- **Event-sourced late join** — a new peer catches up by replaying the host's signed event log, idempotent on top of itself, plus a channel-agnostic state snapshot that bootstraps continuous components (which never enter the log).
 - **Three runtime modes** that share the same core:
   - **Solo** — anonymous agent, no transport, runs offline.
   - **Local** — `@connectionengine/local` adds Ed25519 / ZCAP / `did:key` signing.
