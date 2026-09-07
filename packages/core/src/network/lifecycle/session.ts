@@ -1,25 +1,29 @@
 /**
- * Session — joinNetwork / leaveNetwork orchestration over a TransportEndpoint.
+ * Session — the joinNetwork and leaveNetwork orchestration over a
+ * TransportEndpoint.
  *
- * Two channels on every endpoint:
- *   - `events`   — control messages + authored envelopes (reliable, ordered)
- *   - `stream`   — binary runtime packets (`ArrayBuffer`)
+ * Every endpoint carries two channels:
+ *   - `events`   — control messages and authored envelopes. Reliable and ordered.
+ *   - `stream`   — binary runtime packets, as `ArrayBuffer` values.
  *
  * Wire protocol over `events`:
  *
  *   1. HELLO    — exchange { agentDID, knownEventCount, bindings }
- *   2. REPLAY   — host streams its event log from joiner's known cursor.
- *   3. SNAPSHOT — current state (all components, every channel), applied over
- *                 the replayed history.
- *   4. LIVE     — authored envelopes + bind controls. Authored is rebroadcast
- *                 (mesh flood) to every other connection on every network.
+ *   2. REPLAY   — the host streams its event log from the known cursor of the
+ *                 joiner.
+ *   3. SNAPSHOT — the current state, with all components on every channel. The
+ *                 receiver applies it over the replayed history.
+ *   4. LIVE     — authored envelopes and bind controls. Each authored envelope
+ *                 goes out again, as a mesh flood, to every other connection on
+ *                 every network.
  *
  * Wire protocol over `stream`: binary packets from the per-connection
- * `BinaryChannel`, point-to-point.
+ * `BinaryChannel`, sent point to point.
  *
- * The session is per-Network — a peer with both voice and gameplay channels
- * has two distinct connections, one per network. Whether they share an
- * underlying physical transport is a transport-layer concern.
+ * A session belongs to one Network. A peer with both a voice channel and a
+ * gameplay channel therefore holds two separate connections, one per network.
+ * Whether those connections share one physical transport is a transport-layer
+ * concern.
  */
 
 import type { AuthoredEnvelope, Entity, World } from '../../ecs/world'
@@ -56,11 +60,12 @@ interface HelloMessage {
   agentDID: string
   /** Stable per-engine peer id. */
   peerId: string
-  /** Entity paths of the sender's local User and Peer entities. Receiver uses
-   *  these to materialise its local view of the remote peer at the same UID
-   *  the sender's own authored events will use — preventing duplicate user/
-   *  peer entities when replay later re-creates them. Empty when the sender
-   *  hasn't established local identity (test / solo flows). */
+  /** Entity paths of the local User and Peer entities of the sender. The
+   *  receiver uses them to materialise its local view of the remote peer at the
+   *  same UID that the authored events of the sender will use. That prevents
+   *  duplicate user and peer entities when a later replay re-creates them. Both
+   *  paths stay empty when the sender has established no local identity, as in
+   *  a test flow or a solo flow. */
   userPath: string[]
   peerPath: string[]
   knownEventCount: number
@@ -84,22 +89,25 @@ const isAuthoredEnvelope = (payload: unknown): payload is AuthoredEnvelope =>
 
 export interface JoinNetworkOptions {
   endpoint: TransportEndpoint
-  /** Network to join over this endpoint. Defaults to the world's 'default' network (auto-created). */
+  /** Network to join over this endpoint. It defaults to the 'default' network
+   *  of the world, which the engine creates on demand. */
   network?: Network
-  /** Replay remote event log on join. Default true. */
+  /** Replay the remote event log on join. It defaults to true. */
   replayEventLog?: boolean
   /**
-   * Send a full state snapshot to the peer on join. Default true. Required
-   * for continuous-channel components to reach a late joiner at all — they
-   * are absent from the event log and the binary channel only ships dirty
-   * entities. Disable only when the peer bootstraps state out-of-band.
+   * Send a full state snapshot to the peer on join. It defaults to true. A
+   * continuous-channel component needs it to reach a late joiner at all,
+   * because such a component is absent from the event log, and the binary
+   * channel sends only the dirty entities. Disable it only when the peer
+   * bootstraps its state through another path.
    */
   sendStateSnapshot?: boolean
-  /** Cursor: skip events at or before this index in the remote log. Default 0. */
+  /** Cursor. Skip every event at or before this index in the remote log. It
+   *  defaults to 0. */
   knownEventCount?: number
-  /** Hard cap on events streamed per chunk during replay. Default 256. */
+  /** Hard cap on the number of events in one replay chunk. It defaults to 256. */
   replayChunkSize?: number
-  /** Runtime components to wire for binary replication on this connection. */
+  /** Runtime components to attach for binary replication on this connection. */
   runtimeComponents?: readonly ComponentDefinition[]
   /** Per-component transport config. */
   runtimeConfigs?: RuntimeTransportConfig[]
@@ -110,7 +118,7 @@ export interface JoinResult {
   network: Network
   remoteDID: string
   replayedEventCount: number
-  /** Entities received in the peer's bootstrap snapshot. */
+  /** Number of entities received in the bootstrap snapshot of the peer. */
   snapshotEntityCount: number
 }
 
@@ -125,15 +133,16 @@ const wrapEndpoint = (endpoint: TransportEndpoint): Connection => ({
 
 /**
  * Bring the local world up to date with the remote peer over `endpoint`. The
- * connection joins the specified `network` (default: the world's `'default'`
- * network, auto-created on first call). Resolves after the replay phase
- * completes; live envelopes flow over the same endpoint with no further
- * setup.
+ * connection joins the `network` that the caller names. It defaults to the
+ * `'default'` network of the world, which the engine creates on the first call.
+ * The promise resolves after the replay phase completes. Live envelopes then
+ * flow over the same endpoint, with no further setup.
  *
- * The peer's bootstrap snapshot precedes its replay chunks on the ordered
- * events channel, so by the time this resolves the snapshot has been applied.
- * With `replayEventLog: false` there is nothing to await — the snapshot then
- * lands some time after the returned promise resolves.
+ * The replay chunks of the peer precede its bootstrap snapshot on the ordered
+ * events channel, and the replay-end marker follows both. The receiver has
+ * therefore applied the snapshot by the time this promise resolves. With
+ * `replayEventLog: false` there is nothing to await, and the snapshot lands
+ * some time after the returned promise resolves.
  */
 export const joinNetwork = async (world: World, options: JoinNetworkOptions): Promise<JoinResult> => {
   const { endpoint } = options
@@ -169,7 +178,8 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
           connection.peer = ensureRemotePeerEntity(world, payload)
           getChannelOrNull(connection)?.registerBindings(payload.bindings)
           flushAuthored(world)
-          // History, then present — see `replay.ts` for why the order matters.
+          // History first, then the present. `replay.ts` explains why the order
+          // matters.
           if (wantReplay && payload.knownEventCount < world.eventLog.length) {
             streamEventLog(world, endpoint, payload.knownEventCount, chunkSize)
           }
@@ -233,19 +243,20 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
   return { connection, network, remoteDID: connection.remoteDID, replayedEventCount, snapshotEntityCount }
 }
 
-/** Back-compat alias — `joinWorld` is `joinNetwork` over the default network. */
+/** Backward-compatible alias. `joinWorld` calls `joinNetwork` over the default
+ *  network. */
 export const joinWorld = joinNetwork
 export type JoinWorldOptions = JoinNetworkOptions
 
 /**
- * Leave a network: send a graceful-leave signal to the peer, close the
- * endpoint, run disconnect cleanup locally.
+ * Leave a network. The function sends a graceful-leave signal to the peer,
+ * closes the endpoint, and runs the disconnect cleanup locally.
  */
 export const leaveWorld = async (world: World, connection: Connection): Promise<void> => {
   try {
     connection.events.send({ type: 'leave', agentDID: world.localAgent.did } satisfies LeaveMessage)
   } catch {
-    // peer may already be gone
+    // The peer may have gone already.
   }
   sweepDisconnectedPeer(world, connection)
   connection.close()
@@ -254,10 +265,10 @@ export const leaveWorld = async (world: World, connection: Connection): Promise<
 const getChannelOrNull = (connection: Connection) => getConnectionChannel(connection) ?? null
 
 /**
- * Resolve the local engine's peerId — the value sent in HELLO so the remote
- * side can locate (or create) a Peer entity that uniquely represents this
- * engine instance. Falls back to the agent DID when no local Peer entity is
- * set up yet (test / solo flows).
+ * Resolve the peerId of the local engine. HELLO carries that value, so that the
+ * remote side can find a Peer entity that uniquely represents this engine
+ * instance, or create one. The function falls back to the agent DID when no
+ * local Peer entity exists yet, as in a test flow or a solo flow.
  */
 const localPeerId = (world: World): string => {
   if (world.localPeer !== undefined) {
@@ -268,13 +279,14 @@ const localPeerId = (world: World): string => {
 }
 
 /**
- * Find (or create) the local representation of the remote peer using the
- * paths the sender encoded in their HELLO. Walking by path (the same scheme
- * `ensureEntityPath` uses for replay) means an entity materialised here is
- * the same entity replay will reuse — no duplicate user/peer rows.
+ * Find the local representation of the remote peer, or create it. The function
+ * uses the paths that the sender encoded in its HELLO. It walks by path, with
+ * the same scheme that `ensureEntityPath` uses for replay. An entity
+ * materialised here is therefore the same entity that replay reuses later, so
+ * no duplicate user or peer rows appear.
  *
- * Falls back to `user:<did>` / `peer:<peerId>` UIDs when the sender hasn't
- * set up local identity (test / solo flows).
+ * The function falls back to the UIDs `user:<did>` and `peer:<peerId>` when the
+ * sender has set up no local identity, as in a test flow or a solo flow.
  */
 const ensureRemotePeerEntity = (world: World, hello: HelloMessage): Entity => {
   const userPath = hello.userPath.length > 0 ? hello.userPath : [`user:${hello.agentDID}`]
@@ -291,9 +303,10 @@ const ensureRemotePeerEntity = (world: World, hello: HelloMessage): Entity => {
 }
 
 /**
- * Walk a UID path, creating any missing nodes silently. Runs `decorate` on
- * the leaf when (and only when) it was freshly created — pre-existing leaves
- * already carry their components from replay or earlier setup.
+ * Walk a UID path, and create every missing node silently. The function runs
+ * `decorate` on the leaf when, and only when, it created that leaf. A leaf that
+ * already existed already carries its components, from replay or from earlier
+ * setup.
  */
 const ensureAgentPath = (world: World, path: string[], decorate: (entity: Entity) => void): Entity => {
   let parent: Entity = world.worldRoot

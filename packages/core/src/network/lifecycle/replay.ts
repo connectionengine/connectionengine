@@ -1,23 +1,25 @@
 /**
- * Join-time catch-up — two halves, both streamed over the ordered `events`
- * channel before live traffic starts.
+ * Join-time catch-up. It has two halves. Both stream over the ordered `events`
+ * channel, before the live traffic starts.
  *
- * 1. **Event-log replay** (`streamEventLog`) — the host's authored events from
- *    the joiner's cursor onwards, in ordered chunks. The receiver applies each
- *    with `origin='network'` via the standard `applyAuthoredEnvelope` path
- *    (itself idempotent via `appendEventLog`). This reconstructs history: every
- *    component's existence, and the state it was created with.
+ * 1. **Event-log replay** (`streamEventLog`) — the authored events of the host,
+ *    from the cursor of the joiner onwards, in ordered chunks. The receiver
+ *    applies each event with `origin='network'`, through the standard
+ *    `applyAuthoredEnvelope` path, which is itself idempotent through
+ *    `appendEventLog`. This half reconstructs history: the existence of every
+ *    component, and the state that it was created with.
  * 2. **State snapshot** (`streamStateSnapshot`) — a point-in-time capture of
- *    every named entity and *all* of its components, regardless of channel.
- *    This is what carries *current* continuous state. Motion never authors, so
- *    replay can only ever reproduce the pose a component was created with, and
- *    the binary delta channel only ships entities that are currently dirty —
- *    leaving an entity at rest stale by however far it has moved.
+ *    every named entity, and of *all* of its components, whatever their
+ *    channel. This half carries the *current* continuous state. Motion never
+ *    authors, so replay can reproduce only the pose that a component was
+ *    created with. The binary delta channel sends only the entities that are
+ *    currently dirty, which leaves an entity at rest stale by however far it
+ *    has moved.
  *
- * Replay goes first, snapshot last: history, then present. The reverse order
- * would let a replayed creation event clobber the newer snapshot. Both are
- * idempotent sets and neither re-emits — everything applies with
- * `origin='network'`.
+ * Replay goes first, and the snapshot goes last: history, then the present. The
+ * opposite order would let a replayed creation event overwrite the newer
+ * snapshot. Both halves apply idempotent sets, and neither one emits again,
+ * because everything applies with `origin='network'`.
  */
 
 import type { AuthoredEvent, World } from '../../ecs/world'
@@ -44,8 +46,9 @@ export interface SnapshotMessage {
 export const DEFAULT_REPLAY_CHUNK = 256
 
 /**
- * Send the local world state to a freshly-joining peer. Returns false (and
- * sends nothing) when there is no addressable state to ship.
+ * Send the local world state to a peer that has just joined. The function
+ * returns false, and sends nothing, when the world holds no addressable state
+ * to send.
  */
 export const streamStateSnapshot = (world: World, endpoint: TransportEndpoint): boolean => {
   const snapshot = createSnapshot(world)
@@ -54,15 +57,16 @@ export const streamStateSnapshot = (world: World, endpoint: TransportEndpoint): 
   return true
 }
 
-/** Mark the end of the catch-up phase; the joiner resolves its join on this. */
+/** Mark the end of the catch-up phase. The joiner resolves its join on this
+ *  marker. */
 export const endReplay = (world: World, endpoint: TransportEndpoint): void => {
   endpoint.events.send({ type: 'replay-end', totalEvents: world.eventLog.length } satisfies ReplayEndMessage)
 }
 
 /**
- * Apply a bootstrap snapshot received from `fromPeer`. Merges — never clears
- * local state — and admits each write through the same gates an authored event
- * from that peer would face.
+ * Apply a bootstrap snapshot that arrived from `fromPeer`. The function merges,
+ * and never clears the local state. It admits each write through the same gates
+ * that an authored event from that peer must pass.
  */
 export const applyStateSnapshot = (world: World, snapshot: Snapshot, fromPeer: string, network?: Network): number => {
   applySnapshot(world, snapshot, { from: { author: fromPeer, network } })
@@ -70,10 +74,10 @@ export const applyStateSnapshot = (world: World, snapshot: Snapshot, fromPeer: s
 }
 
 /**
- * Stream the host's eventLog (from `fromIndex` onwards) over an endpoint as
- * ordered chunks. Does **not** send `replay-end` — the caller owns that marker,
- * because the state snapshot has to land between the last chunk and the end of
- * the catch-up phase.
+ * Stream the eventLog of the host over an endpoint, from `fromIndex` onwards,
+ * as ordered chunks. The function does **not** send `replay-end`. The caller
+ * owns that marker, because the state snapshot must land between the last chunk
+ * and the end of the catch-up phase.
  */
 export const streamEventLog = (
   world: World,
@@ -90,7 +94,8 @@ export const streamEventLog = (
   }
 }
 
-/** Apply one replay chunk to the world; returns how many events were newly applied. */
+/** Apply one replay chunk to the world. The function returns the number of
+ *  events that it applied for the first time. */
 export const applyReplayChunk = (
   world: World,
   fromPeer: string,

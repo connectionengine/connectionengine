@@ -13,6 +13,6 @@ router.get('/', (_req: Request, res: Response) => {
 })
 
 /**
- * Router to handle health check requests.
+ * The router that handles a health-check request.
  */
 export default router

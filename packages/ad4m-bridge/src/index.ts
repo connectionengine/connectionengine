@@ -1,21 +1,26 @@
 /**
- * @connectionengine/ad4m-bridge — minimal glue between Connection Engine and AD4M.
+ * @connectionengine/ad4m-bridge — the minimal glue between Connection Engine
+ * and AD4M.
  *
- * Three things:
- *   1. `createAd4mAgent(client)` — Ad4mClient agent → core's opaque Agent.
- *   2. `eventToLink` / `linkExpressionToEvent` — AuthoredEvent ↔ AD4M Link.
- *   3. `connectAd4m(world, perspective)` — outbound via `perspective.addLinks`,
- *      inbound via `addListener('link-added')` → applyAuthoredEnvelope.
+ * It supplies three things:
+ *   1. `createAd4mAgent(client)` — it converts the agent of an Ad4mClient into
+ *      the opaque Agent of core.
+ *   2. `eventToLink` and `linkExpressionToEvent` — they convert between an
+ *      AuthoredEvent and an AD4M Link.
+ *   3. `connectAd4m(world, perspective)` — it sends outbound events through
+ *      `perspective.addLinks`, and receives inbound events through
+ *      `addListener('link-added')`, which calls applyAuthoredEnvelope.
  *
- * Plus a convenience: `createAd4mRuntime(client, perspective)` wires all three.
+ * It also supplies one convenience function. `createAd4mRuntime(client,
+ * perspective)` attaches all three.
  *
- * AD4M handles identity, signing, transport, persistence, replication at the
- * Holochain layer. This bridge is intentionally tiny — most of its code is
- * the Link encoding.
+ * AD4M handles the identity, the signing, the transport, the persistence, and
+ * the replication, at the Holochain layer. Little remains for this bridge to
+ * do, and most of its code performs the Link encoding.
  *
- * Consumers that don't need AD4M never pull this package in; this package
- * depends on `@coasys/ad4m` so it's the only place AD4M's transitive deps
- * (Holochain client, base64-js, pako) are required.
+ * A consumer that does not need AD4M never installs this package. This package
+ * depends on `@coasys/ad4m`, so it is the only place that requires the
+ * transitive dependencies of AD4M: the Holochain client, base64-js, and pako.
  */
 
 export * from './agent'

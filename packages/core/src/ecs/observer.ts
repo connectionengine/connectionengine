@@ -1,12 +1,14 @@
 /**
- * Observer API — thin wrapper around bitECS observe + hook constructors.
+ * Observer API — a thin wrapper around the bitECS `observe` function and its
+ * hook constructors.
  *
- * Exposes onAdd / onRemove / onSet / onGet plus the boolean operators
- * (Or / And / Not / Any / All / None). Re-exports the bitECS API verbatim.
+ * It exposes onAdd, onRemove, onSet, and onGet, plus the boolean operators Or,
+ * And, Not, Any, All, and None. It re-exports the bitECS API unchanged.
  *
- * Observers vs reactors: observers are immediate synchronous hooks for
- * lightweight side effects (cache maintenance, constraint enforcement).
- * Reactors are reactive logic trees mounted via Solid (see system.ts).
+ * Observers differ from reactors. An observer is an immediate synchronous hook
+ * for a lightweight side effect, such as cache maintenance or constraint
+ * enforcement. A reactor is a reactive logic tree that Solid mounts. See
+ * system.ts.
  */
 
 import * as bitecs from 'bitecs'
@@ -16,7 +18,7 @@ import type { RelationDefinition } from './relation'
 
 export type ObserverTerm = ComponentDefinition | RelationDefinition<unknown> | bitecs.OpReturnType | bitecs.ComponentRef
 
-/** Convert our high-level definitions into the bitECS refs they wrap. */
+/** Convert a high-level definition into the bitECS ref that it wraps. */
 const toRef = (term: unknown): bitecs.ComponentRef => {
   if (term && typeof term === 'object') {
     if ('$ref' in term) return (term as ComponentDefinition).$ref

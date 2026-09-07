@@ -1,9 +1,9 @@
 /**
- * AD4M Agent → Connection Engine Agent.
+ * Convert an AD4M Agent into a Connection Engine Agent.
  *
- * Wraps the logged-in agent of an `Ad4mClient` into the opaque `Agent` shape
- * that core's `createWorld` requires. Signing is delegated to the AD4M agent's
- * own keypair via `agent.signMessage`.
+ * This module wraps the agent that logged in to an `Ad4mClient`, and gives it
+ * the opaque `Agent` shape that `createWorld` in core requires. It delegates
+ * the signing to the keypair of the AD4M agent, through `agent.signMessage`.
  */
 
 import type { Ad4mClient } from '@coasys/ad4m'

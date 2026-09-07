@@ -1,17 +1,18 @@
 /**
- * Governance — engine-native consensus-enforced rules (core subset).
+ * Governance — the engine-native rules that every peer enforces. This file
+ * holds the core subset.
  *
- * Constraints are ECS entities, replicated as data. `addConstraint` creates
- * an entity, attaches the appropriate ConstraintComponent, and links it to
- * a scope via `HasConstraint`. All peers receive the constraint via the
- * authored pipeline and enforce it locally.
+ * Constraints are ECS entities, and they replicate as data. `addConstraint`
+ * creates an entity, attaches the correct ConstraintComponent, and links it to
+ * a scope with `HasConstraint`. Every peer receives the constraint through the
+ * authored pipeline, and enforces it locally.
  *
- * Constraint kinds are a registry — `registerConstraintKind` adds a new kind.
- * Core ships three kinds (`credential`, `temporal`, `content`); other packages
- * (e.g. `@connectionengine/local`'s ZCAP capability constraint) compose by
- * registering their own kinds at module load. `validateEvent` walks the
- * registry rather than a hardcoded switch — adding a kind requires no edit
- * to validateEvent.
+ * A registry holds the constraint kinds, and `registerConstraintKind` adds a
+ * new one. Core includes three kinds: `credential`, `temporal`, and `content`.
+ * Another package composes with core by registering its own kinds at module
+ * load. The ZCAP capability constraint in `@connectionengine/local` does
+ * exactly that. `validateEvent` walks the registry instead of a hardcoded
+ * switch, so a new kind needs no edit to `validateEvent`.
  */
 
 import { Schema } from '../schema'
@@ -28,7 +29,7 @@ export const CredentialConstraintComponent = defineComponent({
   id: 'CredentialConstraint',
   schema: Schema.Object({
     requiredCredential: Schema.String({ default: '' }),
-    /** comma-separated list of ops: 'spawn,modify,delete' */
+    /** A comma-separated list of ops, such as 'spawn,modify,delete'. */
     operations: Schema.String({ default: 'spawn,modify,delete' })
   })
 })
@@ -39,7 +40,7 @@ export const TemporalConstraintComponent = defineComponent({
     minIntervalMs: Schema.Number({ default: 0 }),
     maxCountPerWindow: Schema.Number({ default: Number.POSITIVE_INFINITY }),
     windowMs: Schema.Number({ default: 60_000 }),
-    /** comma-separated predicate ids this rate-limits */
+    /** A comma-separated list of the predicate ids that this rule rate-limits. */
     appliesTo: Schema.String({ default: '' })
   })
 })
@@ -48,7 +49,7 @@ export const ContentConstraintComponent = defineComponent({
   id: 'ContentConstraint',
   schema: Schema.Object({
     componentType: Schema.String({ default: '' }),
-    /** JSON-encoded { fieldName: { min?, max?, pattern?, blocklist? } } */
+    /** A JSON-encoded map: { fieldName: { min?, max?, pattern?, blocklist? } }. */
     fieldConstraints: Schema.String({ default: '{}' })
   })
 })
@@ -61,7 +62,8 @@ export const HasConstraint = defineRelation({
 // ── Constraint kind registry ─────────────────────────────────────────────────-
 
 export interface ValidationContext {
-  /** External oracle — does the author DID hold the named credential? */
+  /** External oracle. It answers one question: does the author DID hold the
+   *  named credential? */
   hasCredential?: (did: string, credential: string) => boolean
 }
 
@@ -71,15 +73,16 @@ export interface ConstraintViolation {
 }
 
 export interface ConstraintKindEntry {
-  /** Stable name on the wire. */
+  /** Stable name, as it appears on the wire. */
   kind: string
-  /** The component carrying this kind's data. */
+  /** The component that carries the data of this kind. */
   component: ComponentDefinition
   /**
    * Validate one event against one resolved instance of this constraint kind.
-   * Push any violations. Use `world.eventLog` + `world.engine.clock` for stateful
-   * rules (temporal, rate-limits). The constraint scope is provided in case
-   * a kind cares about it (e.g. ownership-scoped rules).
+   * Push every violation that you find. Read `world.eventLog` and
+   * `world.engine.clock` for a stateful rule, such as a temporal rule or a rate
+   * limit. The caller supplies the constraint scope, in case the kind needs it,
+   * as an ownership-scoped rule does.
    */
   validate(args: {
     world: World
@@ -106,7 +109,7 @@ export const getConstraintKind = (kind: string): ConstraintKindEntry | undefined
 
 export const listConstraintKinds = (): ConstraintKindEntry[] => Array.from(kindRegistry.values())
 
-// ── Built-in kinds: credential / temporal / content ──────────────────────────-
+// ── Built-in kinds: credential, temporal, and content ────────────────────────-
 
 registerConstraintKind({
   kind: 'credential',
@@ -277,8 +280,9 @@ const constraintKindFor = (
 }
 
 /**
- * Walk the scope hierarchy (entity → BelongsTo parent → ... → world root) and
- * collect every constraint linked via HasConstraint, ordered most-specific first.
+ * Walk the scope hierarchy, from the entity through each BelongsTo parent to
+ * the world root. Collect every constraint that HasConstraint links to a scope
+ * on that path. The result puts the most specific constraint first.
  */
 export const resolveConstraints = (world: World, entity: Entity): ResolvedConstraint[] => {
   const out: ResolvedConstraint[] = []
@@ -295,7 +299,8 @@ export const resolveConstraints = (world: World, entity: Entity): ResolvedConstr
   return out
 }
 
-/** Enumerate entities on this world carrying any registered constraint component. */
+/** Enumerate the entities on this world that carry a registered constraint
+ *  component. */
 const constraintEntities = (world: World): Entity[] => {
   const set = new Set<Entity>()
   for (const entry of kindRegistry.values()) {
@@ -314,10 +319,10 @@ export interface ValidationResult {
 }
 
 /**
- * Validate an incoming authored event against every applicable constraint —
- * walks the entity's scope chain, looks up each constraint's kind in the
- * registry, calls the kind's `validate` function. Suitable as
- * `network.validateAuthored` or as the `validate` option to
+ * Validate an incoming authored event against every applicable constraint. The
+ * function walks the scope chain of the entity, looks up the kind of each
+ * constraint in the registry, and calls the `validate` function of that kind.
+ * Use it as `network.validateAuthored`, or as the `validate` option of
  * `connectInMemory`.
  */
 export const validateEvent = (

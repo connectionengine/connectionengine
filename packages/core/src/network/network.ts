@@ -1,16 +1,17 @@
 /**
- * Network — sync topology + per-world registry.
+ * Network — the sync topology, and the per-world registry that holds it.
  *
- * A `Network` is a connection set + outbound publish hooks + an inbound
- * governance gate. Many networks per world for spatial segmentation, voice /
- * video channels, etc. The world's event log is canonical; networks don't
- * have their own histories. A mutation is routed to one or more networks by
- * the mutation pipeline (today: broadcast to all). Connections in each
- * network ship the same events through their own underlying transports.
+ * A `Network` holds a connection set, the outbound publish hooks, and an
+ * inbound governance gate. A world can hold many networks, for spatial
+ * segmentation, for voice and video channels, and for similar purposes. The
+ * event log of the world is canonical, and a network holds no history of its
+ * own. The mutation pipeline routes each mutation to one or more networks, and
+ * today it broadcasts to all of them. The connections of each network carry the
+ * same events through their own underlying transports.
  *
- * Networks live in a per-world registry keyed off `WeakMap<World, …>` rather
- * than as a field on `World` itself — networking is a network-layer concern,
- * and `ecs/world.ts` shouldn't name it.
+ * The networks live in a per-world registry, keyed by `WeakMap<World, …>`,
+ * rather than in a field on `World` itself. Networking is a network-layer
+ * concern, and `ecs/world.ts` must not name it.
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
@@ -20,20 +21,21 @@ import type { TransportChannel } from './transport'
 // ── Connection ────────────────────────────────────────────────────────────────
 
 /**
- * A live transport link to a peer, scoped to ONE Network. The pair of
- * channels exposed by the underlying `TransportEndpoint` plus session-level
- * metadata (remoteDID, local peer entity once known).
+ * A live transport link to a peer, scoped to ONE Network. It holds the pair of
+ * channels that the underlying `TransportEndpoint` exposes, plus the
+ * session-level metadata: the remoteDID, and the local peer entity once the
+ * session knows it.
  *
  *   - `connection.events.send(envelope|controlMessage)` — reliable, ordered.
  *   - `connection.stream.send(arrayBuffer)`             — binary runtime packets.
  *
- * Two peers may have multiple Connections between them — one per Network the
- * pair share. Whether multiple Networks share a single underlying transport
- * is a transport-layer concern; the engine doesn't track it.
+ * Two peers can hold several Connections between them, one for each Network
+ * that the pair share. Whether several Networks share one underlying transport
+ * is a transport-layer concern, and the engine does not track it.
  */
 export interface Connection {
   peer: Entity
-  /** Remote agent DID — `'did:unknown:pending'` until the hello is received. */
+  /** Remote agent DID. It holds `'did:unknown:pending'` until the hello arrives. */
   remoteDID: string
   readonly events: TransportChannel
   readonly stream: TransportChannel<ArrayBuffer>
@@ -51,9 +53,9 @@ export interface Network {
   publishAuthored?: (envelope: AuthoredEnvelope) => void
   /** Outbound publish hook for runtime mutations on this network. */
   publishRuntime?: (dirty: Map<string, Set<Entity>>) => void
-  /** Inbound governance gate. Returning false drops the event. */
+  /** Inbound governance gate. A return of false drops the event. */
   validateAuthored?: (event: AuthoredEvent) => boolean
-  /** Close every connection and tear down per-network state. */
+  /** Close every connection, and release the per-network state. */
   close(): void
 }
 
@@ -81,11 +83,12 @@ export const getNetwork = (world: World, id: string): Network | undefined => reg
 export const DEFAULT_NETWORK_ID = 'default'
 
 export interface AddNetworkOptions {
-  /** Stable id. Used as the key in the world's network registry. */
+  /** Stable id. It serves as the key in the network registry of the world. */
   id: string
 }
 
-/** Add a network to a world. Throws if a network with the same id already exists. */
+/** Add a network to a world. The function throws when a network with the same
+ *  id already exists. */
 export const addNetwork = (world: World, options: AddNetworkOptions): Network => {
   const registry = registryFor(world)
   if (registry.has(options.id)) {
@@ -103,7 +106,7 @@ export const addNetwork = (world: World, options: AddNetworkOptions): Network =>
   return network
 }
 
-/** Remove a network from a world, closing its connections. */
+/** Remove a network from a world, and close its connections. */
 export const removeNetwork = (world: World, id: string): void => {
   const registry = registryFor(world)
   const network = registry.get(id)
@@ -112,14 +115,15 @@ export const removeNetwork = (world: World, id: string): void => {
   registry.delete(id)
 }
 
-/** Get (or lazily create) the default network. Used by single-network flows. */
+/** Get the default network, and create it lazily when it does not exist. A
+ *  single-network flow uses this function. */
 export const ensureDefaultNetwork = (world: World): Network => {
   const existing = getNetwork(world, DEFAULT_NETWORK_ID)
   if (existing) return existing
   return addNetwork(world, { id: DEFAULT_NETWORK_ID })
 }
 
-// Cleanup hook — when a world is destroyed, close + drop its networks.
+// Cleanup hook. When the engine destroys a world, close its networks and drop them.
 onWorldDestroy((world) => {
   const registry = networksByWorld.get(world)
   if (!registry) return

@@ -1,15 +1,16 @@
 /**
- * Transport — abstract endpoint contract + in-memory implementation +
- * per-component runtime config.
+ * Transport — the abstract endpoint contract, the in-memory implementation, and
+ * the per-component runtime config.
  *
- * `TransportEndpoint` is the wire-mechanism abstraction: how bytes get from
- * one peer to another. WebRTC DataChannels, WebSockets, and the in-memory
- * channel below all satisfy it. Session protocol (handshake, replay,
- * bookkeeping) lives in `lifecycle/` one layer up.
+ * `TransportEndpoint` abstracts the wire mechanism, which moves bytes from one
+ * peer to another. WebRTC DataChannels, WebSockets, and the in-memory channel
+ * below all satisfy it. The session protocol — handshake, replay, and
+ * bookkeeping — lives one layer up, in `lifecycle/`.
  *
- * `connectInMemory(a, b)` is the test/solo-mode shortcut: pre-wires two
- * worlds without going through the formal handshake — useful when you just
- * want envelope-level fanout between worlds in-process.
+ * `createMemoryTransport()` here returns a paired endpoint for tests. For the
+ * test and solo-mode shortcut that links two worlds without the formal
+ * handshake, see `connectInMemory(a, b)` in `lifecycle/connect-memory.ts`. Use
+ * it when you need only envelope-level fanout between worlds in one process.
  */
 
 import type { ComponentDefinition } from '../ecs/component'
@@ -17,8 +18,8 @@ import type { ComponentDefinition } from '../ecs/component'
 // ── Endpoint contract ────────────────────────────────────────────────────────-
 
 /**
- * A single uni-typed pub/sub channel. One transport endpoint carries two of
- * them, with different delivery semantics — see `TransportEndpoint`.
+ * One uni-typed pub/sub channel. Each transport endpoint carries two of them,
+ * with different delivery semantics. See `TransportEndpoint`.
  */
 export interface TransportChannel<T = unknown> {
   send(payload: T): void
@@ -26,23 +27,25 @@ export interface TransportChannel<T = unknown> {
 }
 
 /**
- * A bi-directional link to one remote peer, exposing two separately-shaped
- * channels:
+ * A bi-directional link to one remote peer. It exposes two channels with
+ * different shapes:
  *
- *   - **`events`** — reliable, ordered. Carries control messages (hello,
- *     replay, leave, bind) and authored envelopes (`{ events, fromPeer }`).
- *     Map to TCP / WebSocket / a reliable QUIC stream / an ordered+reliable
- *     WebRTC `RTCDataChannel`.
+ *   - **`events`** — reliable and ordered. It carries the control messages
+ *     (hello, replay, leave, bind) and the authored envelopes
+ *     (`{ events, fromPeer }`). Map it to TCP, to a WebSocket, to a reliable
+ *     QUIC stream, or to an ordered and reliable WebRTC `RTCDataChannel`.
  *
- *   - **`stream`** — `ArrayBuffer`-only, typically unreliable / unordered,
- *     optimised for cadence over delivery guarantees. Carries the binary
- *     runtime packets emitted by the per-connection `BinaryChannel`. Map to
- *     QUIC datagrams / an unordered+unreliable WebRTC data channel.
+ *   - **`stream`** — `ArrayBuffer` only. It is typically unreliable and
+ *     unordered, and it favours cadence over delivery guarantees. It carries
+ *     the binary runtime packets that the per-connection `BinaryChannel`
+ *     emits. Map it to QUIC datagrams, or to an unordered and unreliable
+ *     WebRTC data channel.
  *
- * Concrete implementations (WebRTC, WebSocket, in-memory, AD4M Perspective,
- * QUIC) decide what underlying mechanism backs each channel. A transport
- * with only one wire (WebSocket-only) can satisfy both slots with the same
- * underlying connection — it just doesn't get the loss-tolerance win.
+ * Each concrete implementation — WebRTC, WebSocket, in-memory, AD4M
+ * Perspective, or QUIC — decides which mechanism backs each channel. A
+ * transport with only one wire, such as a WebSocket-only transport, can fill
+ * both slots from the same underlying connection. It does not gain the
+ * loss-tolerance benefit.
  */
 export interface TransportEndpoint {
   readonly events: TransportChannel
@@ -59,15 +62,17 @@ export interface MemoryTransportPair {
 }
 
 export interface MemoryTransportOptions {
-  /** Optional simulated latency in ms (default: queueMicrotask). */
+  /** Optional simulated latency, in milliseconds. It defaults to a
+   *  queueMicrotask delivery. */
   latencyMs?: number
 }
 
 /**
  * Create a paired in-memory transport. Each endpoint delivers to the other
- * after a microtask (or `latencyMs` if set). Both `events` and `stream`
- * channels are fully reliable in-process — the dual surface exists so the
- * lifecycle layer reads the same on real wire transports.
+ * after one microtask, or after `latencyMs` when the caller sets it. In one
+ * process, the `events` channel and the `stream` channel are both fully
+ * reliable. The two-channel surface exists so that the lifecycle layer reads
+ * the same way on a real wire transport.
  */
 export const createMemoryTransport = (options: MemoryTransportOptions = {}): MemoryTransportPair => {
   type Side<T> = { msg: Set<(p: T) => void> }
@@ -130,25 +135,27 @@ export const createMemoryTransport = (options: MemoryTransportOptions = {}): Mem
 // ── Per-component runtime transport configuration ────────────────────────────-
 
 /**
- * Per-runtime-component transport tuning. Consumed by per-connection binary
- * channels (`lifecycle/binary-channel.ts`) to throttle outbound publishes
- * + schedule periodic full-state snapshots.
+ * Transport tuning for one runtime component. The per-connection binary
+ * channels in `lifecycle/binary-channel.ts` read it. They use it to throttle
+ * the outbound publishes, and to schedule the periodic full-state snapshots.
  */
 export interface RuntimeTransportConfig {
-  /** Component IDs this config applies to. */
+  /** The component IDs that this config applies to. */
   componentIds: string[]
-  /** Target publish rate in Hz. Defaults to the simulation tick rate (no throttle). */
+  /** Target publish rate, in Hz. It defaults to the simulation tick rate, which
+   *  applies no throttle. */
   rate?: number
-  /** Ticks between full state syncs (vs deltas only). Provides convergence after packet loss. Default 300. */
+  /** Ticks between two full state syncs, as opposed to deltas alone. A full
+   *  sync restores convergence after packet loss. It defaults to 300. */
   fullSyncInterval?: number
-  /** Whether receivers should interpolate between updates. Default true. */
+  /** Whether a receiver should interpolate between updates. It defaults to true. */
   interpolation?: boolean
 }
 
 /**
- * Resolve config for a specific component. `simRate` is the simulation tick
- * rate in Hz (`1 / world.engine.fixedTimeStep`) — used as the default for `rate`
- * when no override is supplied.
+ * Resolve the config for one component. `simRate` is the simulation tick rate
+ * in Hz, which equals `1 / world.engine.fixedTimeStep`. It supplies the default
+ * for `rate` when the caller gives no override.
  */
 export const resolveRuntimeConfig = (
   configs: RuntimeTransportConfig[],
@@ -164,5 +171,6 @@ export const resolveRuntimeConfig = (
   }
 }
 
-/** Test helper: drain the microtask queue so queued receives land. */
+/** Test helper. It drains the microtask queue, so that the queued receives
+ *  complete. */
 export const flushAsync = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))

@@ -1,10 +1,10 @@
 /**
- * Schema-driven binary runtime codec — no strings on the wire.
+ * Schema-driven binary runtime codec. It puts no strings on the wire.
  *
- * **Primary API: `createBinaryPipeline(world, components, options?)`** returns
- * a paired `{ write, read }` codec that share one schema and persistent
- * shadow-map state. Use the pipeline for both sides of any transport —
- * sender calls `.write(metadata, entries)`, receiver calls
+ * **Primary API: `createBinaryPipeline(world, components, options?)`**. It
+ * returns a paired `{ write, read }` codec. The two halves share one schema and
+ * one persistent shadow-map state. Use the pipeline on both sides of any
+ * transport. The sender calls `.write(metadata, entries)`. The receiver calls
  * `.read(buffer, resolveEntity)`.
  *
  * Wire format:
@@ -16,22 +16,23 @@
  *       [u8/u16/u32 propMask]
  *       for each set bit in propMask: prop payload (raw or compressed)
  *
- * Per-prop change masks come from the shadow map: floats compared with epsilon
- * tolerance, only changed props written. An entity with no changes across any
- * component produces zero bytes (rewind kicks in). Force a full send via
- * `pipeline.write(meta, entries, true)` or after `pipeline.resetShadow()`.
+ * The per-prop change masks come from the shadow map. The codec compares floats
+ * with an epsilon tolerance, and writes only the props that changed. An entity
+ * with no change across any component produces zero bytes, because the rewind
+ * runs. Force a full send with `pipeline.write(meta, entries, true)`, or after
+ * a call to `pipeline.resetShadow()`.
  *
- * Optional per-field compression — `Vec3 → 3 × int16`, `Quat → smallest-three`
- * — is opt-in via the `compression` option (see `compression.ts` and the
- * `Prop` discriminator below). Compressed fields collapse multi-axis groups
- * into single props with single mask bits.
+ * Per-field compression is optional, and you opt in through the `compression`
+ * option. Two schemes exist: `Vec3 → 3 × int16`, and `Quat → smallest-three`.
+ * See `compression.ts` and the `Prop` discriminator below. A compressed field
+ * collapses a multi-axis group into one prop with one mask bit.
  *
- * Schema is **ordered registration**: both sides agree out-of-band on the
- * component order (handshake responsibility). Position in the array = wire
- * index.
+ * The schema uses **ordered registration**. Both sides agree on the component
+ * order out of band, which the handshake takes responsibility for. The position
+ * of a component in the array is its wire index.
  *
- * Authored events use a separate string-shaped codec in `codec.ts`
- * (low-frequency, value-JSON-dominated payload).
+ * Authored events use a separate string-shaped codec, in `codec.ts`. That
+ * channel runs at low frequency, and JSON values dominate its payload.
  */
 
 import type { TypedArray } from '../maths/common'
@@ -72,9 +73,9 @@ import {
 // ── Prop model ───────────────────────────────────────────────────────────────-
 
 /**
- * A logical wire slot for one component. Either a single typed array OR a
- * grouped + compressed multi-axis field (Vec3, Quat). Change masks index by
- * Prop position, not by underlying typed array.
+ * A logical wire slot for one component. It holds either one typed array, or a
+ * grouped and compressed multi-axis field, such as a Vec3 or a Quat. A change
+ * mask indexes by Prop position, not by the underlying typed array.
  */
 type Prop =
   | { kind: 'raw'; array: TypedArray }
@@ -174,11 +175,11 @@ const readMaskOf = (width: 1 | 2 | 4) => (width === 1 ? readUint8 : width === 2 
 // ── Per-prop write/read ──────────────────────────────────────────────────────-
 
 /**
- * Write one prop iff it has changed since the last shadowed value. Returns
- * whether a write happened. For grouped (compressed) props, "changed" means
- * any of the underlying typed arrays differs from its shadow — we test
- * non-destructively, then if any changed write the packed payload + commit
- * shadow for all axes.
+ * Write one prop if, and only if, it changed since the last shadowed value. The
+ * function returns whether it wrote. For a grouped, compressed prop, "changed"
+ * means that any of the underlying typed arrays differs from its shadow. The
+ * function tests without side effects. If any axis changed, it then writes the
+ * packed payload, and commits the shadow for every axis.
  */
 const writeProp = (view: ViewCursor, prop: Prop, entity: number, forceFullSync: boolean): boolean => {
   if (prop.kind === 'raw') return writePropIfChanged(view, prop.array, entity, forceFullSync)
@@ -284,10 +285,11 @@ const readComponent = (
   entity: number,
   compressionForComponent: Record<string, FieldCompressionSpec> | undefined
 ): void => {
-  // Existence is governed: a delta may modify a component, never create one.
-  // An absent component decodes into scratch slot 0, so the cursor still
-  // advances and the rest of the packet stays readable. Its creating event is
-  // already in flight on the authored channel, carrying the initial state.
+  // Existence is governed. A delta may modify a component, and never creates
+  // one. An absent component decodes into scratch slot 0, so the cursor still
+  // advances, and the rest of the packet stays readable. The creating event of
+  // that component is already in flight on the authored channel, and it carries
+  // the initial state.
   if (entity !== 0 && !hasComponent(world, entity, component)) entity = 0
   const props = flattenProps(world, component, compressionForComponent)
   const width = maskWidthFor(props.length)
@@ -321,9 +323,10 @@ export interface BinaryPipeline {
 }
 
 export interface CreateBinaryPipelineOptions {
-  /** Initial buffer size for the writer's cursor. Grows on demand. Default 100 KiB. */
+  /** Initial buffer size for the cursor of the writer. It grows on demand, and
+   *  defaults to 100 KiB. */
   bufferBytes?: number
-  /** Per-component-id → per-field compression spec. Opt-in. */
+  /** A map from component id to a per-field compression spec. You opt in to it. */
   compression?: CompressionConfig
 }
 
@@ -400,6 +403,6 @@ export const createBinaryPipeline = (
   }
 }
 
-// Re-export for external use
+// Re-export these for use outside this module.
 export type { CompressionConfig, FieldCompressionSpec, Vec3Int16Spec, QuatSmallest3Spec } from './compression'
 export { VEC3_INT16_BYTES, QUAT_SMALLEST3_BYTES }

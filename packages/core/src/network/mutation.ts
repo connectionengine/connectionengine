@@ -1,31 +1,35 @@
 /**
- * Mutation pipeline — flush + apply, no crypto.
+ * Mutation pipeline — flush and apply. It holds no crypto.
  *
- * Lives in `network/` because the entire pipeline (authored queue, event log,
- * dispatch, receive-and-apply) only exists because state is distributed.
+ * It lives in `network/`, because the whole pipeline exists only as a
+ * consequence of distributed state. That includes the authored queue, the event
+ * log, the dispatch, and the receive-and-apply path.
  *
  * Two paths share one schema:
- *   `event` channel    — reliable, governance-validated, event-sourced. Local
- *                        writes enqueue { entity, predicate, op, value } in
- *                        world.authoredQueue. flushAuthored resolves paths,
- *                        stamps {author, timestamp}, appends to the world's
- *                        event log (idempotent), then dispatches the envelope
- *                        across every network reachable from the entity (via
- *                        `routeNetworks`).
- *   `continuous` channel — binary, authority-checked. Local writes set dirty
- *                        flags; flushRuntime drains and dispatches the dirty
- *                        map to each routed network's publishRuntime hook.
+ *   `event` channel      — reliable, governance-validated, and event-sourced. A
+ *                        local write queues { entity, predicate, op, value } in
+ *                        world.authoredQueue. flushAuthored then resolves the
+ *                        paths, stamps { author, timestamp }, appends to the
+ *                        event log of the world, which is idempotent, and
+ *                        dispatches the envelope across every network that
+ *                        `routeNetworks` reaches from the entity.
+ *   `continuous` channel — binary, and authority-checked. A local write sets a
+ *                        dirty flag. flushRuntime drains the dirty map and
+ *                        dispatches it to the publishRuntime hook of each
+ *                        routed network.
  *
  * Receive paths:
- *   `event` — applyAuthoredEnvelope (here). Runtime mode verifies + unwraps
- *             before calling. Per-network governance gate filters; the
- *             authority module's standing check (`checkAuthorityChangeStanding`)
- *             runs inline for `AuthoritativeFor` events.
- *   `continuous` — the binary pipeline reads directly into SoA stores; no
- *                  separate apply function.
+ *   `event`      — applyAuthoredEnvelope, in this file. The runtime mode
+ *                  verifies and unwraps the envelope before it calls that
+ *                  function. The per-network governance gate filters the
+ *                  events. The standing check of the authority module,
+ *                  `checkAuthorityChangeStanding`, runs inline for every
+ *                  `AuthoritativeFor` event.
+ *   `continuous` — the binary pipeline reads straight into the SoA stores. It
+ *                  needs no separate apply function.
  *
- * The event log is one canonical history per world. Networks are sync
- * topology, not data space — same events, different connections.
+ * The event log is one canonical history per world. Networks are sync topology,
+ * not data space. They carry the same events over different connections.
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
@@ -39,9 +43,9 @@ import type { Network } from './network'
 import { getNetwork, getNetworks } from './network'
 
 /**
- * Routing strategy: which networks receive a mutation for the given entity?
- * Today: broadcast-to-all. Spatial-segmentation will replace this in a higher
- * layer.
+ * Routing strategy. It answers one question: which networks receive a mutation
+ * for the given entity? Today it broadcasts to all of them. A higher layer will
+ * replace it with spatial segmentation.
  */
 const routeNetworks = (world: World, _entity: Entity): Network[] => {
   void _entity
@@ -50,20 +54,20 @@ const routeNetworks = (world: World, _entity: Entity): Network[] => {
 
 // ── Predicate resolution ─────────────────────────────────────────────────────-
 //
-// Components and relations are module-level global singletons; resolving a
-// predicate id from an incoming event is just a registry lookup.
+// Components and relations are module-level global singletons. Resolution of a
+// predicate id from an incoming event is therefore only a registry lookup.
 
 const findComponent = (id: string): ComponentDefinition | undefined => getComponentById(id)
 
 const findRelation = (name: string): RelationDefinition<unknown> | undefined => getRelationByName(name)
 
-/** Iterate every component ever defined (for snapshot / walks). */
+/** Iterate every component ever defined. Snapshots and tree walks use it. */
 export const worldComponents = (): ComponentDefinition[] => allComponents()
 
 /** Iterate every relation ever defined. */
 export const worldRelations = (): RelationDefinition<unknown>[] => allRelations()
 
-// ── Event log append (idempotent on signature) ───────────────────────────────-
+// ── Event log append. It is idempotent on the event signature. ───────────────-
 
 export const eventSignature = (e: AuthoredEvent): string =>
   `${e.author}|${e.timestamp}|${e.op}|${e.predicate}|${e.entityPath.join('/')}|${JSON.stringify(e.value ?? null)}`
@@ -82,26 +86,27 @@ export const hasEventBeenSeen = (world: World, event: AuthoredEvent): boolean =>
 // ── Flush ─────────────────────────────────────────────────────────────────────
 
 /**
- * Drain authored queue, resolve paths, stamp author+timestamp, append to the
- * world's event log, dispatch the envelope across every routed network. Call
- * at end of tick.
+ * Drain the authored queue. Resolve the paths. Stamp the author and the
+ * timestamp. Append to the event log of the world. Dispatch the envelope across
+ * every routed network. Call this function at the end of the tick.
  *
- * Network routing today is broadcast-to-all (see `routeNetworks`). The hook
- * exists so spatial-segmentation can later restrict per-entity.
+ * Network routing broadcasts to all networks today. See `routeNetworks`. That
+ * hook exists so that spatial segmentation can later restrict the set per
+ * entity.
  */
 export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
   if (world.authoredQueue.length === 0) return undefined
   const events: AuthoredEvent[] = []
-  // We group events by their per-entity routing decision so each network only
-  // receives what's relevant. Today routing is broadcast — the per-network
-  // grouping collapses to "every event goes to every network".
+  // Group the events by their per-entity routing decision, so that each network
+  // receives only the relevant ones. Routing broadcasts today, so the
+  // per-network grouping collapses: every event goes to every network.
   const eventsByEntity: Array<{ entity: Entity; event: AuthoredEvent }> = []
   const now = world.engine.clock.now()
   const author = world.localAgent.did
   for (const queued of world.authoredQueue) {
     if (queued.origin !== 'local') continue
     const path = getEntityPath(world, queued.entity)
-    if (path.length === 0) continue // anonymous entity — not addressable on the wire
+    if (path.length === 0) continue // anonymous entity. The wire cannot address it.
     let value: unknown = queued.value
     if (value && typeof value === 'object' && 'target' in value) {
       const targetPath = getEntityPath(world, (value as { target: Entity }).target)
@@ -122,8 +127,8 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
   }
   world.authoredQueue.length = 0
   if (events.length === 0) return undefined
-  // Dispatch per entity through `routeNetworks`. Today broadcast-to-all, so
-  // we collapse to one envelope per network for efficiency.
+  // Dispatch per entity through `routeNetworks`. It broadcasts to all networks
+  // today, so collapse the result to one envelope per network for efficiency.
   const perNetwork = new Map<string, AuthoredEvent[]>()
   for (const { entity, event } of eventsByEntity) {
     for (const network of routeNetworks(world, entity)) {
@@ -142,8 +147,9 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
 }
 
 /**
- * Drain the runtime dirty set and publish to every routed network's binary
- * channel. Returns the snapshot for inspection.
+ * Drain the runtime dirty set, and publish it to the binary channel of every
+ * routed network. The function returns the snapshot, so that a caller can
+ * inspect it.
  */
 export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined => {
   if (world.runtimeDirty.size === 0) return undefined
@@ -159,7 +165,7 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
     entities.clear()
   }
   if (snapshot.size === 0) return undefined
-  // Group dirty entries per network using routeNetworks. Today broadcast.
+  // Group the dirty entries per network with routeNetworks. It broadcasts today.
   const perNetwork = new Map<string, Map<string, Set<Entity>>>()
   for (const [componentId, entities] of snapshot) {
     for (const entity of entities) {
@@ -189,17 +195,19 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
 // ── Receive + apply ───────────────────────────────────────────────────────────
 
 /**
- * Apply an authored envelope received over a network. The runtime mode is
- * responsible for verifying signatures / unwrapping before calling this. If
- * `network` is provided, its `validateAuthored` gate runs per event.
+ * Apply an authored envelope that arrived over a network. The runtime mode must
+ * verify the signatures and unwrap the envelope before it calls this function.
+ * When the caller supplies `network`, the `validateAuthored` gate of that
+ * network runs for each event.
  */
 export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope, network?: Network): void => {
   const gate = network?.validateAuthored
   for (const event of envelope.events) {
     if (gate && !gate(event)) continue
-    // Authority transfers must come from a peer with standing (owner-user's
-    // peer or current authority holder). Direct call into the authority module
-    // — both live in network/, no cross-layer plumbing.
+    // An authority transfer must come from a peer that holds standing. That
+    // means a peer of the owner-user, or the current authority holder. This is
+    // a direct call into the authority module. Both modules live in network/,
+    // so it needs no cross-layer plumbing.
     if (checkAuthorityChangeStanding(world, event) !== undefined) continue
     if (!appendEventLog(world, event)) continue
     applyEvent(world, event)

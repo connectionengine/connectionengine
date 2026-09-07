@@ -1,15 +1,18 @@
 /**
- * createAd4mRuntime — one-call wiring for an AD4M-backed Connection Engine world.
+ * createAd4mRuntime — a one-call setup for an AD4M-backed Connection Engine
+ * world.
  *
  *   const ad4mClient = new Ad4mClient(...)
  *   const perspective = await ad4mClient.perspective.byUUID(uuid)
  *   const { world, agent, transport } = await createAd4mRuntime(ad4mClient, perspective)
- *   // ... use world; AD4M handles identity + sync + persistence
- *   await transport.close() // on shutdown
+ *   // ... use the world. AD4M handles the identity, the sync, and the
+ *   // persistence.
+ *   await transport.close() // call this at shutdown
  *
- * Application-level governance (beyond AD4M's executor-level capabilities) is
- * not wired here — compose your own `world.network.validateAuthored` after
- * createAd4mRuntime returns.
+ * This function attaches no application-level governance, which means anything
+ * beyond the executor-level capabilities of AD4M. Set the `validateAuthored`
+ * gate of your own network after `createAd4mRuntime` returns. Reach that
+ * network with `ensureDefaultNetwork(world)`.
  */
 
 import type { Ad4mClient, PerspectiveProxy } from '@coasys/ad4m'

@@ -1,13 +1,13 @@
 /**
- * AuthoredEvent ↔ AD4M Link / LinkExpression encoding.
+ * Encoding between an AuthoredEvent and an AD4M Link or LinkExpression.
  *
- * v0 encoding — one Link per event:
+ * The v0 encoding uses one Link per event:
  *   source    = `cengine:event:<JSON entityPath>`
- *   predicate = `<op>:<predicate>`     (e.g. `set:Health`)
- *   target    = JSON-encoded value
+ *   predicate = `<op>:<predicate>`, such as `set:Health`
+ *   target    = the JSON-encoded value
  *
- * Author + timestamp + signature live on the LinkExpression wrapper that AD4M
- * adds when the link enters a Perspective.
+ * The author, the timestamp, and the signature live on the LinkExpression
+ * wrapper. AD4M adds that wrapper when the link enters a Perspective.
  */
 
 import { Link, type LinkExpression } from '@coasys/ad4m'

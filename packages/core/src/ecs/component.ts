@@ -1,54 +1,57 @@
 /**
- * ComponentDefinition — schema-driven, SHACL-shape-bearing.
+ * ComponentDefinition — schema-driven, and it carries a SHACL shape.
  *
- * One `defineComponent({ id, label, schema, sync? })` produces:
- *   - SoA stores (typed arrays) for SoA-tagged fields (Vec3, Quat, Float32, ...).
- *     These are spread directly onto the ComponentDefinition object — so you
- *     can write `Transform.position.x[eid]` for the bitECS-style hot path with
- *     zero indirection.
- *   - per-entity instance store for value-typed fields (string, boolean, ...).
- *     Lives on the Engine, keyed by component+entity.
- *   - a ComponentSchema (jsonSchema + shaclShape + channel) attached to the
- *     definition as `$componentSchema` for replication metadata.
+ * One `defineComponent({ id, label, schema, sync? })` produces three things:
+ *   - SoA stores (typed arrays) for the SoA-tagged fields (Vec3, Quat,
+ *     Float32, ...). They go directly onto the ComponentDefinition object, so
+ *     `Transform.position.x[eid]` gives the bitECS-style hot path with no
+ *     indirection.
+ *   - A per-entity instance store for the value-typed fields (string, boolean,
+ *     ...). It lives on the Engine, keyed by component and entity.
+ *   - A ComponentSchema (jsonSchema + shaclShape). It holds the replication
+ *     metadata, and attaches to the definition as `$componentSchema`.
  *
- * Definitions are module-level singletons — global, not per-engine. The same
- * `ComponentDefinition` object is shared across every engine that uses the
- * component, with per-engine storage in `engine.componentStores`.
+ * Definitions are module-level singletons. They are global, not per-engine.
+ * Every engine that uses the component shares one `ComponentDefinition`
+ * object. Per-engine storage lives in `engine.componentStores`.
  *
  * Storage shape:
- *   - SoA arrays    → on the definition itself, single source of truth, shared
- *                     across every engine that uses the component.
- *   - Instance map  → on the engine, per (component, entity). Stable object
+ *   - SoA arrays    → on the definition itself. One source of truth, shared by
+ *                     every engine that uses the component.
+ *   - Instance map  → on the engine, per (component, entity). One stable object
  *                     reference per entity.
  *
- * `getComponent` returns a stable per-entity object: the instance store itself
- * for value-only components, otherwise a cached view bag delegating to the SoA
- * arrays (and, for mixed components, to the instance store as well).
+ * `getComponent` returns a stable per-entity object. For a value-only
+ * component it returns the instance store itself. Otherwise it returns a cached
+ * view bag that delegates to the SoA arrays, and, for a mixed component, to the
+ * instance store as well.
  *
  * How a component replicates follows from its schema, on one rule:
  *
  *   **Existence is governed. Values are governed only where they are discrete.**
  *
- * Creating or removing any synced component authors an event, whatever its
- * schema — that is causal. So does writing a value-typed field. The creating
- * event carries the whole component, so even its initial SoA state passes the
- * gate. Only writes to SoA fields on a component that already exists escape:
- * those ride the binary delta channel (`hasSyncedSoA`), which may modify a
- * component but never create one (enforced in `network/binary.ts`).
+ * Creation or removal of any synced component authors an event, whatever the
+ * schema holds, because creation and removal are causal. A write to a
+ * value-typed field authors an event too. The creating event carries the whole
+ * component, so even the initial SoA state passes the gate. Only one case
+ * escapes: a write to the SoA fields of a component that already exists. Those
+ * writes ride the binary delta channel (see `hasSyncedSoA`). That channel may
+ * modify a component, but it never creates one, which `network/binary.ts`
+ * enforces.
  *
- * Continuous constraints belong in systems, which make an invalid state
- * unreachable rather than inadmissible. The cost of mixing both kinds of field
- * in one component is that the halves travel at different cadences, so
- * `getComponent` can return an object whose halves are from different moments.
+ * Continuous constraints belong in systems. A system makes an invalid state
+ * unreachable rather than inadmissible. Mixing both kinds of field in one
+ * component has one cost: the two halves travel at different cadences, so
+ * `getComponent` can return an object whose halves come from different moments.
  *
  * All meta fields on the definition use a `$` prefix (`$id`, `$schema`,
- * `$sync`, ...) so the bare keys are reserved for schema fields.
+ * `$sync`, ...). The bare keys therefore stay reserved for schema fields.
  *
- * Extension properties: any field on the `defineComponent` options object
- * that isn't a reserved key (`id`, `label`, `schema`, `sync`) is spread
- * straight onto the definition with its type preserved — used by built-in
- * components to attach their own indexes (e.g. `UIDComponent.nameCache`,
- * `UIDComponent.uidOf`) and available for user code to do the same.
+ * Extension properties: `defineComponent` spreads any field on the options
+ * object that is not a reserved key (`id`, `label`, `schema`, `sync`) straight
+ * onto the definition, and preserves its type. Built-in components use this to
+ * attach their own indexes, such as `UIDComponent.nameCache` and
+ * `UIDComponent.uidOf`. User code can do the same.
  */
 
 import * as bitecs from 'bitecs'
@@ -80,18 +83,19 @@ export interface ComponentOptions<T extends TSchema = TSchema> {
   sync?: boolean
 }
 
-/** Reserved option keys consumed by `defineComponent` itself. Any other keys
- *  passed to `defineComponent` become typed extension properties on the
+/** Reserved option keys that `defineComponent` consumes itself. Every other key
+ *  passed to `defineComponent` becomes a typed extension property on the
  *  resulting definition. */
 type ReservedComponentOptionKey = keyof ComponentOptions
 
-/** Fields on an options object that are *not* part of `ComponentOptions` —
- *  these are passed straight through onto the definition. */
+/** Fields on an options object that do *not* belong to `ComponentOptions`.
+ *  `defineComponent` passes these straight through onto the definition. */
 export type ComponentExtensions<O> = Omit<O, ReservedComponentOptionKey>
 
 /**
- * Meta fields on a ComponentDefinition. All prefixed `$` so the bare keys on
- * the definition are reserved for SoA stores spread from the schema.
+ * Meta fields on a ComponentDefinition. All of them use a `$` prefix, so the
+ * bare keys on the definition stay reserved for the SoA stores that come from
+ * the schema.
  */
 export interface ComponentDefinitionMeta<T extends TSchema = TSchema> {
   readonly $id: string
@@ -113,15 +117,16 @@ export interface ComponentDefinitionMeta<T extends TSchema = TSchema> {
 /**
  * Does this component put state on the binary delta channel?
  *
- * There is no counterpart asking "is it authored" — every synced component is.
- * Existence is always causal; only continuous *values* escape the gate.
+ * No counterpart function asks "does it author?", because every synced
+ * component authors. Existence is always causal. Only continuous *values*
+ * escape the gate.
  */
 export const hasSyncedSoA = (component: Pick<ComponentDefinitionMeta, '$sync' | '$soaFields'>): boolean =>
   component.$sync && component.$soaFields.length > 0
 
 /**
- * Map a single schema field to the SoA store type it would produce at runtime.
- *   - SoAStoreKind<_, _, C>      → C (e.g. Vec3SoA<...>, QuatSoA<...>)
+ * Map one schema field to the SoA store type that it produces at runtime.
+ *   - SoAStoreKind<_, _, C>      → C (for example Vec3SoA<...>, QuatSoA<...>)
  *   - ArrayBufferKind            → ResizableArray<TypedArrayConstructor>
  *   - Anything else (value type) → never
  */
@@ -133,11 +138,11 @@ export type SoAStoreOf<P> =
       : never
 
 /**
- * Walk a component schema's `properties` and keep only the SoA-tagged fields,
- * each typed as its concrete SoA store class. The intersection with a string
- * index signature lets `ComponentDefinition<SpecificT>` flow up to the default
- * `ComponentDefinition` (which uses `TSchema`) while still preserving narrow
- * types when the schema is known.
+ * Walk the `properties` of a component schema and keep only the SoA-tagged
+ * fields. Type each one as its concrete SoA store class. The intersection with
+ * a string index signature lets `ComponentDefinition<SpecificT>` flow up to the
+ * default `ComponentDefinition`, which uses `TSchema`. Narrow types survive
+ * when the schema is known.
  */
 export type SoAStores<T extends TSchema> = T extends { properties: infer Props }
   ? {
@@ -150,18 +155,18 @@ export type SoAStores<T extends TSchema> = T extends { properties: infer Props }
   : Readonly<Record<string, unknown>>
 
 /**
- * A ComponentDefinition is the meta interface PLUS the SoA stores spread as
- * direct properties on the same object. For `Transform { position: Vec3,
- * rotation: Quat }`, `Transform.position` is a `Vec3SoA` — usable directly as
- * `Transform.position.x[eid]` and `Transform.position.view(eid)`.
+ * A ComponentDefinition holds the meta interface PLUS the SoA stores, which sit
+ * as direct properties on the same object. For `Transform { position: Vec3,
+ * rotation: Quat }`, `Transform.position` is a `Vec3SoA`. Use it directly as
+ * `Transform.position.x[eid]` or as `Transform.position.view(eid)`.
  */
 export type ComponentDefinition<T extends TSchema = TSchema> = ComponentDefinitionMeta<T> & SoAStores<T>
 
 /**
- * Per-field write shape. SoA-tagged fields accept either an ArrayLike (e.g.
- * `[1, 2, 3]`, a typed array) or the view shape — `setComponent`'s value
- * parameter widens to this so callers can pass plain arrays despite the
- * canonical static type being the View.
+ * Per-field write shape. An SoA-tagged field accepts an ArrayLike, such as
+ * `[1, 2, 3]` or a typed array, or the view shape. The value parameter of
+ * `setComponent` widens to this shape, so a caller can pass a plain array even
+ * though the canonical static type is the View.
  */
 export type WriteValueOf<P> =
   P extends SoAStoreKind<TypedArrayConstructor, infer S, unknown>
@@ -172,7 +177,8 @@ export type WriteValueOf<P> =
         ? Static<P>
         : never
 
-/** Write-side shape for `setComponent` value param — widened to accept arrays for SoA fields. */
+/** Write-side shape for the `setComponent` value parameter. It widens to accept
+ *  arrays for the SoA fields. */
 export type ComponentWriteShape<T extends TSchema> = T extends { properties: infer Props }
   ? { [K in keyof Props]?: WriteValueOf<Props[K]> }
   : Partial<Static<T>>
@@ -250,11 +256,11 @@ const toShaclShape = (id: string, schema: TSchema): object => {
 
 // ── Global component registry ────────────────────────────────────────────────-
 //
-// Component definitions are module-level singletons — global, not per-engine.
-// Each engine has its own STORAGE (componentStores keyed by definition) but
-// the definition itself is one JS object shared across every engine that uses
-// it. Means components defined at module load work for any engine that comes
-// or goes, with no per-engine registration step.
+// Component definitions are module-level singletons. They are global, not
+// per-engine. Each engine holds its own STORAGE, in componentStores keyed by
+// definition, but the definition itself is one JS object that every engine
+// shares. A component defined at module load therefore works for any engine
+// that starts or stops later, and needs no per-engine registration step.
 
 const componentsById = new Map<string, ComponentDefinition>()
 const componentsByRef = new WeakMap<bitecs.ComponentRef, ComponentDefinition>()
@@ -320,13 +326,14 @@ export const allComponents = (): ComponentDefinition[] => Array.from(componentsB
 // ── Engine-level instance + view storage ──────────────────────────────────────
 
 /**
- * Per-component engine-level storage. SoA arrays live on the definition; this
- * holds only what's per-(component, entity) but *not* per-axis:
+ * Per-component engine-level storage. The SoA arrays live on the definition.
+ * This structure holds only the data that is per-(component, entity) but *not*
+ * per-axis:
  *
  *   - `store` — instance map for value-typed components (event channel).
- *   - `views` — cached per-entity bag for continuous components. Each entity's
- *               bag is allocated once and its fields are the SoA `.view(entity)`
- *               projections (themselves cached). Returned by `getComponent`.
+ *   - `views` — cached per-entity bag for continuous components. Each bag is
+ *               allocated once. Its fields are the SoA `.view(entity)`
+ *               projections, which are cached too. `getComponent` returns it.
  */
 export interface PerComponentStores {
   store: Record<Entity, Record<string, unknown>>
@@ -342,7 +349,8 @@ const getStores = (engine: Engine, component: ComponentDefinition): PerComponent
   return stores
 }
 
-/** Public accessor — engine-level per-entity instance map (value-typed fields). */
+/** Public accessor for the engine-level per-entity instance map, which holds the
+ *  value-typed fields. */
 export const getInstanceStore = (
   world: World,
   component: ComponentDefinition
@@ -351,14 +359,15 @@ export const getInstanceStore = (
 // ── set / get / remove ────────────────────────────────────────────────────────
 
 export interface SetComponentOptions {
-  /** Origin tag for the mutation pipeline. 'local' (default) is outbound; 'network' is suppressed. */
+  /** Origin tag for the mutation pipeline. 'local', the default, goes outbound.
+   *  'network' stays suppressed. */
   origin?: Origin
 }
 
 /**
- * Structural view of an SoA store (Vec3SoA, QuatSoA, a bare typed array, …) as
- * this module uses it. The stores are spread onto the definition itself, so
- * `soaStoresOf` is just the cast that admits it.
+ * Structural view of an SoA store — Vec3SoA, QuatSoA, a bare typed array, and
+ * so on — as this module uses it. The stores sit on the definition itself, and
+ * `soaStoresOf` casts the definition to expose them.
  */
 interface SoAStoreLike {
   from?: (entity: number, data: ArrayLike<number>) => void
@@ -405,8 +414,8 @@ export const setComponent = <T extends TSchema>(
     const merged: Record<string, unknown> = { ...component.$defaults }
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) merged[k] = v
     const initialised = Value.Default(component.$schema, merged) as Record<string, unknown>
-    // Reuse any existing instance object so previously held references survive
-    // a remove + add cycle. Otherwise allocate once.
+    // Reuse an existing instance object, so that references held earlier
+    // survive a remove and add cycle. Otherwise allocate one.
     let instance = stores.store[entity]
     if (!instance) {
       instance = {}
@@ -430,9 +439,10 @@ export const setComponent = <T extends TSchema>(
 
   if (origin === 'local' && component.$sync) {
     if (hasSyncedSoA(component)) markRuntimeDirty(world, entity, component.$id)
-    // Two occasions author: the component coming into being, and any write
-    // naming a discrete field. A write that only moves SoA fields on an
-    // existing component — the per-tick case — rides the binary channel alone.
+    // Two occasions author. The first is the creation of the component. The
+    // second is any write that names a discrete field. A write that only moves
+    // SoA fields on a component that already exists is the per-tick case, and
+    // it rides the binary channel alone.
     const touchesDiscrete = component.$valueFields.some((f) => f in (value as Record<string, unknown>))
     if (!wasPresent || touchesDiscrete) {
       world.authoredQueue.push({
@@ -447,21 +457,21 @@ export const setComponent = <T extends TSchema>(
 }
 
 /**
- * Read the component value for `entity`. Returns a **stable reference** —
- * calling `getComponent` repeatedly for the same (component, entity) returns
- * the same JS object. Same for any SoA field inside it (Vec3, Quat, …): each
- * is a getter-backed view that delegates straight to the SoA arrays, so values
- * are always live without any refresh step.
+ * Read the component value for `entity`. This returns a **stable reference**.
+ * Repeated calls to `getComponent` for the same (component, entity) return the
+ * same JS object. Each SoA field inside it (Vec3, Quat, …) behaves the same
+ * way. Each one is a getter-backed view that delegates straight to the SoA
+ * arrays, so the values stay live and need no refresh step.
  *
- * For event-channel components this IS the instance store (one allocation
- * per entity, ever). For continuous-channel components this is a cached view
- * bag whose fields are `SoA.view(entity)` projections (also cached). No
- * allocation on the hot path.
+ * For an event-channel component, the returned object IS the instance store,
+ * which is allocated once per entity. For a continuous-channel component, it is
+ * a cached view bag whose fields are `SoA.view(entity)` projections, which are
+ * also cached. The hot path therefore allocates nothing.
  *
- * Mutating the returned object via the SoA-field accessors writes through to
- * the underlying typed arrays. Mutating value-typed fields on the event
- * instance does NOT flow through `setComponent` — those should be written via
- * `setComponent` so the mutation pipeline picks them up.
+ * A write through the SoA-field accessors of the returned object reaches the
+ * underlying typed arrays. A write to a value-typed field on the event instance
+ * does NOT pass through `setComponent`. Write those fields with `setComponent`,
+ * so that the mutation pipeline collects them.
  */
 export const getComponent = <T extends TSchema>(
   world: World,
@@ -472,21 +482,21 @@ export const getComponent = <T extends TSchema>(
   const def = component as ComponentDefinition
   const stores = getStores(world.engine, def)
   if (def.$soaFields.length === 0) {
-    // Event-channel component: instance store IS the live data.
+    // Event-channel component. The instance store IS the live data.
     return stores.store[entity] as Static<T>
   }
   return (stores.views[entity] ??= buildView(def, stores, entity)) as Static<T>
 }
 
 /**
- * Build the cached per-entity view bag: SoA fields become live `.view(entity)`
- * projections (or a getter/setter pair for scalar stores), and value fields
- * delegate to the instance store.
+ * Build the cached per-entity view bag. Each SoA field becomes a live
+ * `.view(entity)` projection, or a getter and setter pair for a scalar store.
+ * Each value field delegates to the instance store.
  *
- * Those value accessors re-read `stores.store[entity]` every time rather than
- * capturing the instance, because `removeComponent` drops it and a later
- * `setComponent` may install a different one — a view held across that cycle
- * would otherwise be writing into an orphan.
+ * Those value accessors read `stores.store[entity]` again on every access, and
+ * do not capture the instance. `removeComponent` drops that instance, and a
+ * later `setComponent` can install a different one. A view held across that
+ * cycle would otherwise write into an orphan.
  */
 const buildView = (def: ComponentDefinition, stores: PerComponentStores, entity: Entity): Record<string, unknown> => {
   const view: Record<string, unknown> = {}
@@ -504,7 +514,7 @@ const buildView = (def: ComponentDefinition, stores: PerComponentStores, entity:
   for (const field of def.$soaFields) {
     const soa = soaStores[field]
     if (typeof soa?.view === 'function') view[field] = soa.view(entity)
-    // Scalar SoA — the store is the typed array itself, indexed by entity.
+    // Scalar SoA. The store is the typed array itself, indexed by entity.
     else if (soa) {
       const arr = soa as unknown as Record<number, number>
       delegate(
@@ -525,10 +535,11 @@ const deepPlain = (value: unknown): unknown => {
 }
 
 /**
- * Read a component as plain, JSON-safe data — value fields deep-copied, SoA
- * fields as number arrays. This is the shape that travels in an authored event
- * and in a `Snapshot`. Unlike `getComponent` it allocates, and it captures the
- * values as of *now* instead of staying live.
+ * Read a component as plain, JSON-safe data. Value fields come back as deep
+ * copies, and SoA fields come back as number arrays. This is the shape that
+ * travels in an authored event and in a `Snapshot`. It differs from
+ * `getComponent` in two ways: it allocates, and it captures the values as they
+ * are *now* instead of staying live.
  */
 export const serialiseComponentValue = (
   world: World,
@@ -564,8 +575,8 @@ export const removeComponent = <T extends TSchema>(
   delete stores.store[entity]
   delete stores.views[entity]
   if (hasSyncedSoA(component)) clearRuntimeDirty(world, entity, component.$id)
-  // Ceasing to exist is causal, so removal always authors — one event, taking
-  // whatever halves the component had.
+  // Removal is causal, so it always authors. It emits one event, which carries
+  // whichever halves the component held.
   if (origin === 'local' && component.$sync) {
     world.authoredQueue.push({
       entity,
@@ -577,7 +588,7 @@ export const removeComponent = <T extends TSchema>(
   }
 }
 
-// ── Runtime dirty flag helpers (consumed by mutation.ts runtime pipeline) ─────
+// ── Runtime dirty flag helpers. The runtime pipeline in mutation.ts uses them ─
 
 export const markRuntimeDirty = (world: World, entity: Entity, componentId: string): void => {
   let set = world.runtimeDirty.get(componentId)

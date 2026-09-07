@@ -4,11 +4,11 @@ description: One core, three deployments. Pick the identity + transport story th
 
 # Solo, Local, AD4M
 
-The same `@connectionengine/core` runs in three increasingly-integrated modes. You pick one at the edge of your app. Core doesn't care.
+The same `@connectionengine/core` runs in three modes, each more integrated than the last. You pick one at the edge of your app. Core does not care which one you pick.
 
 ## Solo
 
-No identity. No transport. Single world running in one process.
+No identity. No transport. One world in one process.
 
 ```ts
 import { createEngine, createWorld, createAnonAgent } from '@connectionengine/core'
@@ -17,18 +17,18 @@ const engine = createEngine()
 const world = createWorld({ engine, agent: createAnonAgent() })
 ```
 
-`createAnonAgent()` returns `{ did: 'did:anon:abc123' }` — an opaque, unsignable identity. Useful for:
+`createAnonAgent()` returns `{ did: 'did:anon:abc123' }`, an opaque identity that cannot sign. Four cases suit it:
 
 - Single-player games or tools.
-- Offline-first apps that haven't introduced multi-user yet.
-- Tests of pure ECS / engine logic, no network involved.
-- Prototyping — you can build the whole component graph + system logic without ever thinking about peers, then bolt on a real identity later.
+- Offline-first apps that have not yet added multi-user support.
+- Tests of pure ECS or engine logic, with no network involved.
+- Prototyping. You can build the whole component graph and the system logic without any thought about peers, and add a real identity later.
 
-There's nothing different about a solo world. It has a full mutation pipeline, full event log, full governance support. It just never publishes outbound because there are no connections to publish to.
+Nothing else about a solo world differs. It holds a full mutation pipeline, a full event log, and full governance support. It never publishes outbound, because it has no connections to publish to.
 
 ## Local (`@connectionengine/local`)
 
-Real Ed25519 identity, signed authored events, capability-based authorisation, in-memory transport with signing.
+Real Ed25519 identity, signed authored events, capability-based authorisation, and an in-memory transport that signs.
 
 ```ts
 import { createLocalAgent } from '@connectionengine/local'
@@ -40,15 +40,15 @@ const alice = createLocalAgent({ seed: 'alice' })
 const world = createWorld({ engine: createEngine(), agent: alice })
 ```
 
-A `LocalAgent` has a real `sign` hook. When `connectLocalInMemory(worldA, worldB)` is used, every outbound authored event is signed with the local keypair; inbound events are verified against the event's `author` DID before apply. Tampered events emit `mutation.reject` with reason `'signature'`.
+A `LocalAgent` holds a real `sign` hook. Under `connectLocalInMemory(worldA, worldB)`, the local keypair signs every outbound authored event. The receiver verifies each inbound event against the `author` DID of that event before apply. A tampered event emits `mutation.reject` with the reason `'signature'`.
 
-Use Local mode when:
+Use Local mode in three cases:
 
 - You want real cryptographic identity (`did:key:z6Mk...`) without a backing service.
-- You're building a peer-to-peer app where each user holds their own keys.
-- You want ZCAP capability chains for delegated authorisation. `addCapabilityConstraint(world, scope, cap)` attaches a capability that the registered `capability` constraint kind enforces.
+- You build a peer-to-peer app in which each user holds their own keys.
+- You want ZCAP capability chains for delegated authorisation. `addCapabilityConstraint(world, scope, cap)` attaches a capability, and the registered `capability` constraint kind enforces it.
 
-Local mode is the simplest way to ship a real multi-user app without infrastructure dependencies. Stack a WebRTC `TransportEndpoint` on top and you have a P2P app with verified events.
+Local mode is the simplest way to release a real multi-user app with no infrastructure dependency. Add a WebRTC `TransportEndpoint` on top, and you have a peer-to-peer app with verified events.
 
 ## AD4M (`@connectionengine/ad4m-bridge`)
 
@@ -67,19 +67,19 @@ const perspective = await ad4m.perspective.get('uuid:...')
 await connectAd4m(world, perspective)
 ```
 
-Now every authored mutation in `world` is replicated as a Link in the Perspective. Every Link added by another agent in the Neighbourhood materialises as an authored event in `world`. The Perspective IS the wire and the persistence store.
+Every authored mutation in `world` now replicates as a Link in the Perspective. Every Link that another agent in the Neighbourhood adds materialises as an authored event in `world`. The Perspective **is** both the wire and the persistence store.
 
-Use AD4M mode when:
+Use AD4M mode in three cases:
 
-- You want a peer-to-peer app with **persistence handled for you** — AD4M's Languages back the Perspective with Holochain (or whatever Language the Perspective uses).
-- You want to interoperate with other AD4M apps that share the same Perspective. A different app's view over the same Neighbourhood sees your entities as Links.
-- You're building toward the [convergence path](/vision) — Connection Engine running as the spatial layer inside [WE](https://github.com/coasys/we).
+- You want a peer-to-peer app in which **AD4M handles persistence for you**. The Languages of AD4M back the Perspective with Holochain, or with whatever Language the Perspective uses.
+- You want to interoperate with other AD4M apps that share the same Perspective. The view of a different app over the same Neighbourhood sees your entities as Links.
+- You build toward the [convergence path](/vision), with Connection Engine as the spatial layer inside [WE](https://github.com/coasys/we).
 
-The runtime binary channel doesn't go through AD4M (it's too high-frequency for Link-based storage). Authored channel uses AD4M; runtime uses whatever direct transport you've wired alongside (typically WebRTC).
+The runtime binary channel does not pass through AD4M, because it runs at too high a frequency for Link-based storage. The authored channel uses AD4M. The runtime channel uses whichever direct transport you attach beside it, and that is typically WebRTC.
 
 ## Switching modes
 
-Because the only thing core knows about identity is the `Agent` interface — `{ did: string; sign?: ... }` — switching modes is a one-line change at the call site that creates the world. Everything else stays the same.
+Core knows one thing about identity: the `Agent` interface, `{ did: string; sign?: ... }`. A mode change is therefore a one-line change at the call site that creates the world. Everything else stays the same.
 
 ```ts
 // Solo:
@@ -92,14 +92,14 @@ createWorld({ engine, agent: createLocalAgent({ seed: 'alice' }) })
 createWorld({ engine, agent: await createAd4mAgent(ad4mClient) })
 ```
 
-This is intentional. The three-mode design lets you start solo for prototyping, move to local once you have multi-user requirements, and graduate to AD4M when you want decentralised persistence and ecosystem interop — without rewriting your component schemas, your systems, your governance, or anything else.
+The three-mode design exists for that reason. Start solo while prototyping, move to local once you have multi-user requirements, and move to AD4M when you want decentralised persistence and ecosystem interoperation. None of those steps needs a rewrite of your component schemas, your systems, or your governance.
 
-## What the modes don't change
+## What the modes do not change
 
-- **The schema model.** Same `defineComponent` definitions across all three.
-- **The mutation pipeline.** Same authored + runtime split.
-- **Governance.** Same constraint registry; Local adds `capability`, AD4M adds its own kinds.
-- **Late join.** Same event-sourced replay protocol over whichever transport.
-- **Authority & ownership.** Same `OwnedBy` / `AuthoritativeFor` semantics.
+- **The schema model.** The same `defineComponent` definitions work across all three modes.
+- **The mutation pipeline.** The same authored and runtime split applies.
+- **Governance.** The same constraint registry applies. Local adds `capability`, and AD4M adds its own kinds.
+- **Late join.** The same event-sourced replay protocol runs over whichever transport you use.
+- **Authority and ownership.** The same `OwnedBy` and `AuthoritativeFor` semantics apply.
 
-The modes change WHO signs your events, WHERE bytes go, and WHO stores them — not the data model your app is built on.
+The modes change WHO signs your events, WHERE the bytes go, and WHO stores them. They do not change the data model that your app is built on.

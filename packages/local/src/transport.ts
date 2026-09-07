@@ -1,11 +1,12 @@
 /**
- * Local in-memory transport with Ed25519 signing.
+ * A local in-memory transport with Ed25519 signing.
  *
- * Wraps core's `connectInMemory` to add per-event signing on outbound and
- * signature verification on inbound. Runtime binary packets travel unsigned
- * — they're authority-checked at the ECS level via `AuthoritativeFor`, and
- * a signature per packet at the simulation tick rate is too costly. Higher-security flows would
- * add a per-packet HMAC at a different layer.
+ * It wraps `connectInMemory` from core, and adds per-event signing on the
+ * outbound path and signature verification on the inbound path. Runtime binary
+ * packets travel unsigned. The ECS level checks their authority through
+ * `AuthoritativeFor`, and one signature per packet at the simulation tick rate
+ * costs too much. A flow that needs more security would add a per-packet HMAC
+ * at a different layer.
  *
  * Two-peer use:
  *
@@ -15,8 +16,8 @@
  *   const worldB = createWorld({ engine: createEngine(), agent: bobAgent })
  *   connectLocalInMemory(worldA, worldB)
  *
- * After this, any setComponent on worldA → signed → delivered to worldB →
- * verified → applied. Tampered events are dropped silently.
+ * After that call, each setComponent on worldA is signed, delivered to worldB,
+ * verified, and applied. A tampered event drops silently.
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Connection, World } from '@connectionengine/core'
@@ -82,9 +83,10 @@ const verifyAndUnwrap = (signed: SignedAuthoredEnvelope): AuthoredEnvelope | nul
 export type LocalConnectionPair = MemoryConnectionPair
 
 export interface ConnectLocalOptions {
-  /** Optional governance gate per authored event (applied after verification). */
+  /** Optional governance gate, applied to each authored event after the
+   *  verification step. */
   validate?: (world: World, event: AuthoredEvent) => boolean
-  /** Optional simulated latency in ms. */
+  /** Optional simulated latency, in milliseconds. */
   latencyMs?: number
 }
 
@@ -92,13 +94,13 @@ const isSignedAuthored = (payload: unknown): payload is SignedAuthoredEnvelope =
   !!payload && typeof payload === 'object' && Array.isArray((payload as { signedEvents?: unknown }).signedEvents)
 
 /**
- * Wire two worlds together over an in-memory channel with Ed25519 signing on
- * the authored channel. Runtime SoA deltas flow over the unsigned binary
- * pipeline (authority-checked at ECS level).
+ * Link two worlds over an in-memory channel, with Ed25519 signing on the
+ * authored channel. The runtime SoA deltas flow over the unsigned binary
+ * pipeline, and the ECS level checks their authority.
  *
- * Both worlds must have been created with a `LocalAgent` (see
- * `createLocalAgent`). The agent's keypair signs outbound authored envelopes;
- * inbound envelopes are verified against `event.author` before apply.
+ * A `LocalAgent` must have created both worlds. See `createLocalAgent`. The
+ * keypair of the agent signs each outbound authored envelope. Each inbound
+ * envelope is verified against `event.author` before the apply step.
  */
 export const connectLocalInMemory = (
   worldA: World,
@@ -108,8 +110,9 @@ export const connectLocalInMemory = (
   const keyA = assertLocalAgent(worldA)
   const keyB = assertLocalAgent(worldB)
 
-  // Delegate runtime fanout + memory transport + lifecycle to core. We override
-  // each world's publishAuthored hook to interpose signing.
+  // Core handles the runtime fanout, the memory transport, and the lifecycle.
+  // This function overrides the publishAuthored hook of each world, so that the
+  // signing step runs.
   const pair = connectInMemory(worldA, worldB, {
     validate: options.validate,
     latencyMs: options.latencyMs
@@ -118,9 +121,10 @@ export const connectLocalInMemory = (
   installSigningOverride(worldA, keyA)
   installSigningOverride(worldB, keyB)
 
-  // Add a side-channel listener on each connection that recognises signed
-  // authored envelopes (the only payload shape connectInMemory doesn't
-  // already understand) — verify, unwrap, apply.
+  // Add a side-channel listener to each connection. It recognises a signed
+  // authored envelope, which is the only payload shape that connectInMemory
+  // does not already understand. The listener verifies the envelope, unwraps
+  // it, and applies it.
   attachVerifier(worldA, pair.a)
   attachVerifier(worldB, pair.b)
 
@@ -128,8 +132,9 @@ export const connectLocalInMemory = (
 }
 
 const installSigningOverride = (world: World, kp: KeyPair): void => {
-  // Replace the default network's authored fanout with signing fanout. The
-  // continuous-channel binary path stays as installFanout wired it.
+  // Replace the authored fanout of the default network with the signing
+  // fanout. The binary path of the continuous channel stays as installFanout
+  // set it up.
   const network = getNetwork(world, 'default')
   if (!network) return
   network.publishAuthored = (envelope: AuthoredEnvelope) => {

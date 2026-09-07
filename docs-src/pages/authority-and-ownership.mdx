@@ -1,21 +1,21 @@
 ---
-description: OwnedBy is provenance. AuthoritativeFor is who's allowed to write. Two relations, two jobs.
+description: OwnedBy is provenance. AuthoritativeFor is who may write. Two relations, two jobs.
 ---
 
 # Authority & Ownership
 
-Multiplayer engines that conflate "who created this thing" with "who's allowed to update this thing" end up with weird edge cases. Connection Engine splits them cleanly.
+Multiplayer engines that treat "who created this thing" and "who may update this thing" as one concept collect strange edge cases. Connection Engine keeps them separate.
 
 | Relation             | Target  | Transferable? | Meaning                                     |
 |----------------------|---------|---------------|---------------------------------------------|
 | `OwnedBy`            | User    | No            | Provenance. Who made this. Permanent.        |
-| `AuthoritativeFor`   | Peer    | Yes           | Runtime authority. Who's allowed to update. |
+| `AuthoritativeFor`   | Peer    | Yes           | Runtime authority. Who may update it.       |
 
-A user can own many things across many sessions. A peer is one device — one engine instance — one browser tab. A user can have multiple live peers (desktop + phone); authority over a given entity is on exactly one of them at a time.
+A user can own many things across many sessions. A peer is one device, one engine instance, one browser tab. A user can hold several live peers, such as a desktop and a phone. Exactly one of those peers holds authority over a given entity at a time.
 
 ## `spawnPrefab` is the networked-entity factory
 
-Owner + authority are wire concerns, so they're assigned by the network-layer factory, not by the base ECS primitive. `createEntity` is pure ECS (just allocates a bitECS entity); `spawnPrefab` composes the four things every networked entity needs:
+Owner and authority are wire concerns. The network-layer factory therefore assigns them, and the base ECS primitive does not. `createEntity` is pure ECS, and only allocates a bitECS entity. `spawnPrefab` composes the four things that every networked entity needs:
 
 ```ts
 import { spawnPrefab, getOwner, getAuthority } from '@connectionengine/core'
@@ -25,25 +25,25 @@ const e2 = spawnPrefab(world, 'avatar:bob', { owner: bob })              // expl
 const e3 = spawnPrefab(world, 'item:1',   { parent: container })         // child of an existing entity
 ```
 
-Under the hood, `spawnPrefab(world, uid, { parent?, owner?, authority? })` does:
+Internally, `spawnPrefab(world, uid, { parent?, owner?, authority? })` does four steps:
 
 1. `createEntity(world)` — allocate the bitECS entity
 2. `setUID(world, e, uid, { parent })` — give it a wire-addressable path
 3. `addRelation(world, e, OwnedBy, owner ?? world.localUser)` — permanent provenance
 4. `addRelation(world, e, AuthoritativeFor, authority ?? world.localPeer)` — runtime authority
 
-Every networked entity has an owner. `spawnPrefab` throws if no owner can be determined. The first thing your runtime does is bootstrap `world.localUser` and `world.localPeer` via `createUser` + `createPeer({ asLocal: true })`, so the defaults work for everything afterwards.
+Every networked entity has an owner. `spawnPrefab` throws when it cannot determine one. Your runtime must therefore bootstrap `world.localUser` and `world.localPeer` first, with `createUser` and `createPeer({ asLocal: true })`. The defaults then work for everything after that.
 
 User and Peer entities anchor the recursion:
 
 - `User` is **self-owned** — `OwnedBy(self)`.
 - `Peer` is owned by its user and **self-authoritative** — `OwnedBy(user) + AuthoritativeFor(self)`.
 
-For non-networked entities — system caches, derived state, test scratch — use `createEntity` directly.
+Use `createEntity` directly for entities that never travel, such as system caches, derived state, and test scratch data.
 
 ## OwnedBy
 
-Provenance. Doesn't move:
+`OwnedBy` records provenance, and does not move:
 
 ```ts
 import { createUser, getOwner } from '@connectionengine/core'
@@ -53,17 +53,17 @@ const alice = createUser(world, { did: 'did:key:z6Mk...', asLocal: true })
 // their owner to Alice.
 ```
 
-Used for:
+Three things use it:
 
-- Disconnect cleanup — when a user's last peer disconnects, every entity they own is swept (by owner-user, not by authority). Entities meant to outlive a user's session must not be owned by that user.
-- Permission inference — "is this requester one of the owner's peers?" → grants are common.
-- Display — "made by Alice" UX.
+- Disconnect cleanup. When the last peer of a user disconnects, the sweep removes every entity that user owns. The sweep reads the owner-user, not the authority. An entity that must outlive the session of a user must not be owned by that user.
+- Permission inference. "Is this requester one of the peers of the owner?" Grants for that case are common.
+- Display. It supplies the "made by Alice" text in your UX.
 
-You don't change `OwnedBy`. It's set on creation and stays. Transferring ownership is a different gesture (a delete + recreate, or an explicit transfer-of-ownership event in your app's semantics).
+Do not change `OwnedBy`. The engine sets it at creation, and it stays. Transfer of ownership is a different gesture — a delete and a recreate, or an explicit transfer-of-ownership event in the semantics of your app.
 
 ## AuthoritativeFor
 
-Authority. Does move:
+`AuthoritativeFor` records authority, and does move:
 
 ```ts
 import { createPeer, spawnPrefab, transferAuthority } from '@connectionengine/core'
@@ -77,13 +77,13 @@ const vehicle = spawnPrefab(world, 'vehicle:1', { authority: aliceDesktop })
 transferAuthority(world, vehicle, alicePhone)
 ```
 
-Authority is exclusive — at most one peer holds it for an entity at any time. The relation is `exclusive: true`, so adding a new authoritative peer atomically removes the previous one.
+Authority is exclusive. At most one peer holds it for an entity at any time. The relation sets `exclusive: true`, so the addition of a new authoritative peer removes the previous one atomically.
 
 ## What "having authority" means
 
-Connection Engine doesn't enforce authority on the `continuous` channel — there's no per-packet check that says "is this peer authoritative?" That would be too expensive at the simulation tick rate.
+Connection Engine does not enforce authority on the `continuous` channel. No per-packet check asks "does this peer hold authority?" Such a check would cost too much at the simulation tick rate.
 
-Instead, **authority is a property your systems consult**. The convention is:
+Instead, **your systems consult authority**. The convention is:
 
 ```ts
 defineSystem(world, {
@@ -98,52 +98,58 @@ defineSystem(world, {
 })
 ```
 
-The local peer steps physics for entities it has authority over. Other peers receive the resulting binary packets and write into their SoA stores without running physics themselves. State stays convergent because exactly one peer is the source of truth at a time.
+The local peer steps physics for the entities over which it holds authority. Other peers receive the resulting binary packets and write into their SoA stores, and run no physics themselves. State stays convergent, because exactly one peer acts as the source of truth at a time.
 
-This is also why **runtime binary packets aren't signed** — authority is structural, not cryptographic. If a non-authoritative peer were to inject a binary packet for an entity it doesn't own, every other peer's authoritative peer for that entity would overwrite it on the next tick. The lie gets corrected automatically.
+This is also why **the engine does not sign runtime binary packets**. Authority is structural rather than cryptographic. If a non-authoritative peer injected a binary packet for an entity it does not own, the authoritative peer for that entity would overwrite the value on the next tick, on every other peer. The engine corrects the false value automatically.
 
 ## Authority transfer — gated end-to-end
 
-Transfers are **gated on both sides**. The local check prevents accidentally authoring a transfer that won't be accepted; the receive-side check prevents any peer's local state from diverging when a forged or stale transfer arrives.
+Transfers pass a gate on **both sides**. The local check stops you from authoring a transfer that the receivers would refuse. The receive-side check stops the local state of any peer from diverging when a forged or stale transfer arrives.
 
-**Sender-side** (`transferAuthority` / `setAuthority`): throws if `canChangeAuthority(world, entity)` is false. The local peer has standing iff it's the current authority holder OR a peer of the entity's owner-user.
+**Sender-side** (`transferAuthority` and `setAuthority`) throws when `canChangeAuthority(world, entity)` returns false. The local peer has standing if and only if it holds the current authority, or it is a peer of the owner-user of the entity.
 
-**Receive-side** (`applyAuthoredEnvelope` in `network/mutation.ts`): for every incoming `AuthoritativeFor` mutation, calls the standing check from `network/authority.ts` inline. The event's `author` DID must match either:
+**Receive-side** (`applyAuthoredEnvelope` in `network/mutation.ts`) calls the standing check in `network/authority.ts` inline, for every incoming `AuthoritativeFor` mutation. The `author` DID of the event must match one of two DIDs:
 
-- The owner-user's DID — any of the owner's peers can authorise.
-- The current authority's user DID — the running host can pass the torch (this is what host migration uses).
+- The DID of the owner-user. Any peer of the owner can authorise the transfer.
+- The user DID of the current authority. The running host can pass the torch, which is what host migration uses.
 
-If neither, the event is dropped without being applied or appended to the event log. The gate runs unconditionally — networks can't opt out.
+If the DID matches neither, the engine drops the event. It neither applies the event nor appends it to the event log. The gate always runs, and a network cannot opt out of it.
 
-For mid-session handoff (handing the car to your phone, host migration, etc.) the flow is:
+Mid-session handoff — a car handed to your phone, or host migration — runs in three steps:
 
-1. Current authority pauses (stops writing the entity).
-2. Authority transfer event ships and converges. The gate accepts because the author is the current holder (or the owner-user).
-3. New authority resumes (starts writing the entity).
+1. The current authority pauses, and stops writing the entity.
+2. The authority transfer event ships and converges. The gate accepts it, because the author is the current holder or the owner-user.
+3. The new authority resumes, and starts writing the entity.
 
-The brief window where nobody's writing is usually fine — receivers continue interpolating from the last good state. If it isn't fine (high-precision physics, fast motion), apply a fade or a brief authority-hold by exchanging extra control messages.
+The short window in which no peer writes is usually acceptable, because receivers continue to interpolate from the last good state. If it is not acceptable, as in high-precision physics or fast motion, apply a fade or a brief authority hold by exchanging extra control messages.
 
 ## Recovery on disconnect — automatic
 
-When a peer drops, the lifecycle's `sweepDisconnectedPeer` runs `recoverAuthority` for every entity whose `AuthoritativeFor` targets the leaving peer. It picks the lowest-id remaining peer of the entity's owner-user; if no peer of the owner is locally known, it falls back to `world.localPeer` as a last-resort host-migration successor.
+When a peer drops, `sweepDisconnectedPeer` in the lifecycle layer runs `recoverAuthority` for every entity whose `AuthoritativeFor` targets the leaving peer. `recoverAuthority` selects the remaining peer of the owner-user with the lowest id. If it knows no local peer of the owner, it falls back to `world.localPeer` as a last-resort host-migration successor.
 
 ```ts
-// You don't call this yourself — it runs on disconnect automatically.
+// You do not call this yourself — it runs on disconnect automatically.
 // What it does, conceptually:
 recoverAuthority(world, entity, disconnectedPeer)
 //   → find lowest-id peer where parentOf[peer] === ownerUser, skipping the leaver
 //   → setAuthority(world, entity, successor, { unchecked: true })
 ```
 
-For this to work, the disconnect-side has to know which peer entity to recover from. That comes from the HELLO handshake: every connection carries the remote engine's DID and peerId, and the receiver materialises a local `User` + `Peer` entity (using the path the sender encoded, so a later authored-event replay for those same identities is deduplicated). The materialised peer entity is stored on `connection.peer`, which the sweep walks.
+The disconnect side must know which peer entity to recover from. That knowledge comes from the HELLO handshake. Every connection carries the DID and the peerId of the remote engine, and the receiver materialises a local `User` entity and `Peer` entity. It uses the path that the sender encoded, so a later authored-event replay for those same identities deduplicates. The engine stores the materialised peer entity on `connection.peer`, and the sweep walks that value.
 
 ## Request / grant
 
-Sometimes a non-owner-peer wants authority — a moderator picking up a stuck NPC, a co-op partner driving the host's vehicle. `requestAuthority(world, entity, requester)` returns a result shaped for your governance hook:
+A peer that does not own an entity sometimes needs authority over it — a moderator who recovers a stuck NPC, or a co-op partner who drives the vehicle of the host. `requestAuthority(world, entity, requester)` returns a result shaped for your governance hook:
 
 ```ts
 const result = await requestAuthority(world, vehicle, modPeer)
 // → { status: 'granted' | 'denied' | 'pending', reason?: string }
 ```
 
-The default policy: owner's user-peer auto-grants; everyone else denies; an owner-less entity is treated as an invariant violation and denied (this should never happen — every entity gets an owner at creation). Higher layers (governance constraints, app-specific rules) can interpose by gating before the request reaches this default.
+The default policy has three rules:
+
+- A peer of the owner-user receives an automatic grant.
+- Every other requester receives a denial.
+- An entity without an owner counts as an invariant violation, and receives a denial. This case must never occur, because every entity gets an owner at creation.
+
+Higher layers, such as governance constraints and app-specific rules, can interpose. They gate the request before it reaches this default.

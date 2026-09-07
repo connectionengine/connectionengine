@@ -6,7 +6,7 @@ description: One schema, two channels. How writes become packets, packets become
 
 ## The shape
 
-A local write dispatches to one or both queues:
+A local write dispatches to one queue or to both queues:
 
 ```
 setComponent(world, e, Health, { current: 50 })
@@ -18,9 +18,9 @@ write value field →  push into world.authoredQueue (entity, predicate, op, val
 sync: false      →  no-op (never replicated)
 ```
 
-One write can land in both queues. The authored event carries the **whole** component — SoA fields included, as plain arrays — so the creating write is governable in full. A write that only moves SoA fields on an existing component marks dirty and never reaches the event log; that's the per-tick case. See [Components](/components).
+One write can land in both queues. The authored event carries the **whole** component, including the SoA fields as plain arrays, so governance can inspect the creating write in full. A write that only moves SoA fields on an existing component marks the entity dirty and never reaches the event log. That is the per-tick case. See [Components](/components).
 
-The driver explicitly flushes both queues at end-of-frame (after `runSystems` returns):
+The driver flushes both queues explicitly at end-of-frame, after `runSystems` returns:
 
 ```
 flushAuthored(world)
@@ -48,9 +48,9 @@ for each network:
     network.publishRuntime?(perNetworkDirty[networkId])
 ```
 
-The `publish*` callbacks are hooks the network layer fills in — one per network on the world. Core never decides how data goes on a wire; it routes envelopes to the right networks and hands them to whoever's listening.
+The `publish*` callbacks are hooks that the network layer fills in, one per network on the world. Core never decides how data goes on a wire. Core routes envelopes to the correct networks and gives them to the registered listeners.
 
-`routeNetworks(world, entity)` is the routing decision. Today it's broadcast-to-all (`Array.from(getNetworks(world).values())`). A future spatial layer will replace it with proximity-based routing without touching `mutation.ts`.
+`routeNetworks(world, entity)` makes the routing decision. Today it broadcasts to all networks (`Array.from(getNetworks(world).values())`). A future spatial layer will replace it with proximity-based routing, without a change to `mutation.ts`.
 
 ## Receive paths
 
@@ -66,36 +66,36 @@ applyAuthoredEnvelope(world, envelope, network?)
         │        applyEvent — setComponent / addRelation / etc. with origin: 'network'
 ```
 
-Two gates run before an event is applied. The optional per-network `validateAuthored` is the governance hook (different networks can have different rules — credential, temporal, content, capability). The authority-transfer standing check is unconditional — `network/mutation.ts` calls `checkAuthorityChangeStanding` from `network/authority.ts` directly. Both modules live in `network/`, so it's an ordinary named import, not a runtime hook.
+Two gates run before the engine applies an event. The optional per-network `validateAuthored` is the governance hook, and different networks can hold different rules — credential, temporal, content, or capability. The authority-transfer standing check is unconditional. `network/mutation.ts` calls `checkAuthorityChangeStanding` in `network/authority.ts` directly. Both modules live in `network/`, so this is an ordinary named import rather than a runtime hook.
 
-For `continuous` state, **there is no separate "apply runtime envelope" function**. The binary pipeline (`network/binary.ts`) is the receive path — it reads packets and writes directly into SoA storage, never going through `setComponent` at all.
+For `continuous` state, **no separate "apply runtime envelope" function exists**. The binary pipeline (`network/binary.ts`) is the receive path. It reads packets and writes straight into SoA storage, and never calls `setComponent`.
 
-This is one of the simplifications that justifies the dual channels. The `event` side gets a proper apply pipeline because events are first-class semantic things. The `continuous` side is pure data: arrays in, arrays out, no event objects to construct.
+This asymmetry is part of what the two channels buy you. The `event` side has a full apply pipeline, because each event carries semantic meaning. The `continuous` side is pure data: arrays in, arrays out, and no event objects to construct.
 
 ## The origin tag, and why it exists
 
-Every mutating call tags itself `origin: 'local' | 'network'`. The mutation pipeline only publishes mutations stamped `local`. If you stamp `network`, the write happens but nothing is queued for outbound.
+Every mutating call tags itself `origin: 'local' | 'network'`. The mutation pipeline publishes only the mutations stamped `local`. If you stamp `network`, the write happens, but the pipeline queues nothing for outbound.
 
-Why this matters: when peer A's authored envelope arrives at peer B, the receive path applies each event with `setComponent(..., { origin: 'network' })`. Without the tag, peer B would queue those writes for outbound and re-broadcast them, and peer A would receive its own writes back, and re-broadcast them again. Forever.
+The tag matters on receive. When the authored envelope of peer A arrives at peer B, the receive path applies each event with `setComponent(..., { origin: 'network' })`. Without the tag, peer B would queue those writes for outbound and re-broadcast them. Peer A would then receive its own writes back and re-broadcast them again, forever.
 
-So the rule is: **the receive path stamps `network`, the local path stamps `local` (the default)**. You almost never write `origin: 'network'` yourself — that's the network layer's job.
+The rule is therefore: **the receive path stamps `network`, and the local path stamps `local`, which is the default**. You almost never write `origin: 'network'` yourself, because that is the job of the network layer.
 
-There's a subtlety worth knowing: `origin` is not the same as "where this came from." It's "should this be re-broadcast." A locally-applied write that you don't want to ship can be tagged `network`. It's a control flag, not a provenance flag.
+Watch out for one subtlety. `origin` does not record where a write came from. It records whether the pipeline should re-broadcast the write. You can tag a locally-applied write `network` when you want to keep it off the wire. Treat it as a control flag rather than a provenance flag.
 
 ## Idempotent event log
 
-The world has two parallel structures:
+The world holds two parallel structures:
 
 ```ts
 eventLog: AuthoredEvent[]      // ordered append-only canonical log
 eventLogSeen: Set<string>      // composite signature index
 ```
 
-Every push goes through `appendEventLog(world, event)` which computes a signature `${author}|${timestamp}|${op}|${predicate}|${entityPath}|${JSON(value)}` and skips if seen. This makes late-join replay safe — a peer reconnecting with `knownEventCount: 0` re-receives events it already has, and each is dropped on append.
+Every push goes through `appendEventLog(world, event)`. That function computes the signature `${author}|${timestamp}|${op}|${predicate}|${entityPath}|${JSON(value)}` and skips any signature it has already seen. Late-join replay is safe as a result. A peer that reconnects with `knownEventCount: 0` receives events it already holds, and append drops each one.
 
-It also makes mesh re-broadcast (3+ peer scenarios) safe. Peer B receiving a fresh event from peer A applies it, then forwards to peer C, who already received it from A independently, and skips it.
+The same property makes mesh re-broadcast safe with three or more peers. Peer B receives a fresh event from peer A and applies it, then forwards it to peer C. Peer C already received that event from peer A independently, so peer C skips it.
 
-You can read this directly if you need it:
+You can read the log directly if you need to:
 
 ```ts
 import { eventSignature, hasEventBeenSeen, appendEventLog } from '@connectionengine/core'
@@ -105,15 +105,15 @@ if (!hasEventBeenSeen(world, event)) {
 }
 ```
 
-But normally you don't — the mutation pipeline handles it.
+Normally you do not need to. The mutation pipeline does it.
 
 ## What about authority on the `continuous` channel?
 
-The `continuous` channel has no governance gate. A binary packet from peer X arrives and updates SoA fields, full stop. Authority is enforced **structurally** via the `AuthoritativeFor` relation: a system that runs locally checks "do I have authority over this entity for this component?" before processing physics or moving things. See [Authority & Ownership](/authority-and-ownership).
+The `continuous` channel has no governance gate. A binary packet from peer X arrives and updates SoA fields, with no further check. Authority applies **structurally**, through the `AuthoritativeFor` relation. A system that runs locally asks "do I hold authority over this entity for this component?" before it runs physics or moves anything. See [Authority & Ownership](/authority-and-ownership).
 
-This split is intentional. Per-packet signature verification at the simulation tick rate is too expensive. Per-event signature verification on authored events (sub-Hz cadence) is fine. Authority on `continuous` is a property of the entity graph, not the wire.
+This split is intentional. Per-packet signature verification at the simulation tick rate costs too much. Per-event signature verification on authored events, at sub-Hz cadence, costs little. Authority on `continuous` is a property of the entity graph rather than of the wire.
 
-The gate that *does* apply here is one of existence: a delta may only modify a component that already exists. If the entity lacks it, the delta is decoded into a scratch slot and dropped. No component is ever materialised by a packet.
+One gate *does* apply here — a gate of existence. A delta may only modify a component that already exists. If the entity lacks the component, the pipeline decodes the delta into a scratch slot and drops it. A packet never materialises a component.
 
 ## A complete flow
 
@@ -159,4 +159,4 @@ flushRuntime(world)
                                                      (only to register bitECS presence on first packet)
 ```
 
-That's the whole flow, end to end.
+Every write in the engine follows that path.

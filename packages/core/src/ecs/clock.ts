@@ -1,8 +1,10 @@
 /**
- * Injectable clock — wall-clock by default, manual for tests.
+ * Injectable clock. It uses the wall clock by default, and a manual clock for
+ * tests.
  *
- * Time-dependent behaviour (event timestamps, temporal governance, snapshot
- * metadata) reads from this clock so tests can drive deterministic time.
+ * Every time-dependent behaviour reads from this clock, which lets a test drive
+ * deterministic time. Event timestamps, temporal governance, and snapshot
+ * metadata all read from it.
  */
 
 export interface Clock {

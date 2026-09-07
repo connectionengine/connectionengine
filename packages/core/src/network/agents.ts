@@ -1,15 +1,18 @@
 /**
- * User + Peer + presence-tag component definitions + lookup helpers.
+ * Component definitions for User, Peer, and the presence tag, plus the lookup
+ * helpers.
  *
- * Split out from `peer.ts` (which carries the factory helpers) so that
- * `authority.ts` can read user DIDs without importing the factories — keeps
- * the network-layer modules free of cycles. Layering downward:
+ * This module splits away from `peer.ts`, which holds the factory helpers. The
+ * split lets `authority.ts` read user DIDs without an import of the factories,
+ * and keeps the network-layer modules free of cycles. The layers run downward:
  *
- *     agents (no deps within network/)
+ *     agents     (no dependency inside network/)
  *        ↑
- *     authority (imports agents for getUserDID, defines OwnedBy/AuthoritativeFor)
+ *     authority  (imports agents for getUserDID, defines OwnedBy and
+ *                 AuthoritativeFor)
  *        ↑
- *     peer       (imports both — createUser/createPeer wire components + relations)
+ *     peer       (imports both — createUser and createPeer attach the
+ *                 components and the relations)
  */
 
 import { Schema } from '../schema'
@@ -18,7 +21,7 @@ import { parentOfFor } from '../ecs/entity'
 import { query } from '../ecs/query'
 import type { Entity, World } from '../ecs/world'
 
-/** Opaque DID string — engine treats it as an arbitrary identifier. */
+/** Opaque DID string. The engine treats it as an arbitrary identifier. */
 export type DID = string
 
 export const UserComponent = defineComponent({
@@ -41,7 +44,8 @@ export const PeerComponent = defineComponent({
 
 // ── Lookups ───────────────────────────────────────────────────────────────────
 
-/** Find a user entity by DID. Linear scan — acceptable since user count is small. */
+/** Find a user entity by its DID. The scan is linear, which is acceptable
+ *  because the user count stays small. */
 export const findUserByDID = (world: World, did: string): Entity | undefined => {
   for (const entity of query(world, [UserComponent])) {
     const value = getComponent(world, entity, UserComponent) as { did?: string } | undefined
@@ -50,13 +54,14 @@ export const findUserByDID = (world: World, did: string): Entity | undefined => 
   return undefined
 }
 
-/** Get the DID of a user entity, or undefined if not present. */
+/** Get the DID of a user entity. The function returns undefined when the entity
+ *  carries none. */
 export const getUserDID = (world: World, user: Entity): string | undefined => {
   const value = getComponent(world, user, UserComponent) as { did?: string } | undefined
   return value?.did
 }
 
-/** Find a peer entity by peerId under a specific user. Linear scan. */
+/** Find a peer entity by its peerId, under one specific user. The scan is linear. */
 export const findPeerByIdForUser = (world: World, user: Entity, peerId: string): Entity | undefined => {
   for (const entity of query(world, [PeerComponent])) {
     if (parentOfFor(world.engine).get(entity) !== user) continue
@@ -66,7 +71,7 @@ export const findPeerByIdForUser = (world: World, user: Entity, peerId: string):
   return undefined
 }
 
-/** Get all peers belonging to a user. */
+/** Get every peer that belongs to a user. */
 export const getPeersForUser = (world: World, user: Entity): Entity[] => {
   const peers: Entity[] = []
   for (const entity of query(world, [PeerComponent])) {

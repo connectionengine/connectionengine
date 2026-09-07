@@ -1,12 +1,12 @@
 /**
- * Capability governance — ZCAP-LD constraint kind.
+ * Capability governance — the ZCAP-LD constraint kind.
  *
- * Registers a `capability` kind with core's constraint registry. Once
- * registered, core's `validateEvent` enforces ZCAP capabilities alongside
- * the engine-level kinds (credential, temporal, content). No separate
- * validator is needed — `installCapabilityValidator` just wires
- * `core.validateEvent` (with optional trusted-issuer context) into
- * `world.network.validateAuthored`.
+ * This module registers a `capability` kind with the constraint registry of
+ * core. After that registration, the `validateEvent` function of core enforces
+ * the ZCAP capabilities beside the engine-level kinds: credential, temporal,
+ * and content. No separate validator is needed. `installCapabilityValidator`
+ * only attaches `core.validateEvent`, with an optional trusted-issuer context,
+ * to the `validateAuthored` gate of the default network of the world.
  */
 
 import type { AuthoredEvent, World } from '@connectionengine/core'
@@ -32,7 +32,7 @@ import { type Capability, capabilityAllows, verifyCapability } from './zcap'
 export const CapabilityConstraintComponent = defineComponent({
   id: 'CapabilityConstraint',
   schema: Schema.Object({
-    /** Serialised capability JSON (parsed during validation). */
+    /** Serialised capability JSON. Validation parses it. */
     capability: Schema.String({ default: '' })
   })
 })
@@ -49,7 +49,7 @@ export const addCapabilityConstraint = (world: World, scope: Entity, capability:
 // ── Validation kind: capability ──────────────────────────────────────────────-
 
 export interface CapabilityValidationContext extends CoreValidationContext {
-  /** Trusted root capability issuers. */
+  /** The trusted issuers of a root capability. */
   trustedIssuers?: DID[]
 }
 
@@ -79,7 +79,8 @@ registerConstraintKind({
   }
 })
 
-/** Run core's validateEvent with capability context attached. */
+/** Run the `validateEvent` function of core, with the capability context
+ *  attached. */
 export const validateLocalEvent = (
   world: World,
   event: AuthoredEvent,
@@ -87,10 +88,10 @@ export const validateLocalEvent = (
 ): CapabilityValidationResult => coreValidateEvent(world, event, context)
 
 /**
- * Install a capability-aware governance gate on a world's
- * `network.validateAuthored`. Since the `capability` kind is registered with
- * core's registry, `coreValidateEvent` already runs all four kinds — this
- * just wires it as the inbound governance hook.
+ * Install a capability-aware governance gate on the `validateAuthored` hook of
+ * the default network of a world. The `capability` kind already sits in the
+ * registry of core, so `coreValidateEvent` already runs all four kinds. This
+ * function only attaches it as the inbound governance hook.
  */
 export const installCapabilityValidator = (world: World, context: CapabilityValidationContext = {}): void => {
   const network = ensureDefaultNetwork(world)

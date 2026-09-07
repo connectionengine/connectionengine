@@ -1,22 +1,24 @@
 /**
- * Local agent — Ed25519/did:key Agent for solo + local-network worlds.
+ * Local agent — an Ed25519 and did:key Agent, for a solo world or a
+ * local-network world.
  *
- * Wraps a deterministic or random Ed25519 keypair into the opaque `Agent`
- * shape that core's `createWorld` requires. The `sign` hook lets the local
- * transport (or any other outbound wire) produce Ed25519 signatures over
- * canonicalised authored events.
+ * It wraps a deterministic or random Ed25519 keypair into the opaque `Agent`
+ * shape that `createWorld` in core requires. The `sign` hook lets the local
+ * transport, or any other outbound wire, produce an Ed25519 signature over a
+ * canonicalised authored event.
  */
 
 import type { Agent } from '@connectionengine/core'
 import { generateKeyPair, keyPairFromSeed, sign, type KeyPair } from './did'
 
 export interface LocalAgent extends Agent {
-  /** The underlying keypair — exposed so callers can hand it to zcap delegation, etc. */
+  /** The underlying keypair. It stays public, so that a caller can give it to a
+   *  ZCAP delegation or to a similar operation. */
   readonly keyPair: KeyPair
 }
 
 export interface CreateLocalAgentOptions {
-  /** Deterministic seed (any string). Omit for a fresh random key. */
+  /** Deterministic seed, as any string. Omit it to get a fresh random key. */
   seed?: string
 }
 

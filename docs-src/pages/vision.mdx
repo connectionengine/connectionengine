@@ -6,46 +6,46 @@ description: Why this exists. The convergence path with AD4M, WE, and the Living
 
 ## Why this exists
 
-The web doesn't have a spatial layer. We have rectangles inside rectangles, document-shaped, query-fetched. When somebody wants spatial — a 3D world, a multiplayer experience, a virtual venue — they build it as a closed silo: their assets, their identity, their data, their backend. Every spatial experience reinvents the stack from glass to physics.
+The web has no spatial layer. It has rectangles inside rectangles, document-shaped and query-fetched. When somebody wants something spatial — a 3D world, a multiplayer experience, a virtual venue — they build it as a closed silo, with their own assets, identity, data, and backend. Every spatial experience reinvents the stack from the glass to the physics.
 
-In parallel, the **decentralised semantic web** has matured. RDF, SHACL, DIDs, VCs, ZCAP-LD. [AD4M](https://github.com/coasys/ad4m) showed that an *agent-centric* spanning layer — where users own their data and apps subscribe to it — is buildable today on Holochain. [WE](https://github.com/coasys/we) extends that into a frame-shaped social runtime: shared Perspectives, Languages, Neighbourhoods.
+In parallel, the **decentralised semantic web** has matured: RDF, SHACL, DIDs, VCs, and ZCAP-LD. [AD4M](https://github.com/coasys/ad4m) showed that an *agent-centric* spanning layer, in which users own their data and apps subscribe to it, is buildable today on Holochain. [WE](https://github.com/coasys/we) extends that into a frame-shaped social runtime, with shared Perspectives, Languages, and Neighbourhoods.
 
-Connection Engine is the bet that **these two trajectories converge**. The data shape behind a multiplayer world (entities, components, relations, events) is structurally isomorphic to the data shape behind a decentralised semantic graph (subjects, predicates, objects, signed claims). If you let the ECS BE the graph, you don't need two stacks. You need one runtime that does both at once.
+Connection Engine bets that **these two trajectories converge**. The data shape behind a multiplayer world — entities, components, relations, events — is structurally isomorphic to the data shape behind a decentralised semantic graph — subjects, predicates, objects, signed claims. Let the ECS BE the graph, and one runtime covers both jobs.
 
-That runtime should look like a game engine to game developers and like a semantic web stack to web standards people. Same data, two views.
+That runtime should look like a game engine to game developers, and like a semantic web stack to web standards people. Same data, two views.
 
 ## The convergence path
 
-The plan, roughly:
+The plan, in outline:
 
-**Stage 1 — Now.** Connection Engine ships as a TypeScript ECS + transport foundation. The three runtime modes (solo, local, AD4M) prove the core stays identity-agnostic. AD4M mode demonstrates that an existing Perspective can be used as the wire.
+**Stage 1 — Now.** Connection Engine exists as a TypeScript ECS and transport foundation. The three runtime modes — solo, local, and AD4M — prove that the core stays identity-agnostic. AD4M mode demonstrates that an existing Perspective can serve as the wire.
 
-**Stage 2 — Spatial layer.** A Connection Engine application looks like a spatial scene: transforms, WebXR sessions, zones, bounding trees. The same ECS hosts both the data and the spatial structure. This is where the engine becomes useful for actual experiences.
+**Stage 2 — Spatial layer.** A Connection Engine application looks like a spatial scene, with transforms, WebXR sessions, zones, and bounding trees. One ECS hosts both the data and the spatial structure. At this stage the engine becomes useful for real experiences.
 
-**Stage 3 — Connection Engine inside WE.** WE Frames host Connection Engine scenes the way they host other Frames today. A Frame's Perspective becomes the wire for the scene; the scene's entities ARE the Perspective's Expressions. Users move between spatial Frames the same way they move between document-shaped Frames now.
+**Stage 3 — Connection Engine inside WE.** WE Frames host Connection Engine scenes the way they host other Frames today. The Perspective of a Frame becomes the wire for the scene, and the entities of the scene **are** the Expressions of that Perspective. Users move between spatial Frames the way they move between document-shaped Frames now.
 
-**Stage 4 — Shipped with WE.** Connection Engine is the spatial runtime that WE ships with. The two stop being separate projects.
+**Stage 4 — Bundled with WE.** Connection Engine becomes the spatial runtime that WE distributes. The two stop being separate projects.
 
-This isn't ambitious — it's the obvious shape if you accept the convergence. Most of the work is making sure the engine stays small, doesn't hardcode assumptions WE will need to override, and respects the design choices AD4M has already made.
+Once you accept the convergence, this is the obvious shape. Most of the work goes into keeping the engine small, avoiding hardcoded assumptions that WE will need to override, and respecting the design choices that AD4M has already made.
 
 ## The Living Web
 
-We're also converging with [HexaField/w3c-living-web-proposals](https://github.com/HexaField/w3c-living-web-proposals) — a set of W3C-style proposals that aim to make these primitives part of the web platform itself, not just an ecosystem choice. Distributed identity, signed semantic mutations, agent-centric graph storage, capability-based authorisation. The same primitives Connection Engine sits on.
+Connection Engine also converges with [HexaField/w3c-living-web-proposals](https://github.com/HexaField/w3c-living-web-proposals), a set of W3C-style proposals. They aim to make these primitives part of the web platform itself, rather than an ecosystem choice: distributed identity, signed semantic mutations, agent-centric graph storage, and capability-based authorisation. Connection Engine sits on the same primitives.
 
-When (if) those proposals land in browsers, a lot of what `@connectionengine/local` and `@connectionengine/ad4m-bridge` do becomes redundant — the browser provides it directly. Connection Engine should be designed so that's a *good* day, not a hard refactor. Use web standards where they exist; layer compatibility shims (`@living-web/*` polyfills) underneath when they don't.
+If those proposals land in browsers, much of the work that `@connectionengine/local` and `@connectionengine/ad4m-bridge` do becomes redundant, because the browser will provide it directly. That would be a good day, and it should not require a hard refactor. Use web standards where they exist, and put compatibility shims (the `@living-web/*` polyfills) underneath where they do not.
 
 ## Why now
 
-Two things make 2026 the right window:
+Two conditions make 2026 the right window:
 
-1. **Web platform capabilities are finally enough.** WebGPU is shipping. WebXR is shipping. SharedArrayBuffer + Atomics for physics is shipping. `RTCDataChannel` is reliable. The web can host a spatial engine without native bridges.
-2. **The decentralised stack is finally usable.** AD4M is running in production, the [WE](https://github.com/coasys/we) Frame model has demos, Holochain has matured. The substrate exists; what's missing is a credible spatial layer on top.
+1. **The web platform finally has the capabilities.** Browsers now have WebGPU, WebXR, and SharedArrayBuffer with Atomics for physics. `RTCDataChannel` works reliably. The web can host a spatial engine without native bridges.
+2. **The decentralised stack is finally usable.** AD4M runs in production, the [WE](https://github.com/coasys/we) Frame model has demos, and Holochain has matured. The substrate exists. A credible spatial layer on top is what remains missing.
 
-There's a window — small, but real — where someone gets to define what spatial-as-a-web-primitive looks like. Connection Engine is one attempt at that.
+Nobody has yet defined what spatial-as-a-web-primitive looks like. Connection Engine is one attempt at it.
 
-## How to follow along
+## How to follow the work
 
-- This repository — `github.com/connectionengine/connectionengine`. Issues + PRs welcome; ECS and network layer are stable enough to build on.
-- [AD4M](https://github.com/coasys/ad4m) — the identity + transport substrate Connection Engine targets.
+- This repository — `github.com/connectionengine/connectionengine`. Issues and PRs are welcome. The ECS and the network layer are stable enough to build on.
+- [AD4M](https://github.com/coasys/ad4m) — the identity and transport substrate that Connection Engine targets.
 - [WE](https://github.com/coasys/we) — the Frame runtime that Connection Engine aims to converge with.
 - [Living Web proposals](https://github.com/HexaField/w3c-living-web-proposals) — the W3C-shaped attempt to make these primitives standard.

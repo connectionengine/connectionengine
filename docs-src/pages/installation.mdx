@@ -4,7 +4,7 @@ description: Install Connection Engine, pick a runtime mode, and create your fir
 
 # Installation
 
-Connection Engine is a TypeScript pnpm workspace. The three published packages are:
+Connection Engine is a TypeScript pnpm workspace. It publishes three packages:
 
 | Package                            | What it gives you                                                   |
 |------------------------------------|---------------------------------------------------------------------|
@@ -12,7 +12,7 @@ Connection Engine is a TypeScript pnpm workspace. The three published packages a
 | `@connectionengine/local`          | Ed25519 / `did:key` identity + ZCAP capability constraints.         |
 | `@connectionengine/ad4m-bridge`    | Wraps a running [AD4M](https://github.com/coasys/ad4m) instance.    |
 
-You only ever need `core`. The other two are opt-in based on what identity / transport story you want.
+You always need `core`. You opt in to the other two, according to the identity and transport story that you want.
 
 ## Install
 
@@ -25,7 +25,7 @@ pnpm add @connectionengine/ad4m-bridge
 
 ## A minimal world
 
-The smallest interesting Connection Engine program — one world, one entity, one component:
+This is the smallest interesting Connection Engine program: one world, one entity, one component.
 
 ```ts
 import {
@@ -55,15 +55,15 @@ setComponent(world, player, Health, { current: 75 })
 console.log(getComponent(world, player, Health)) // { current: 75, max: 100 }
 ```
 
-A few things to notice:
+Notice three things:
 
-- `defineComponent` is **global** — once defined, the same component is referenced from every world. Storage (the typed arrays + per-entity instance) is **per-world**.
-- The schema (`Schema.Object({ ... })`) is the source of truth. It drives field defaults, SoA storage decisions, network encoding, and SHACL emission.
-- `createAnonAgent` is the simplest agent — fine for solo mode or tests. For signing-aware identity use `@connectionengine/local`, for AD4M-backed identity use `@connectionengine/ad4m-bridge`.
+- `defineComponent` is **global**. Once you define a component, every world references the same definition. The SoA typed arrays live on that definition. The per-entity instance records and view bags live on the **engine**, in `engine.componentStores`.
+- The schema (`Schema.Object({ ... })`) is the source of truth. It drives the field defaults, the SoA storage decisions, the network encoding, and the SHACL emission.
+- `createAnonAgent` is the simplest agent, and it suits solo mode and tests. Use `@connectionengine/local` for signing-aware identity, and `@connectionengine/ad4m-bridge` for AD4M-backed identity.
 
 ## Two worlds talking
 
-A world isn't very interesting alone. Wire two together with the in-memory transport:
+One world alone does little. Link two worlds with the in-memory transport:
 
 ```ts
 import { connectInMemory, flushAsync } from '@connectionengine/core'
@@ -87,13 +87,13 @@ const bAlice = getEntityByUID(b, bScene, 'alice')!
 console.log(getComponent(b, bAlice, Health)) // { current: 80, max: 100 }
 ```
 
-That's the whole multiplayer story in eight lines: entities created on one world materialise on the other, with the same UID path, the same components, the same values.
+Eight lines, and you have multiplayer. An entity created on one world materialises on the other, with the same UID path, the same components, and the same values.
 
-For the real session protocol (handshake, event-log replay on late join, disconnect cleanup), see [Peers & Sessions](/networking).
+For the real session protocol — handshake, event-log replay on late join, and disconnect cleanup — see [Peers & Sessions](/networking).
 
 ## Running the tests
 
-To verify the install works locally:
+Verify the install locally:
 
 ```bash
 git clone https://github.com/connectionengine/connectionengine
@@ -102,4 +102,4 @@ pnpm install
 pnpm --filter @connectionengine/core test
 ```
 
-You should see 150+ passing tests across the ECS, mutation pipeline, binary codec, governance, and lifecycle.
+The suite covers the ECS, the mutation pipeline, the binary codec, governance, and the lifecycle.

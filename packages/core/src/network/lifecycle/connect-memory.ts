@@ -1,15 +1,18 @@
 /**
- * Pre-wire two worlds over an in-memory `TransportEndpoint` pair without
- * going through the formal `joinNetwork` handshake.
+ * Link two worlds over a pair of in-memory `TransportEndpoint` objects, without
+ * the formal `joinNetwork` handshake.
  *
- * Authored envelopes fan out via `installFanout`. If `runtimeComponents` are
- * supplied, a `BinaryChannel` is attached to each Connection so runtime SoA
- * deltas flow over a per-peer binary pipeline.
+ * Authored envelopes fan out through `installFanout`. When the caller supplies
+ * `runtimeComponents`, the function attaches a `BinaryChannel` to each
+ * Connection, so that the runtime SoA deltas flow over a per-peer binary
+ * pipeline.
  *
- * Use this when you want envelope-level integration tests; use `joinNetwork`
- * for the production-shaped late-join + event-log replay path.
+ * Use this function for an envelope-level integration test. Use `joinNetwork`
+ * for the production-shaped path, which includes late join and event-log
+ * replay.
  *
- * The connection joins each side's `'default'` network (auto-created).
+ * The connection joins the `'default'` network of each side, which the engine
+ * creates on demand.
  */
 
 import type { AuthoredEvent, Entity, World } from '../../ecs/world'
@@ -157,9 +160,10 @@ const ensureRemotePeerEntity = (world: World, remote: RemoteIdentity): Entity =>
 }
 
 /**
- * Walk a UID path, creating any missing nodes silently. Runs `decorate` on
- * the leaf when (and only when) it was freshly created — pre-existing leaves
- * already carry their components from replay/local setup.
+ * Walk a UID path, and create every missing node silently. The function runs
+ * `decorate` on the leaf when, and only when, it created that leaf. A leaf that
+ * already existed already carries its components, from replay or from local
+ * setup.
  */
 const ensureAgentPath = (world: World, path: string[], decorate: (entity: Entity) => void): Entity => {
   let parent: Entity = world.worldRoot

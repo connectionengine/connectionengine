@@ -1,27 +1,31 @@
 /**
- * Ownership + Authority — networked-entity primitives.
+ * Ownership and Authority — the primitives of a networked entity.
  *
- * Lives in `network/` because owner and authority are wire concerns — they
- * only matter when entities replicate across peers. The pure ECS layer
- * (`createEntity`) knows nothing about them.
+ * They live in `network/`, because owner and authority are wire concerns. They
+ * matter only when entities replicate across peers. The pure ECS layer, through
+ * `createEntity`, knows nothing about them.
  *
- * Networked entities are created via `spawnPrefab` (in `network/prefab.ts`),
- * which assigns `OwnedBy` + `AuthoritativeFor` alongside the UID. This module
- * carries the relations themselves plus the transfer / recovery / standing-check
- * machinery.
+ * `spawnPrefab`, in `network/prefab.ts`, creates a networked entity. It assigns
+ * `OwnedBy` and `AuthoritativeFor` beside the UID. This module holds the
+ * relations themselves, and the machinery for transfer, recovery, and the
+ * standing check.
  *
  * Semantics:
- *   - `OwnedBy(user)`            — permanent provenance. Set once, never moves.
- *   - `AuthoritativeFor(peer)`   — transferable runtime authority. The peer
- *                                   currently writing this entity's state.
+ *   - `OwnedBy(user)`            — permanent provenance. Set once, and it never
+ *                                  moves.
+ *   - `AuthoritativeFor(peer)`   — transferable runtime authority. It names the
+ *                                  peer that writes the state of this entity
+ *                                  now.
  *
- * Transfers are gated end-to-end:
- *   - **Sender-side**: `setAuthority` / `transferAuthority` throw unless the
- *     local peer has standing (current authority OR a peer of the owner-user).
- *   - **Receive-side**: `applyAuthoredEnvelope` (in `network/mutation.ts`) runs
+ * A gate guards each transfer end to end:
+ *   - **Sender-side**: `setAuthority` and `transferAuthority` throw unless the
+ *     local peer holds standing. Standing means the current authority, or a
+ *     peer of the owner-user.
+ *   - **Receive-side**: `applyAuthoredEnvelope`, in `network/mutation.ts`, runs
  *     the equivalent check on every incoming `AuthoritativeFor` mutation. The
- *     event's author DID must match either the owner-user's DID or the
- *     current authority's user-DID. Failed events are rejected, never applied.
+ *     author DID of the event must match the DID of the owner-user, or the user
+ *     DID of the current authority. A failed event is rejected, and never
+ *     applied.
  */
 
 import { defineRelation, getRelationTargets, addRelation, removeRelation } from '../ecs/relation'
@@ -42,9 +46,10 @@ export const AuthoritativeFor = defineRelation({
 // ── Ownership ────────────────────────────────────────────────────────────────-
 
 /**
- * Direct owner assignment. Rare — owner is normally set once via `spawnPrefab`.
- * Used by bootstrap helpers (`createUser` self-owns; `createPeer` owns under
- * its user) and by the receive path when materialising remote identities.
+ * Direct owner assignment. Callers need it rarely, because `spawnPrefab`
+ * normally sets the owner once. Two places use it. The bootstrap helpers use
+ * it: `createUser` makes a user self-owned, and `createPeer` puts a peer under
+ * its user. The receive path uses it when it materialises a remote identity.
  */
 export const setOwner = (world: World, entity: Entity, user: Entity): void => {
   addRelation(world, entity, OwnedBy, user)
@@ -61,10 +66,11 @@ export interface AuthorityRequestResult {
 }
 
 /**
- * Does the local peer have standing to change `entity`'s authority? Returns
- * true iff the local peer is the current authority holder OR belongs to the
- * same user as the entity's owner (any of the owner's peers can authorise a
- * transfer).
+ * Does the local peer hold standing to change the authority of `entity`? The
+ * function returns true if and only if one of two conditions holds. The local
+ * peer is the current authority holder. Or the local peer belongs to the same
+ * user as the owner of the entity, because any peer of the owner can authorise
+ * a transfer.
  */
 export const canChangeAuthority = (world: World, entity: Entity): boolean => {
   const localPeer = world.localPeer
@@ -77,9 +83,10 @@ export const canChangeAuthority = (world: World, entity: Entity): boolean => {
 }
 
 /**
- * Set authority. Sender-gated by `canChangeAuthority`. Pass `{ unchecked:
- * true }` only from bootstrap helpers (`createPeer` self-authority, the
- * receive path's remote-peer materialisation, `recoverAuthority`).
+ * Set the authority. `canChangeAuthority` gates the sender side. Pass
+ * `{ unchecked: true }` only from a bootstrap helper. Three of them use it:
+ * the self-authority step of `createPeer`, the remote-peer materialisation on
+ * the receive path, and `recoverAuthority`.
  */
 export const setAuthority = (
   world: World,
@@ -102,20 +109,22 @@ export const getAuthority = (world: World, entity: Entity): Entity | undefined =
   getRelationTargets(world, entity, AuthoritativeFor)[0]
 
 /**
- * Transfer authority of `entity` to `newPeer`. Sender-gated: throws if the
- * local peer lacks standing. The two relation writes (remove old, add new)
- * replicate via the authored pipeline; the receive-side gate in
- * `network/mutation.ts` enforces the same check on every peer that receives
- * the events.
+ * Transfer the authority of `entity` to `newPeer`. A sender-side gate applies,
+ * so the function throws when the local peer lacks standing. The two relation
+ * writes — remove the old target, add the new one — replicate through the
+ * authored pipeline. The receive-side gate in `network/mutation.ts` then runs
+ * the same check on every peer that receives those events.
  */
 export const transferAuthority = (world: World, entity: Entity, newPeer: Entity): void => {
   setAuthority(world, entity, newPeer)
 }
 
 /**
- * Request authority. Default policy: owner's user-peer auto-grants; everyone
- * else denies. An owner-less entity is an invariant violation (every
- * `spawnPrefab` sets one) — denied rather than first-write-wins.
+ * Request the authority. The default policy has three rules. A peer of the
+ * owner-user receives an automatic grant. Every other requester receives a
+ * denial. An entity without an owner counts as an invariant violation, because
+ * every `spawnPrefab` sets one, so the policy denies the request instead of
+ * granting it to the first writer.
  */
 export const requestAuthority = async (
   world: World,
@@ -134,27 +143,23 @@ export const requestAuthority = async (
   return { status: 'denied', reason: "requester is not the owner-user's peer" }
 }
 
-/**
- * Reassign authority when the current holder has disconnected. Picks the
- * lowest-id remaining peer of the owner-user; falls back to `world.localPeer`
- * if no peer of the owner remains locally known (last-resort host migration).
- *
- * Wired into `sweepDisconnectedPeer` so it runs automatically on disconnect.
- */
 // ── Receive-side standing check ───────────────────────────────────────────────-
 
 /**
- * Verify the author of an `AuthoritativeFor` mutation has standing — either
- * they are the owner-user, or they are the current authority's user. Returns
- * `undefined` when the author has standing, or a human-readable reason
- * string when it should be rejected. Returns `undefined` immediately for any
- * predicate other than `AuthoritativeFor`.
+ * Verify that the author of an `AuthoritativeFor` mutation holds standing. The
+ * author must be the owner-user, or the user of the current authority. The
+ * function returns `undefined` when the author holds standing. It returns a
+ * human-readable reason string when the caller must reject the event. It
+ * returns `undefined` immediately for every predicate other than
+ * `AuthoritativeFor`.
  *
- * Called inline by `network/mutation.ts` `applyAuthoredEnvelope` — both live
- * in `network/`, so this is a direct named import, not a runtime hook.
+ * `applyAuthoredEnvelope` in `network/mutation.ts` calls it inline. Both
+ * modules live in `network/`, so this is a direct named import rather than a
+ * runtime hook.
  *
- * Evaluated against the world's *current* state at receipt — replayed events
- * apply in arrival order so chronology stays consistent.
+ * The check evaluates against the *current* state of the world at receipt.
+ * Replayed events apply in arrival order, which keeps the chronology
+ * consistent.
  */
 export const checkAuthorityChangeStanding = (world: World, event: AuthoredEvent): string | undefined => {
   if (event.predicate !== AuthoritativeFor.name) return undefined
@@ -177,6 +182,14 @@ export const checkAuthorityChangeStanding = (world: World, event: AuthoredEvent)
 
 // ── recoverAuthority ──────────────────────────────────────────────────────────
 
+/**
+ * Reassign the authority after the current holder disconnects. The function
+ * selects the remaining peer of the owner-user with the lowest id. It falls
+ * back to `world.localPeer` when it knows no remaining local peer of the owner,
+ * which gives a last-resort host migration.
+ *
+ * `sweepDisconnectedPeer` calls it, so it runs automatically on disconnect.
+ */
 export const recoverAuthority = (world: World, entity: Entity, disconnectedPeer: Entity): void => {
   const current = getAuthority(world, entity)
   if (current !== disconnectedPeer) return

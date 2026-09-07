@@ -1,10 +1,10 @@
 /**
- * User + Peer entity factories.
+ * Factories for the User entity and the Peer entity.
  *
- * The component definitions and lookup helpers live in `agents.ts` so that
- * `authority.ts` can read user DIDs without importing the factory functions
- * here — preventing an `authority → peer → authority` cycle. This module
- * carries only the wire-identity bootstrap helpers.
+ * The component definitions and the lookup helpers live in `agents.ts`. That
+ * split lets `authority.ts` read user DIDs without an import of the factory
+ * functions here, which prevents an `authority → peer → authority` cycle. This
+ * module holds only the bootstrap helpers for wire identity.
  */
 
 import { setComponent } from '../ecs/component'
@@ -14,7 +14,7 @@ import { AuthoritativeFor, OwnedBy } from './authority'
 import { PeerComponent, UserComponent, findUserByDID, type DID } from './agents'
 import type { Entity, World } from '../ecs/world'
 
-// Re-export the agent primitives for callers that just want one import path.
+// Re-export the agent primitives, for a caller that wants one import path.
 export { UserComponent, PeerComponent, findUserByDID, findPeerByIdForUser, getPeersForUser, getUserDID } from './agents'
 export type { DID } from './agents'
 
@@ -24,14 +24,15 @@ export interface CreateUserOptions {
   did: DID | string
   displayName?: string
   uid?: string
-  /** If true, sets world.localUser to this entity. */
+  /** When true, the factory sets world.localUser to this entity. */
   asLocal?: boolean
 }
 
 /**
- * Create (or resolve) a user entity for the given DID. Idempotent on DID.
- * Users are self-owned (`OwnedBy(self)`) — anchoring the owner chain for
- * everything else in the world.
+ * Create a user entity for the given DID, or resolve the existing one. The
+ * function is idempotent on the DID. A user is self-owned, through
+ * `OwnedBy(self)`, which anchors the owner chain for everything else in the
+ * world.
  */
 export const createUser = (world: World, options: CreateUserOptions): Entity => {
   const existing = findUserByDID(world, options.did)
@@ -54,17 +55,19 @@ export interface CreatePeerOptions {
   user: Entity
   peerId?: string
   uid?: string
-  /** If true, sets world.localPeer (and world.localUser if unset). */
+  /** When true, the factory sets world.localPeer. It also sets world.localUser
+   *  if no value is set there yet. */
   asLocal?: boolean
 }
 
 /**
- * Create a peer entity that BelongsTo a user. One device/tab/process =
- * one peer entity. Owned by its user, self-authoritative for its own state.
+ * Create a peer entity that BelongsTo a user. Each device, tab, or process maps
+ * to exactly one peer entity. Its user owns it, and it holds authority over its
+ * own state.
  *
- * When `asLocal: true`, also sets `world.localPeer` AND `world.localUser`
- * (if not already set) — convenience for the common single-user case where
- * createPeer is the only `asLocal` call.
+ * With `asLocal: true`, the function sets `world.localPeer` AND
+ * `world.localUser`, if no value is set there yet. This helps in the common
+ * single-user case, where `createPeer` is the only call that passes `asLocal`.
  */
 export const createPeer = (world: World, options: CreatePeerOptions): Entity => {
   const peerId = options.peerId ?? randomPeerId()
@@ -91,5 +94,6 @@ const randomPeerId = (): string => {
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`
 }
 
-/** Re-export BelongsTo so users can construct it without a second import. */
+/** Re-export BelongsTo, so that a caller can construct it without a second
+ *  import. */
 export { BelongsTo }

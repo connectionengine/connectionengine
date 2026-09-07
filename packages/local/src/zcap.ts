@@ -1,37 +1,43 @@
 /**
- * ZCAP — Authorisation Capabilities for Linked Data (minimal).
+ * ZCAP — a minimal implementation of Authorisation Capabilities for Linked
+ * Data.
  *
- * A capability grants its invoker the right to perform specific predicates
- * within a specific scope. Capabilities are signed and delegatable: the
- * grantee can produce a child capability (narrower predicates, the same or
- * narrower scope, sooner expiry) and sign it with their own key.
+ * A capability grants its invoker the right to use specific predicates inside a
+ * specific scope. A capability carries a signature, and its holder can delegate
+ * it. The grantee produces a child capability, with narrower predicates, the
+ * same scope or a narrower one, and an earlier expiry, and signs that child
+ * with their own key.
  *
- * Verification walks the chain root-to-leaf, checking each signature, each
- * `delegatable` flag, expiry, and that the child's predicates/scope are a
- * subset of the parent's.
+ * Verification walks the chain from root to leaf. At each link it checks the
+ * signature, the `delegatable` flag, and the expiry. It also checks that the
+ * predicates and the scope of the child form a subset of those of the parent.
  *
- * This is a deliberately minimal subset of W3C ZCAP-LD — full LD framing,
- * action URIs, and proof chains belong to a higher integration layer.
+ * This module implements a deliberately minimal subset of W3C ZCAP-LD. Full LD
+ * framing, action URIs, and proof chains belong to a higher integration layer.
  */
 
 import { type DID, type KeyPair, fromHex, signTriple, stableStringify, toHex, verifyByDID } from './did'
 
 export interface Capability {
-  /** DID of the holder this capability is delegated to. */
+  /** The DID of the holder that this capability is delegated to. */
   invoker: DID
-  /** Predicates (component / relation ids) this capability covers. */
+  /** The predicates that this capability covers, as component ids or relation
+   *  ids. */
   predicates: string[]
-  /** Scope — entity path; empty array = world-wide. */
+  /** Scope, as an entity path. An empty array means world-wide. */
   scope: string[]
-  /** Whether the invoker may further delegate. */
+  /** Whether the invoker may delegate this capability further. */
   delegatable: boolean
-  /** Expiry timestamp (ms since epoch), or null for no expiry. */
+  /** Expiry timestamp, in milliseconds since epoch. It holds null when the
+   *  capability never expires. */
   expires: number | null
-  /** Parent capability — present on delegated caps; root has none. */
+  /** The parent capability. A delegated capability carries one, and a root
+   *  capability carries none. */
   parent?: Capability
-  /** Signature over canonical serialisation of {invoker, predicates, scope, delegatable, expires, parent-signature?}. */
+  /** Signature over the canonical serialisation of { invoker, predicates,
+   *  scope, delegatable, expires, parent-signature? }. */
   signature: string
-  /** DID of the signer (the parent's invoker, or the root issuer). */
+  /** The DID of the signer: the invoker of the parent, or the root issuer. */
   signer: DID
 }
 
@@ -70,9 +76,9 @@ export const createRootCapability = (options: RootCapabilityOptions): Capability
 
 export interface DelegateOptions {
   parent: Capability
-  /** Holder of the parent capability — must own the private key. */
+  /** The holder of the parent capability. It must own the private key. */
   delegator: KeyPair
-  /** DID of the new invoker (the delegate). */
+  /** The DID of the new invoker, which is the delegate. */
   invoker: DID
   predicates?: string[]
   scope?: string[]
@@ -86,12 +92,13 @@ export const delegateCapability = (options: DelegateOptions): Capability => {
     throw new Error("Delegator must be the parent capability's invoker")
   }
   const predicates = options.predicates ?? options.parent.predicates
-  // Subset check
+  // Check that the predicates form a subset.
   for (const p of predicates) {
     if (!options.parent.predicates.includes(p)) throw new Error(`Cannot delegate predicate '${p}' not in parent`)
   }
   const scope = options.scope ?? options.parent.scope
-  // Scope subset: child's scope must start with parent's
+  // Check the scope subset. The scope of the child must start with the scope of
+  // the parent.
   for (let i = 0; i < options.parent.scope.length; i++) {
     if (scope[i] !== options.parent.scope[i]) throw new Error('Child scope must be within parent scope')
   }
@@ -112,13 +119,15 @@ export const delegateCapability = (options: DelegateOptions): Capability => {
 }
 
 /**
- * Verify a capability chain. Returns true iff:
- *   - every link's signature verifies against its signer DID
- *   - signer DID equals parent's invoker (or, for root, the trusted issuer DID
- *     provided by the caller)
- *   - predicates/scope are subsets of parent's
- *   - none in the chain are expired
- *   - delegatable flag is true for every non-leaf
+ * Verify a capability chain. The function returns true if, and only if, all
+ * five conditions hold:
+ *   - the signature of every link verifies against its signer DID
+ *   - each signer DID equals the invoker of the parent. For the root link it
+ *     equals the trusted issuer DID that the caller supplied.
+ *   - the predicates and the scope of each link form a subset of those of its
+ *     parent
+ *   - no link in the chain has expired
+ *   - the delegatable flag holds true for every link except the leaf
  */
 export const verifyCapability = (cap: Capability, options: { now: number; trustedIssuers?: DID[] }): boolean => {
   if (cap.expires !== null && cap.expires < options.now) return false
@@ -126,12 +135,15 @@ export const verifyCapability = (cap: Capability, options: { now: number; truste
   if (cap.parent) {
     if (cap.signer !== cap.parent.invoker) return false
     if (!cap.parent.delegatable) return false
-    // subset checks already enforced at delegation time; re-verify for tampering
+    // The delegation step already enforced the subset checks. Run them again
+    // here, to find tampering.
     for (const p of cap.predicates) if (!cap.parent.predicates.includes(p)) return false
     for (let i = 0; i < cap.parent.scope.length; i++) if (cap.scope[i] !== cap.parent.scope[i]) return false
     return verifyCapability(cap.parent, options)
   }
-  // Root — signer must be a trusted issuer (or, if none provided, signer == invoker is allowed self-issuance)
+  // The root link. Its signer must be a trusted issuer. When the caller
+  // supplies no trusted issuer, a signer equal to the invoker counts as valid
+  // self-issuance.
   if (options.trustedIssuers) return options.trustedIssuers.includes(cap.signer)
   return true
 }
@@ -143,8 +155,8 @@ export const capabilityAllows = (cap: Capability, predicate: string, scope: stri
   return true
 }
 
-// Local helper — use the underlying Ed25519 sign without producing a Triple
+// Local helper. It calls the underlying Ed25519 sign, and produces no Triple.
 import { sign } from './did'
 const signTripleRaw = (bytes: Uint8Array, keyPair: KeyPair): Uint8Array => sign(bytes, keyPair.privateKey)
-// silence unused
+// Keep the import used, so that the linter reports no unused symbol.
 void signTriple

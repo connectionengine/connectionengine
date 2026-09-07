@@ -1,11 +1,12 @@
 /**
- * Outbound fanout — wire each Network's `publishAuthored` / `publishRuntime`
- * to fan across its own connection set.
+ * Outbound fanout. It attaches the `publishAuthored` and `publishRuntime` hooks
+ * of each Network, so that each hook fans across the connection set of its own
+ * network.
  *
- * Mutations are routed to networks by `routeNetworks(world, entity)` in
- * `mutation.ts` (today: broadcast-to-all). Each network's hook receives only
- * the events / dirty entries routed to it; this module just fans within a
- * network's connections.
+ * `routeNetworks(world, entity)` in `mutation.ts` routes each mutation to its
+ * networks, and today it broadcasts to all of them. The hook of a network
+ * receives only the events and dirty entries that routing sent to it. This
+ * module fans out within the connections of one network, and does nothing more.
  */
 
 import type { AuthoredEnvelope, Entity, World } from '../../ecs/world'
@@ -24,11 +25,11 @@ export const setConnectionChannel = (connection: Connection, channel: BinaryChan
 export const getConnectionChannel = (connection: Connection): BinaryChannel | undefined => channels.get(connection)
 
 /**
- * Get-or-create the binary channel for a connection. Lazy auto-build draws
- * from every continuous-channel ComponentDefinition on the world's engine
- * (sorted by id for deterministic peer-agnostic order) — the engine registry
- * guarantees both sides arrive at the same list as long as both packages have
- * imported the same component modules.
+ * Get the binary channel of a connection, or create it. The lazy build draws
+ * from every continuous-channel ComponentDefinition on the engine of the world,
+ * sorted by id for a deterministic, peer-agnostic order. The engine registry
+ * then guarantees that both sides reach the same list, for as long as both
+ * packages have imported the same component modules.
  */
 export const ensureChannel = (world: World, connection: Connection): BinaryChannel | undefined => {
   let channel = channels.get(connection)
@@ -43,9 +44,10 @@ export const ensureChannel = (world: World, connection: Connection): BinaryChann
 }
 
 /**
- * Install fanout on a network. Idempotent. `publishAuthored` and
- * `publishRuntime` are wired to fan across this network's connections; the
- * binary path for runtime uses each connection's `BinaryChannel`.
+ * Install the fanout on a network. The function is idempotent. It attaches
+ * `publishAuthored` and `publishRuntime`, so that each hook fans across the
+ * connections of this network. The runtime binary path uses the `BinaryChannel`
+ * of each connection.
  */
 export const installFanout = (world: World, network: Network): void => {
   if (network.publishAuthored && network.publishRuntime) return
@@ -66,11 +68,11 @@ export const installFanout = (world: World, network: Network): void => {
 }
 
 /**
- * Receive-side gate: an authored envelope just arrived from `connection` on
- * `network`. Re-broadcast its events to every OTHER connection across every
- * network on the world that hasn't already seen them — mesh flood. The
- * incoming events themselves are then applied via `applyAuthoredEnvelope`
- * by the caller.
+ * Receive-side gate. An authored envelope has just arrived from `connection` on
+ * `network`. The function broadcasts its events again, to every OTHER
+ * connection on every network of this world that has not seen them. That gives
+ * a mesh flood. The caller then applies the incoming events themselves, through
+ * `applyAuthoredEnvelope`.
  */
 export const rebroadcastAuthored = (world: World, source: Connection, envelope: AuthoredEnvelope): void => {
   const fresh = envelope.events.filter((e) => !hasEventBeenSeen(world, e))

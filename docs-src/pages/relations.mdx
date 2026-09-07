@@ -29,7 +29,7 @@ getRelationTargets(world, alice, Likes) // → [post1, post2]
 removeRelation(world, alice, Likes, post1)
 ```
 
-Combined with components, you get the third side of the semantic-graph triple:
+Components and relations together give you the third side of the semantic-graph triple:
 
 ```
 subject (entity)  ── predicate (component or relation) ── object (value or entity)
@@ -38,18 +38,18 @@ entity:42  ──  Health  ──  { current: 75, max: 100 }      // component t
 entity:42  ──  Likes   ──  entity:99                       // relation triple
 ```
 
-This is why Connection Engine can be read as both an ECS and an RDF-shaped graph — the same write produces both views simultaneously.
+One write produces both views at once, which is what lets you read Connection Engine as an ECS and as an RDF-shaped graph.
 
-## Exclusive vs. non-exclusive
+## Exclusive and non-exclusive
 
-- **Exclusive** (`exclusive: true`) — at most one target per source. Adding a second target replaces the first. `ChildOf`, `OwnedBy`, `AuthoritativeFor` are exclusive.
-- **Non-exclusive** (default) — many targets per source. `Likes`, `Tagged`, `HasConstraint` are non-exclusive.
+- **Exclusive** (`exclusive: true`) — at most one target per source. A second target replaces the first. `ChildOf`, `OwnedBy`, and `AuthoritativeFor` are exclusive.
+- **Non-exclusive** (the default) — many targets per source. `Likes`, `Tagged`, and `HasConstraint` are non-exclusive.
 
-The choice is structural, not policy. If having two parents is meaningless, mark it exclusive and the engine enforces it. If it could legitimately mean two, don't.
+The choice is structural rather than policy. Mark a relation exclusive when two parents would carry no meaning, and the engine enforces it. Leave it non-exclusive when two targets could legitimately mean something.
 
 ## Relations replicate as authored events
 
-Relations always travel the `event` channel — they carry causal meaning (who owns what, who follows whom) and belong in the event log so late-joining peers can rebuild the graph. There's no SoA equivalent for relations; the only opt-out is `sync: false`:
+Relations always travel the `event` channel. They carry causal meaning — who owns what, who follows whom — and they belong in the event log, so that a late-joining peer can rebuild the graph. Relations have no SoA equivalent. The only opt-out is `sync: false`:
 
 ```ts
 const DebugHover = defineRelation({
@@ -59,11 +59,11 @@ const DebugHover = defineRelation({
 })
 ```
 
-On the wire, a relation event looks like `(sourcePath, relationName, op, { targetPath })`. The receiver walks both paths in its own world, creates the chain if necessary, and applies the relation. Identity is path-based on both ends — there are no entity IDs in the envelope.
+On the wire, a relation event has the shape `(sourcePath, relationName, op, { targetPath })`. The receiver walks both paths in its own world, creates the chain when necessary, and applies the relation. Identity is path-based at both ends. The envelope carries no entity IDs.
 
 ## Built-in relations
 
-A small set of relations come with core because they're load-bearing for the rest of the system:
+Core defines a small set of relations, because the rest of the system depends on them:
 
 | Relation                | Where                    | Purpose                                            |
 |-------------------------|--------------------------|----------------------------------------------------|
@@ -72,7 +72,7 @@ A small set of relations come with core because they're load-bearing for the res
 | `AuthoritativeFor`      | `network/authority.ts`   | Who controls runtime mutations for this entity     |
 | `HasConstraint`         | `network/governance.ts`  | Attaches governance constraints to a scope         |
 
-You can define any number more. Conventionally, name them as English-readable predicates (`Likes`, `MemberOf`, `Targets`) — they read well in event logs and match the RDF vibe.
+You can define any number of your own. By convention, name them as English-readable predicates, such as `Likes`, `MemberOf`, and `Targets`. Those names read well in event logs, and they match the RDF style.
 
 ## Observers
 
@@ -86,4 +86,4 @@ observe(world, ChildOf, onAdd, (parent, child) => {
 })
 ```
 
-This is how the identity system stays consistent across `addRelation(BelongsTo)` calls — but again, you can use it for anything. Reactions to ownership transfers, governance attachments, social-graph edges; whatever needs to fire on a relation change.
+The identity system uses observers to stay consistent across `addRelation(BelongsTo)` calls. You can use them for anything else too — reactions to ownership transfers, to governance attachments, to social-graph edges, or to any other relation change.

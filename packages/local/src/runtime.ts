@@ -1,14 +1,14 @@
 /**
- * createLocalRuntime — one-call setup for a fully-local-mode world.
+ * createLocalRuntime — a one-call setup for a world in fully local mode.
  *
- * Convenience helper for solo + local-multiplayer apps that don't want to
- * compose the agent / engine / world / transport / governance pieces
- * themselves.
+ * This helper serves a solo app or a local-multiplayer app that does not want
+ * to compose the agent, the engine, the world, the transport, and the
+ * governance itself.
  *
  *   const { world, agent } = createLocalRuntime({ seed: 'alice' })
- *   // ... use the world; signing + governance are wired
+ *   // ... use the world. The signing and the governance are already attached.
  *
- * For two-peer mode wire them with `connectLocalInMemory`:
+ * For a two-peer setup, link the runtimes with `connectLocalInMemory`:
  *
  *   const a = createLocalRuntime({ seed: 'alice' })
  *   const b = createLocalRuntime({ seed: 'bob' })
@@ -27,20 +27,24 @@ import { createLocalAgent, type LocalAgent } from './agent'
 import { installCapabilityValidator, type CapabilityValidationContext } from './governance'
 
 export interface CreateLocalRuntimeOptions {
-  /** Seed for the local agent's Ed25519 keypair (deterministic if provided). */
+  /** Seed for the Ed25519 keypair of the local agent. A seed makes the keypair
+   *  deterministic. */
   seed?: string
-  /** Pre-built agent (overrides `seed` if supplied). */
+  /** An agent built earlier. It overrides `seed`. */
   agent?: LocalAgent
-  /** Optional engine. Defaults to a fresh isolated engine — local runtimes
-   *  are typically standalone, and one engine per runtime keeps storage
-   *  isolated from other peers in the same process. */
+  /** Optional engine. It defaults to a fresh isolated engine. A local runtime
+   *  usually stands alone, and one engine per runtime keeps its storage
+   *  isolated from the other peers in the same process. */
   engine?: Engine
-  /** Simulation tick rate for the engine (only used when constructing a fresh
-   *  engine; ignored when `engine` is supplied). Default 1/60. */
+  /** Simulation tick rate of the engine. It applies only when this function
+   *  constructs a fresh engine, and it is ignored when the caller supplies
+   *  `engine`. It defaults to 1/60. */
   fixedTimeStep?: number
-  /** Clock for the engine (fresh-engine case only). Default wall-clock. */
+  /** Clock for the engine. It applies only to a fresh engine, and it defaults
+   *  to the wall clock. */
   clock?: Clock
-  /** Capability validator context (trustedIssuers, hasCredential oracle). Omit to skip governance wiring. */
+  /** Context for the capability validator, which holds `trustedIssuers` and the
+   *  `hasCredential` oracle. Omit it to attach no governance. */
   governance?: CapabilityValidationContext | false
 }
 
@@ -53,7 +57,8 @@ export const createLocalRuntime = (options: CreateLocalRuntimeOptions = {}): Loc
   const agent = options.agent ?? createLocalAgent({ seed: options.seed })
   const engine = options.engine ?? createEngine({ fixedTimeStep: options.fixedTimeStep, clock: options.clock })
   const world = createWorld({ engine, agent })
-  // installCapabilityValidator targets the default network; ensure it exists.
+  // installCapabilityValidator targets the default network, so make sure that
+  // network exists.
   ensureDefaultNetwork(world)
   if (options.governance !== false) {
     installCapabilityValidator(world, options.governance ?? {})

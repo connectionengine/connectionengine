@@ -1,39 +1,43 @@
 /**
- * ViewCursor — DataView with cursor position + shadow map for change tracking.
+ * ViewCursor — a DataView with a cursor position, and a shadow map that tracks
+ * changes.
  *
- * Lifted from the EnchantmentEngine / IR Engine networking layer pattern.
- * The two critical primitives:
+ * The pattern comes from the networking layer of EnchantmentEngine and IR
+ * Engine. Two primitives matter most:
  *
  *   1. **`writePropIfChanged(view, typedArray, entity, ignore?)`** —
- *      compares the current `typedArray[entity]` against a per-array
- *      shadow value. Writes only if changed (with epsilon tolerance for
- *      floats). Returns whether a write happened. Callers use the return
- *      bits to build a change-mask byte that's written ONCE at the front
- *      of the component's block.
+ *      it compares the current `typedArray[entity]` against a per-array
+ *      shadow value. It writes only on a change, with an epsilon tolerance
+ *      for floats. It returns whether it wrote. The caller collects those
+ *      return bits to build one change-mask byte, and writes that byte ONCE
+ *      at the front of the block of the component.
  *
- *   2. **`spaceUint8/16/32(view)`** — reserves N bytes at the current
- *      cursor and returns a deferred-write callback. Lets you write a
- *      change mask AFTER walking all props (so the mask reflects what
- *      was actually written).
+ *   2. **`spaceUint8/16/32(view)`** — it reserves N bytes at the current
+ *      cursor, and returns a deferred-write callback. That lets you write a
+ *      change mask AFTER you walk every prop, so the mask reflects what you
+ *      actually wrote.
  *
- * Combined, these give per-field delta encoding with zero string
- * allocation on the wire.
+ * Together they give per-field delta encoding, and allocate no strings on the
+ * wire.
  */
 
 import type { TypedArray } from '../maths/common'
 
 // ── Type ──────────────────────────────────────────────────────────────────────
 
-/** A DataView extended with cursor position + shadow store for diff tracking. */
+/** A DataView, extended with a cursor position and a shadow store that tracks
+ *  differences. */
 export type ViewCursor = DataView & {
   cursor: number
   shadowMap: Map<TypedArray, TypedArray>
 }
 
-/** Default initial buffer for `createViewCursor`. 100 KiB is plenty for typical per-tick packets. */
+/** Default initial buffer for `createViewCursor`. 100 KiB suits a typical
+ *  per-tick packet. */
 export const DEFAULT_VIEW_CURSOR_BYTES = 100_000
 
-/** Float comparison tolerance for `writePropIfChanged`. Below this, considered unchanged. */
+/** Float comparison tolerance for `writePropIfChanged`. A difference below this
+ *  value counts as no change. */
 export const PROP_EPSILON = 1e-4
 
 // ── Construction / cursor management ─────────────────────────────────────────-
@@ -45,7 +49,8 @@ export const createViewCursor = (buffer: ArrayBuffer = new ArrayBuffer(DEFAULT_V
   return view
 }
 
-/** Return the written-so-far slice and reset the cursor to 0 for the next packet. */
+/** Return the slice written so far, and reset the cursor to 0 for the next
+ *  packet. */
 export const sliceViewCursor = (v: ViewCursor): ArrayBuffer => {
   const slice = v.buffer.slice(0, v.cursor) as ArrayBuffer
   v.cursor = 0
@@ -65,9 +70,10 @@ export const moveViewCursor = (v: ViewCursor, where: number): ViewCursor => {
 }
 
 /**
- * Capture the current cursor and return a thunk that restores it.
- * Used to undo speculative writes when a component block ends up empty
- * (no changed props → throw away the reserved change-mask space).
+ * Capture the current cursor, and return a function that restores it. The
+ * caller uses it to undo a speculative write when a component block ends up
+ * empty. No prop changed, so the caller discards the reserved change-mask
+ * space.
  */
 export const rewindViewCursor = (v: ViewCursor): (() => false) => {
   const start = v.cursor
@@ -165,7 +171,8 @@ export const writeBytes = (v: ViewCursor, bytes: Uint8Array): ViewCursor => {
   return v
 }
 
-/** Read `n` bytes from the cursor as a subarray (zero-copy view onto the buffer). */
+/** Read `n` bytes from the cursor as a subarray. The result is a zero-copy view
+ *  onto the buffer. */
 export const readBytes = (v: ViewCursor, n: number): Uint8Array => {
   const out = new Uint8Array(v.buffer, v.cursor, n)
   v.cursor += n
@@ -173,8 +180,9 @@ export const readBytes = (v: ViewCursor, n: number): Uint8Array => {
 }
 
 /**
- * Encode `s` as UTF-8 prefixed by its byte length as a `uint16` (length cap
- * 65535 bytes). Sufficient for entity-path segments, predicate URIs, DIDs.
+ * Encode `s` as UTF-8, and prefix it with its byte length as a `uint16`. The
+ * length therefore caps at 65535 bytes, which suffices for an entity-path
+ * segment, a predicate URI, or a DID.
  */
 export const writeString = (v: ViewCursor, s: string): ViewCursor => {
   const bytes = textEncoder.encode(s)
@@ -182,13 +190,14 @@ export const writeString = (v: ViewCursor, s: string): ViewCursor => {
   return writeBytes(v, bytes)
 }
 
-/** Inverse of `writeString`. Copies the bytes (TextDecoder does not retain the view). */
+/** The inverse of `writeString`. It copies the bytes, because TextDecoder does
+ *  not retain the view. */
 export const readString = (v: ViewCursor): string => {
   const n = readUint16(v)
   return textDecoder.decode(readBytes(v, n))
 }
 
-/** Length-prefixed (u16) array of length-prefixed strings. */
+/** An array of length-prefixed strings, itself prefixed by a u16 length. */
 export const writeStringArray = (v: ViewCursor, arr: readonly string[]): ViewCursor => {
   writeUint16(v, arr.length)
   for (const s of arr) writeString(v, s)
@@ -205,10 +214,10 @@ export const readStringArray = (v: ViewCursor): string[] => {
 // ── Deferred-write space reservation ─────────────────────────────────────────-
 
 /**
- * Reserve `width` bytes at the current cursor for a value computed later
- * (e.g. a change mask known only after walking all props). Returns a callback
- * that writes the actual value into the reserved slot without disturbing the
- * cursor position.
+ * Reserve `width` bytes at the current cursor, for a value that the caller
+ * computes later. A change mask is one example, because it is known only after
+ * a walk of every prop. The function returns a callback that writes the real
+ * value into the reserved slot, and leaves the cursor position unchanged.
  */
 const space =
   (width: 1 | 2 | 4 | 8) =>
@@ -241,12 +250,13 @@ export const spaceUint64 = space(8)
 
 // ── Shadow-map-aware diff write ───────────────────────────────────────────────
 
-/** Per-typed-array shadow buffer, lazily allocated. */
+/** Shadow buffer for one typed array. It allocates on first use. */
 const getShadow = (v: ViewCursor, source: TypedArray): TypedArray => {
   let shadow = v.shadowMap.get(source)
   if (!shadow || shadow.length !== source.length) {
-    // Allocate a shadow of matching constructor + length; initialise to NaN-ish
-    // sentinel for floats / 0 for ints so first write is always recorded.
+    // Allocate a shadow with a matching constructor and length. Initialise it
+    // to a NaN-like sentinel for floats, and to 0 for integers, so that the
+    // first write always records.
     const ctor = source.constructor as new (n: number) => TypedArray
     shadow = new ctor(source.length)
     if (shadow instanceof Float32Array || shadow instanceof Float64Array) {
@@ -280,12 +290,14 @@ const readForCtor = (v: ViewCursor, source: TypedArray): number => {
 }
 
 /**
- * Write `source[entity]` to the cursor IFF it differs from its shadowed
- * previous value (floats compared with `PROP_EPSILON` tolerance). Updates
- * the shadow on write. Returns true if a write happened.
+ * Write `source[entity]` to the cursor if, and only if, it differs from its
+ * shadowed previous value. The comparison uses the `PROP_EPSILON` tolerance for
+ * floats. The function updates the shadow on a write, and returns true when it
+ * wrote.
  *
- * `ignoreHasChanged: true` forces the write regardless of diff — used for
- * periodic full-sync packets that must converge even without changes.
+ * `ignoreHasChanged: true` forces the write, whatever the difference. A
+ * periodic full-sync packet uses it, because such a packet must converge even
+ * when nothing changed.
  */
 export const writePropIfChanged = (
   v: ViewCursor,
@@ -312,10 +324,11 @@ export const writePropIfChanged = (
 }
 
 /**
- * Test if `source[entity]` differs from its shadowed previous value (with
- * `PROP_EPSILON` tolerance for floats) — pure, no side effects. Used by
- * grouped/compressed encoders that need to test multiple arrays before
- * deciding to emit one packed payload.
+ * Test whether `source[entity]` differs from its shadowed previous value. The
+ * comparison uses the `PROP_EPSILON` tolerance for floats. The function is
+ * pure, and has no side effects. A grouped or compressed encoder uses it,
+ * because such an encoder must test several arrays before it decides to emit
+ * one packed payload.
  */
 export const isPropChanged = (v: ViewCursor, source: TypedArray, entity: number): boolean => {
   const current = source[entity] as number
@@ -332,17 +345,19 @@ export const isPropChanged = (v: ViewCursor, source: TypedArray, entity: number)
   return current !== previous
 }
 
-/** Commit `source[entity]` into the shadow map. Pair with `isPropChanged` after writing. */
+/** Commit `source[entity]` into the shadow map. Use it with `isPropChanged`
+ *  after a write. */
 export const commitPropShadow = (v: ViewCursor, source: TypedArray, entity: number): void => {
   const shadow = getShadow(v, source)
   shadow[entity] = source[entity] as number
 }
 
 /**
- * Read one value from the cursor into `source[entity]`. If `source` is one of
- * our resizable typed arrays (see `resizableArray` in `maths/common.ts`) and
- * the slot is beyond current length, grows the underlying buffer first —
- * otherwise the out-of-bounds index assignment is silently dropped.
+ * Read one value from the cursor into `source[entity]`. When `source` is a
+ * resizable typed array, as `resizableArray` in `maths/common.ts` creates, and
+ * the slot lies beyond the current length, the function grows the underlying
+ * buffer first. Without that growth, the out-of-bounds index assignment would
+ * disappear silently.
  */
 export const readPropInto = (v: ViewCursor, source: TypedArray, entity: number): void => {
   const value = readForCtor(v, source)
@@ -355,10 +370,10 @@ export const readPropInto = (v: ViewCursor, source: TypedArray, entity: number):
 
 // ── Bit utilities ────────────────────────────────────────────────────────────-
 
-/** True iff bit `bit` (0-indexed from LSB) is set in `mask`. */
+/** True if and only if `mask` sets bit `bit`, counted from the LSB at index 0. */
 export const checkBitflag = (mask: number, bit: number): boolean => (mask & (1 << bit)) !== 0
 
-/** Reset all shadow tracking — useful when a peer disconnects + reconnects. */
+/** Reset every shadow record. Use it when a peer disconnects and reconnects. */
 export const clearShadowMap = (v: ViewCursor): void => {
   v.shadowMap.clear()
 }

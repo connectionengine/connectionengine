@@ -1,14 +1,17 @@
 /**
- * Lifecycle — session protocol + per-connection state for live multi-peer
- * worlds.
+ * Lifecycle — the session protocol, and the per-connection state for a live
+ * multi-peer world.
  *
- * - `session.ts`  — joinWorld / leaveWorld + control protocol orchestration
- * - `replay.ts`   — join-time catch-up: state snapshot + authored-event log
- *                   streaming, and their apply handlers
- * - `fanout.ts`   — outbound publish hooks (authored mesh + per-peer binary)
- * - `network-id.ts` — entity ↔ networkId tables (local + remote)
- * - `binary-channel.ts` — per-connection binary pipeline + bindings sync
- * - `sweep.ts`    — owner-user entity cleanup + authority recovery on disconnect
+ * - `session.ts`  — joinWorld, leaveWorld, and the control protocol
+ * - `replay.ts`   — join-time catch-up. It streams the authored event log and
+ *                   the state snapshot, and holds their apply handlers.
+ * - `fanout.ts`   — outbound publish hooks: the authored mesh, and the per-peer
+ *                   binary channel
+ * - `network-id.ts` — the entity-to-networkId tables, local and remote
+ * - `binary-channel.ts` — the per-connection binary pipeline, and the bindings
+ *                   sync
+ * - `sweep.ts`    — cleanup of owner-user entities, and authority recovery, on
+ *                   disconnect
  */
 
 export type { JoinNetworkOptions, JoinResult, JoinWorldOptions } from './session'

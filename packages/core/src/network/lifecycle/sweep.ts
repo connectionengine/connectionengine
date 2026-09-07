@@ -1,18 +1,19 @@
 /**
- * Disconnect sweep — two responsibilities when a peer drops:
+ * Disconnect sweep. It has two responsibilities when a peer drops:
  *
- *   1. **Recover authority** for every entity whose `AuthoritativeFor`
- *      currently targets the leaving peer. Picks the lowest-id remaining peer
- *      of the entity's owner-user; falls back to `world.localPeer` if no peer
- *      of the owner remains locally known.
+ *   1. **Recover the authority** of every entity whose `AuthoritativeFor`
+ *      targets the leaving peer now. The sweep selects the remaining peer of
+ *      the owner-user of that entity with the lowest id. It falls back to
+ *      `world.localPeer` when it knows no remaining local peer of the owner.
  *
- *   2. **Sweep every entity owned by the leaving user** when that user has no
- *      remaining live connection across any network on this world.
+ *   2. **Remove every entity that the leaving user owns**, when that user holds
+ *      no remaining live connection on any network of this world.
  *
- *      Ownership = the `OwnedBy(user)` relation. When the user's last peer
- *      disconnects, every entity owned by them is removed — no opt-in tag.
- *      Entities meant to outlive a user's session must not be owned by that
- *      user (give them a different owner, e.g. a world-scope entity).
+ *      Ownership means the `OwnedBy(user)` relation. When the last peer of a
+ *      user disconnects, the sweep removes every entity that the user owns, and
+ *      no opt-in tag changes that. An entity that must outlive the session of a
+ *      user must therefore not be owned by that user. Give it a different
+ *      owner, such as a world-scope entity.
  */
 
 import * as bitecs from 'bitecs'
@@ -34,9 +35,9 @@ const findUserByDID = (world: World, did: string): Entity | undefined => {
 }
 
 /**
- * Disconnect cleanup. Always runs authority recovery (every disconnect is a
- * potential authority loss); user-owned sweep runs only when this was the
- * user's last connection on the world.
+ * Disconnect cleanup. Authority recovery always runs, because every disconnect
+ * can cost an authority. The sweep of user-owned entities runs only when this
+ * connection was the last connection of that user on the world.
  */
 export const sweepDisconnectedPeer = (world: World, connection: Connection): void => {
   recoverAuthorityForLeavingPeer(world, connection)
@@ -51,8 +52,9 @@ export const sweepDisconnectedPeer = (world: World, connection: Connection): voi
       if (other.remoteDID && findUserByDID(world, other.remoteDID) === userEntity) return
     }
   }
-  // Last connection for this user — remove every entity they own. Snapshot
-  // first because removeEntity mutates the AuthoritativeFor query.
+  // This was the last connection of the user, so remove every entity that the
+  // user owns. Snapshot the set first, because removeEntity mutates the
+  // AuthoritativeFor query.
   const owned = bitecs.query(world.engine.bitECS, [OwnedBy.$relation(userEntity)]) as Entity[]
   for (const e of [...owned]) {
     if (e === userEntity) continue
@@ -61,15 +63,16 @@ export const sweepDisconnectedPeer = (world: World, connection: Connection): voi
 }
 
 /**
- * Walk every entity in the world whose authority targets `connection.peer`
- * and reassign via `recoverAuthority`. Skipped when the connection has no
- * associated peer entity (HELLO never landed).
+ * Walk every entity in the world whose authority targets `connection.peer`, and
+ * reassign each one through `recoverAuthority`. The function does nothing when
+ * the connection carries no peer entity, which happens when its HELLO never
+ * arrived.
  */
 const recoverAuthorityForLeavingPeer = (world: World, connection: Connection): void => {
   const leavingPeer = connection.peer
   if (!leavingPeer) return
-  // Walk every entity in the engine that targets the leaving peer via
-  // AuthoritativeFor. We use the relation's targets index directly.
+  // Walk every entity in the engine that targets the leaving peer through
+  // AuthoritativeFor. The walk reads the targets index of the relation directly.
   const owingEntities: Entity[] = []
   for (const candidate of bitecs.query(world.engine.bitECS, [AuthoritativeFor.$relation(leavingPeer)]) as Entity[]) {
     if (getAuthority(world, candidate) === leavingPeer) owingEntities.push(candidate)

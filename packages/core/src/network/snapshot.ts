@@ -1,15 +1,16 @@
 /**
- * Snapshot — point-in-time capture + apply.
+ * Snapshot — a point-in-time capture, and the apply path for it.
  *
- * Captures world state as a structured (JSON-serialisable) object so it can be
- * shipped over any transport and reapplied to bootstrap a late-joining peer or
- * roll back to a checkpoint.
+ * The capture holds the world state as a structured, JSON-serialisable object.
+ * Any transport can therefore carry it. A receiver can apply it again to
+ * bootstrap a late-joining peer, or to roll back to a checkpoint.
  *
- * Strategy: walk every named entity for this world's engine (entries in
- * `uidOfFor(engine)`), serialise its components + outgoing relations. Apply
- * rebuilds the entity graph from scratch via ensureEntityPath
- * (resolveEntityPath + setUID chain) so entity IDs are remapped automatically
- * — no idMap parameter required.
+ * Strategy: walk every named entity of the engine of this world, which means
+ * every entry in `uidOfFor(engine)`. Serialise the components and the outgoing
+ * relations of each one. The apply path then rebuilds the entity graph from
+ * nothing, through `ensureEntityPath`, which chains `resolveEntityPath` and
+ * `setUID`. It remaps the entity IDs automatically, and needs no idMap
+ * parameter.
  */
 
 import { getComponentById, hasComponent, serialiseComponentValue, setComponent } from '../ecs/component'
@@ -23,9 +24,9 @@ import type { AuthoredEvent, Entity, World } from '../ecs/world'
 
 export interface SnapshotEntity {
   path: string[]
-  /** componentId → serialised value */
+  /** A map from componentId to the serialised value. */
   components: Record<string, unknown>
-  /** relationName → list of target paths */
+  /** A map from relationName to the list of target paths. */
   relations: Record<string, string[][]>
 }
 
@@ -42,7 +43,7 @@ export interface Snapshot {
 }
 
 export interface CreateSnapshotOptions {
-  /** Only include entities matching these component ids. */
+  /** Include only the entities that match these component ids. */
   filter?: string[]
 }
 
@@ -89,23 +90,26 @@ export const createSnapshot = (world: World, options: CreateSnapshotOptions = {}
 }
 
 export interface ApplySnapshotOptions {
-  /** Clear all existing named entities before applying. Default false (merge). */
+  /** Remove every existing named entity before the apply. It defaults to false,
+   *  which merges instead. */
   replace?: boolean
   /**
-   * Who sent this snapshot. Supply it for anything arriving over the wire: each
-   * component and relation then passes the same two gates an authored event
-   * does — the network's `validateAuthored`, and the standing check guarding
-   * `AuthoritativeFor` — and rejected writes are skipped, not applied.
+   * The sender of this snapshot. Supply it for anything that arrives over the
+   * wire. Each component and relation then passes the same two gates that an
+   * authored event passes: the `validateAuthored` gate of the network, and the
+   * standing check that guards `AuthoritativeFor`. The apply path skips a
+   * rejected write instead of applying it.
    *
-   * Omit it for a trusted local apply: persistence, rollback, hot-reload.
+   * Omit it for a trusted local apply, as in persistence, rollback, or
+   * hot-reload.
    */
   from?: SnapshotOrigin
 }
 
 export interface SnapshotOrigin {
-  /** DID credited as the author of the snapshot's writes. */
+  /** The DID credited as the author of the writes in the snapshot. */
   author: string
-  /** Network whose `validateAuthored` gate applies. */
+  /** The network whose `validateAuthored` gate applies. */
   network?: Network
 }
 
@@ -115,10 +119,11 @@ export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySn
     for (const e of named) removeEntity(world, e)
   }
   const admit = admitter(world, snapshot, options.from)
-  // Pass 1: the entity graph — every path, with its UID + parent chain. This is
-  // the addressing substrate that the later passes and the binary channel's
-  // networkId bindings resolve against, so it is laid down whole and ungated,
-  // exactly as an authored event materialises its own entity path.
+  // Pass 1: the entity graph. It holds every path, with its UID and its parent
+  // chain. This graph is the addressing substrate that the later passes resolve
+  // against, and that the networkId bindings of the binary channel resolve
+  // against. The pass therefore lays it down whole and ungated, exactly as an
+  // authored event materialises its own entity path.
   for (const ent of snapshot.entities) ensureEntityPath(world, ent.path)
   // Pass 2: components
   for (const ent of snapshot.entities) {
@@ -129,7 +134,7 @@ export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySn
       setComponent(world, entity, def, value as Record<string, unknown>, { origin: 'network' })
     }
   }
-  // Pass 3: relations (every entity exists by now, so targets always resolve)
+  // Pass 3: relations. Every entity exists by now, so every target resolves.
   for (const ent of snapshot.entities) {
     const entity = ensureEntityPath(world, ent.path)
     for (const [relName, targetPaths] of Object.entries(ent.relations)) {
@@ -144,10 +149,11 @@ export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySn
 }
 
 /**
- * Build the predicate deciding whether one of a snapshot's writes may land.
- * Each write is expressed as the `AuthoredEvent` that would have carried it, so
- * the gates see exactly what they see on the authored path — same author, same
- * predicate, same value shape. With no origin, everything is admitted.
+ * Build the predicate that decides whether one write from a snapshot may land.
+ * The builder expresses each write as the `AuthoredEvent` that would have
+ * carried it. The gates therefore see exactly what they see on the authored
+ * path: the same author, the same predicate, and the same value shape. Without
+ * an origin, the predicate admits everything.
  */
 const admitter = (
   world: World,
@@ -189,4 +195,5 @@ const ensureEntityPath = (world: World, path: string[]): Entity => {
   return cursor
 }
 
-// Component/relation enumeration uses worldComponents/worldRelations from mutation.ts.
+// The component and relation enumeration uses worldComponents and
+// worldRelations from mutation.ts.

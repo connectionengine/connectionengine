@@ -1,21 +1,24 @@
 /**
- * System — phase-ordered functions with optional reactor.
+ * System — phase-ordered functions with an optional reactor.
  *
- * defineSystem registers a system into a world's phase scheduler.
- *   - phase: Input | Simulation | Animation | Render — determines fixed vs
- *     variable timestep (Simulation = fixed).
- *   - execute(world, deltaTime): continuous logic run every tick in phase.
- *   - reactor(): a DOMless Solid component (logic only). Mounted once via
- *     createRoot at registration; disposed on removeSystem or destroyWorld.
- *   - before / after: ordering constraints — names of other systems in the
- *     same phase. Topologically sorted on each (un)register.
+ * defineSystem registers a system into the phase scheduler of a world.
+ *   - phase: Input, Simulation, Animation, or Render. The phase selects the
+ *     fixed or the variable timestep. Simulation uses the fixed timestep.
+ *   - execute(world, deltaTime): the continuous logic. It runs every tick in
+ *     its phase.
+ *   - reactor(): a DOMless Solid component, logic only. `createRoot` mounts it
+ *     once at registration. `removeSystem` and `destroyWorld` dispose it.
+ *   - before / after: ordering constraints. Each one names another system in
+ *     the same phase. Every register and unregister sorts the phase
+ *     topologically.
  *
- * runSystems(world, deltaSeconds) drives one frame: tickEngine delegates the
- * fixed substeps to Simulation systems and variable steps to the rest.
+ * runSystems(world, deltaSeconds) drives one frame. tickEngine gives the fixed
+ * substeps to the Simulation systems, and the variable steps to the rest.
  *
- * Pure ECS — no knowledge of authoring or replication. Drivers that want to
- * flush networking at frame end (runtime modes, test harnesses) call
- * `flushAuthored` + `flushRuntime` from `network/mutation` after `runSystems`.
+ * This module is pure ECS. It knows nothing about authoring or replication. A
+ * driver that flushes networking at frame end, such as a runtime mode or a test
+ * harness, calls `flushAuthored` and `flushRuntime` from `network/mutation`
+ * after `runSystems` returns.
  */
 
 import { createRoot } from 'solid-js'
@@ -42,14 +45,14 @@ export interface SystemHandle {
   readonly name: string
   readonly phase: Phase
   readonly definition: SystemDefinition
-  /** Solid root disposer for the currently-mounted reactor (if any). */
+  /** Solid root disposer for the reactor that is mounted now, if one is. */
   dispose?: () => void
 }
 
 interface SchedulerState {
-  /** Systems per phase, kept in topological order. */
+  /** The systems of each phase, held in topological order. */
   byPhase: Map<Phase, SystemHandle[]>
-  /** Track all handles for cleanup on destroyWorld. */
+  /** Every handle, tracked so that destroyWorld can clean them up. */
   all: Set<SystemHandle>
 }
 
@@ -65,8 +68,8 @@ const getOrCreate = (world: World): SchedulerState => {
 }
 
 const sortPhase = (handles: SystemHandle[]): SystemHandle[] => {
-  // Kahn's topological sort by before/after constraints, preserving insertion
-  // order for unconstrained systems.
+  // Kahn topological sort, by the before and after constraints. It keeps the
+  // insertion order for the systems that hold no constraint.
   const byName = new Map<string, SystemHandle>()
   for (const h of handles) byName.set(h.name, h)
   const edges = new Map<string, Set<string>>() // dep → dependents
@@ -100,7 +103,7 @@ const sortPhase = (handles: SystemHandle[]): SystemHandle[] => {
     }
   }
   if (sorted.length !== handles.length) {
-    // Cycle — fall back to insertion order
+    // The graph holds a cycle. Fall back to the insertion order.
     return handles
   }
   return sorted
@@ -139,15 +142,17 @@ export const removeSystem = (world: World, handle: SystemHandle): void => {
 }
 
 /**
- * Inject a previously-defined system into a world.
+ * Inject a system that was defined earlier into a world.
  *
- * Re-attaches a `SystemHandle` (originally produced by `defineSystem` or a
- * prior `removeSystem` call) into the world's phase scheduler, re-mounting
- * its reactor under a fresh `createRoot`. Useful for plugin systems that
- * detach + re-attach with their host lifecycle.
+ * This function attaches a `SystemHandle` to the phase scheduler of the world
+ * again. `defineSystem` produced that handle, or an earlier `removeSystem` call
+ * released it. The function mounts the reactor of the handle again, under a
+ * fresh `createRoot`. Plugin systems that detach and attach with the lifecycle
+ * of their host use it.
  *
- * Throws if a *different* handle with the same `name` is already injected in
- * this world. Idempotent for the same handle (already-injected → noop).
+ * The function throws if a *different* handle with the same `name` is already
+ * injected in this world. It is idempotent for the same handle, and does
+ * nothing when that handle is already injected.
  */
 export const injectSystem = (world: World, handle: SystemHandle): void => {
   const state = getOrCreate(world)
@@ -193,12 +198,13 @@ export const listSystems = (world: World, phase?: Phase): SystemHandle[] => {
 // ── Frame runner ──────────────────────────────────────────────────────────────
 
 /**
- * Drive one frame of the world: phase-ordered system execution.
+ * Drive one frame of the world. It executes the systems in phase order.
  *
  * Phase order: Input → Simulation (fixed substeps) → Animation → Render.
  *
- * Pure ECS — does NOT flush networking. Drivers wanting end-of-frame
- * replication call `flushAuthored` + `flushRuntime` after this returns.
+ * This function is pure ECS, and it does NOT flush networking. A driver that
+ * needs end-of-frame replication calls `flushAuthored` and `flushRuntime` after
+ * this function returns.
  */
 export const runSystems = (world: World, deltaSeconds: number): void => {
   const state = getOrCreate(world)
@@ -208,9 +214,9 @@ export const runSystems = (world: World, deltaSeconds: number): void => {
       handle.definition.execute?.(world, dt)
     }
   }
-  // Input runs once per frame (variable)
+  // Input runs once per frame, at the variable timestep.
   runPhase('Input', deltaSeconds)
-  // tickEngine drives Simulation in fixed substeps, then variable phases
+  // tickEngine drives Simulation in fixed substeps, then the variable phases.
   tickEngine(engine, deltaSeconds, {
     fixed: () => runPhase('Simulation', engine.fixedTimeStep),
     variable: () => {
@@ -220,7 +226,7 @@ export const runSystems = (world: World, deltaSeconds: number): void => {
   })
 }
 
-/** Dispose all systems on a world (called by destroyWorld via a hook). */
+/** Dispose every system on a world. `destroyWorld` calls it through a hook. */
 export const disposeAllSystems = (world: World): void => {
   const state = schedulers.get(world)
   if (!state) return

@@ -2,19 +2,19 @@
 
 > A spatial-semantic-sovereign runtime for the agent-centric web.
 
-Connection Engine is a multiplayer-first, data-driven TypeScript engine for real-time spatial experiences. Built on web standards. Designed to converge with [AD4M](https://github.com/coasys/ad4m) / [WE](https://github.com/coasys/we) — extending their **semantic sovereign runtime** with the **spatial** dimension so the same agents, signed statements, and governance work in 3D worlds and XR as they do in documents.
+Connection Engine is a multiplayer-first, data-driven TypeScript engine for real-time spatial experiences, built on web standards. It aims to converge with [AD4M](https://github.com/coasys/ad4m) and [WE](https://github.com/coasys/we), extending their **semantic sovereign runtime** into the **spatial** dimension. The same agents, signed statements, and governance then work in 3D worlds and XR exactly as they work in documents.
 
-See **[VISION.md](./VISION.md)** for the why.
+See **[VISION.md](./VISION.md)** for the reasoning.
 
 ## What it is
 
-An ECS engine where the entity-component-relationship graph **is** a semantic graph — structurally isomorphic with RDF triples, optimised for high framerates. Components are SHACL shapes. Relationships are predicates. Queries are SPARQL-equivalent pattern matching. Mutations carry cryptographic provenance via signed semantic events.
+An ECS engine in which the entity-component-relationship graph **is** a semantic graph. The graph is structurally isomorphic with RDF triples, and optimised for high framerates. Components are SHACL shapes. Relationships are predicates. Queries are SPARQL-equivalent pattern matching. Signed semantic events give every mutation cryptographic provenance.
 
-Identity, transport, and persistence are pluggable runtime modes — the engine itself is unopinionated:
+Identity, transport, and persistence are pluggable runtime modes. The engine itself stays unopinionated:
 
-- **Solo** — anonymous local agent, no transport. Fast tests, offline single-player.
+- **Solo** — anonymous local agent, no transport. Suits fast tests and offline single-player.
 - **Local** ([`@connectionengine/local`](./packages/local)) — Ed25519 / did:key identity, signed in-memory transport, ZCAP capability governance.
-- **AD4M** ([`@connectionengine/ad4m-bridge`](./packages/ad4m-bridge)) — AD4M Agent identity, AD4M `PerspectiveProxy` transport, Holochain-backed persistence + replication.
+- **AD4M** ([`@connectionengine/ad4m-bridge`](./packages/ad4m-bridge)) — AD4M Agent identity, AD4M `PerspectiveProxy` transport, Holochain-backed persistence and replication.
 
 You compose them per app. Same engine surface, same components, three transports.
 
@@ -22,9 +22,9 @@ You compose them per app. Same engine surface, same components, three transports
 
 | Package | Role |
 | --- | --- |
-| [`@connectionengine/core`](./packages/core) | Pure ECS + the distribution layer (mutation pipeline, transport, authority, governance). Identity- and crypto-agnostic. |
-| [`@connectionengine/local`](./packages/local) | Solo / local-multiplayer runtime — Ed25519 DIDs, ZCAP, signed transport. |
-| [`@connectionengine/ad4m-bridge`](./packages/ad4m-bridge) | AD4M-backed runtime — Agent / Ad4mClient / PerspectiveProxy wiring. |
+| [`@connectionengine/core`](./packages/core) | Pure ECS plus the distribution layer (mutation pipeline, transport, authority, governance). Identity-agnostic and crypto-agnostic. |
+| [`@connectionengine/local`](./packages/local) | Solo and local-multiplayer runtime — Ed25519 DIDs, ZCAP, signed transport. |
+| [`@connectionengine/ad4m-bridge`](./packages/ad4m-bridge) | AD4M-backed runtime — Agent, Ad4mClient, and PerspectiveProxy wiring. |
 | [`packages/client`](./packages/client) | Reference SolidJS client. |
 | [`packages/server`](./packages/server) | Reference Express server. |
 
@@ -79,9 +79,9 @@ const ava = spawnPrefab(world, 'avatar:alice') // wire-addressable, owned by loc
 setComponent(world, ava, Health, { current: 80 })
 ```
 
-`spawnPrefab` is the user-facing factory for networked entities — it composes `createEntity + setUID + OwnedBy + AuthoritativeFor` in one call. The base `createEntity` is pure ECS for cases that don't need a wire identity (system caches, scratch entities).
+`spawnPrefab` is the user-facing factory for networked entities. It composes `createEntity`, `setUID`, `OwnedBy`, and `AuthoritativeFor` in one call. The base `createEntity` is pure ECS, for the cases that need no wire identity, such as system caches and scratch entities.
 
-Promote to **local-multiplayer** with two peers signing their events:
+Move to **local-multiplayer**, with two peers that sign their events:
 
 ```ts
 import { createLocalRuntime, connectLocalInMemory } from '@connectionengine/local'
@@ -92,7 +92,7 @@ connectLocalInMemory(alice.world, bob.world)
 // Anything alice's world authors is signed → delivered to bob → verified → applied.
 ```
 
-Promote to **distributed AD4M** when the underlying executor is available:
+Move to **distributed AD4M** when the underlying executor is available:
 
 ```ts
 import { createAd4mRuntime } from '@connectionengine/ad4m-bridge'
@@ -127,18 +127,20 @@ packages/
 └── ad4m/                    @coasys/ad4m (git submodule, dev branch)
 ```
 
-Two layers, no middle — `ecs/` is the foundation (local-runtime semantics, no notion of authoring or peers); `network/` is the distribution layer (the mutation pipeline only exists because state is distributed). The split is enforced mechanically by oxlint.
+Two layers, with nothing between them. `ecs/` is the foundation, and holds local-runtime semantics with no notion of authoring or peers. `network/` is the distribution layer, and the mutation pipeline lives there because it exists only as a consequence of distribution. oxlint enforces the split mechanically.
 
 For day-to-day developer context, see [`AGENTS.md`](./AGENTS.md). For the broader picture, see [`VISION.md`](./VISION.md).
 
 ## Status
 
-Three runtime modes work end-to-end (core solo, local two-peer with Ed25519 signing + ZCAP capability governance, AD4M bridge against mocks). 203 unit/integration tests + 2 Playwright tests pass across all packages. Type-checked + lint-clean. Layering enforced by oxlint (`ecs/` cannot depend on `network/`). Cycle detection on.
+Three runtime modes work end to end: core solo, local two-peer with Ed25519 signing and ZCAP capability governance, and the AD4M bridge against mocks. The vitest suites pass — 197 tests in core, plus local, ad4m-bridge, and server. The code type-checks and passes lint. oxlint enforces the layering, so `ecs/` cannot depend on `network/`. Cycle detection is on.
 
-The spatial layer (Transform, WebXR, zones, bounding trees, renderer) is the next major work.
+One known problem: CI does not check out submodules or build `@coasys/ad4m`, so the `Build` step fails before the tests get a chance to run.
+
+The spatial layer — Transform, WebXR, zones, bounding trees, and the renderer — comes next.
 
 ## License
 
-Licensed under the **[Cryptographic Autonomy License v1.0](./LICENSE)** (CAL-1.0) — the same license as [AD4M](https://github.com/coasys/ad4m) and [Holochain](https://github.com/holochain/holochain). CAL is a copyleft license designed for agent-centric, peer-to-peer software: it requires that anyone you give the software to also gets the autonomy, data, and cryptographic keys needed to use and modify it independently.
+Licensed under the **[Cryptographic Autonomy License v1.0](./LICENSE)** (CAL-1.0), the same license that [AD4M](https://github.com/coasys/ad4m) and [Holochain](https://github.com/holochain/holochain) use. CAL is a copyleft license designed for agent-centric, peer-to-peer software. It requires that anyone you give the software to also receives the autonomy, the data, and the cryptographic keys needed to use and modify it independently.
 
 `SPDX-License-Identifier: CAL-1.0`

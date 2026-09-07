@@ -1,15 +1,15 @@
 /**
- * AD4M transport — outbound via `perspective.addLinks`, inbound via
- * `addListener('link-added', ...)`.
+ * The AD4M transport. It sends outbound events through `perspective.addLinks`,
+ * and receives inbound events through `addListener('link-added', ...)`.
  *
- * The bridge does no signature verification — AD4M's executor verifies
- * `LinkExpression.proof` at the Holochain layer before delivering to
- * subscribers. We trust the executor.
+ * The bridge verifies no signature. The executor of AD4M verifies
+ * `LinkExpression.proof` at the Holochain layer, before it delivers to any
+ * subscriber. This bridge trusts the executor.
  *
- * Wires the world's `'default'` network's publishAuthored hook to the
- * Perspective. The `continuous` channel is not handled here — binary SoA
- * deltas typically ride a sibling transport (WebRTC) because AD4M Links are
- * too heavy for per-tick packets.
+ * The module attaches the publishAuthored hook of the `'default'` network of
+ * the world to the Perspective. It does not handle the `continuous` channel.
+ * The binary SoA deltas usually ride a sibling transport, such as WebRTC,
+ * because AD4M Links weigh too much for a per-tick packet.
  */
 
 import type { LinkExpression, PerspectiveProxy } from '@coasys/ad4m'
@@ -27,8 +27,9 @@ export const connectAd4m = async (world: World, perspective: PerspectiveProxy): 
     void perspective.addLinks(envelope.events.map(eventToLink))
   }
 
-  // Inbound — link-added subscription. AD4M's LinkCallback returns null by
-  // convention; the work is the side effect of feeding the engine.
+  // The inbound path: a link-added subscription. By convention, the LinkCallback
+  // of AD4M returns null. The real work happens as a side effect, which feeds
+  // the engine.
   const listener = (le: LinkExpression): null => {
     const event = linkExpressionToEvent(le)
     if (!event) return null

@@ -1,16 +1,19 @@
 /**
- * @connectionengine/local — fully-local runtime mode for Connection Engine.
+ * @connectionengine/local — the fully local runtime mode of Connection Engine.
  *
- * Provides:
- *   - Ed25519 / did:key identity (DID)
+ * It supplies five things:
+ *   - Ed25519 and did:key identity, as a DID
  *   - ZCAP-LD capability chains
- *   - Ed25519-signed in-memory transport (connectLocalInMemory)
- *   - Capability governance constraint kind, composed with core's engine-level
- *     credential + temporal + content constraints
- *   - createLocalRuntime convenience: world + agent + signing + governance
+ *   - An in-memory transport with Ed25519 signing, through
+ *     `connectLocalInMemory`
+ *   - A capability governance constraint kind. It composes with the
+ *     engine-level credential, temporal, and content constraints of core.
+ *   - `createLocalRuntime`, which builds the world, the agent, the signing, and
+ *     the governance in one call
  *
- * Use this when you want full cryptographic guarantees without AD4M / Holochain.
- * For AD4M-backed identity + transport, use @connectionengine/ad4m-bridge instead.
+ * Use this package when you want full cryptographic guarantees without AD4M or
+ * Holochain. For AD4M-backed identity and transport, use
+ * @connectionengine/ad4m-bridge instead.
  */
 
 export * from './did'

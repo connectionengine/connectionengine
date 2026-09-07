@@ -4,11 +4,11 @@ description: How runtime SoA fields become bytes — change masks, shadow maps, 
 
 # The Binary Wire
 
-The `continuous` channel exists because per-event JSON envelopes at the simulation tick rate are too expensive for transforms, velocities, and other continuously-moving data. The binary codec is built around three ideas:
+The `continuous` channel exists because per-event JSON envelopes cost too much at the simulation tick rate, for transforms, velocities, and other continuously-moving data. Three ideas shape the binary codec:
 
-1. **No strings on the wire.** Component identity is the wire index (set at handshake). Entity identity is a compact `NetworkId` (also set at handshake). Field identity is a bit position in a change mask.
-2. **Per-field delta encoding.** A per-typed-array shadow map remembers what was last sent; only fields that changed (with float epsilon tolerance) are emitted. An entity with no changes produces zero bytes.
-3. **Per-connection state.** Each `Connection` has its own `BinaryChannel` with its own shadow map. This means each peer has an independent picture of "what have I already delivered" — important when one peer drops packets or reconnects.
+1. **No strings on the wire.** Component identity is the wire index, set at handshake. Entity identity is a compact `NetworkId`, also set at handshake. Field identity is a bit position in a change mask.
+2. **Per-field delta encoding.** A per-typed-array shadow map holds the last value sent. The codec emits only the fields that changed, within a float epsilon tolerance. An entity with no changes produces zero bytes.
+3. **Per-connection state.** Each `Connection` holds its own `BinaryChannel` with its own shadow map. Each peer therefore keeps an independent record of what the local side already delivered. That independence matters when one peer drops packets or reconnects.
 
 ## Wire format
 
@@ -22,7 +22,7 @@ Packet:
       for each set bit in propMask: prop payload (raw or compressed)
 ```
 
-Mask widths grow with population: 1 byte for ≤8 components/props, 2 bytes for ≤16, 4 bytes for ≤32. >32 is unsupported (split into multiple components).
+Mask widths grow with population: 1 byte for 8 or fewer components and props, 2 bytes for 16 or fewer, and 4 bytes for 32 or fewer. The codec does not support more than 32. Split the data into several components instead.
 
 ## A pipeline is a `{ write, read }` pair
 
@@ -41,13 +41,13 @@ const peerPipe = createBinaryPipeline(peerWorld, [Transform, Velocity])
 peerPipe.read(buffer, (networkId) => peerEntityMap.get(networkId))
 ```
 
-Both sides agree on the components list — **its index in the array is the wire identity for that component**. The component IDs themselves never travel; position does. That's the "ordered registration" requirement that the handshake takes responsibility for.
+Both sides agree on the components list, because **the index of a component in that array is its wire identity**. The component IDs themselves never travel. Only the position travels. The handshake takes responsibility for that "ordered registration" requirement.
 
-In practice you don't construct pipelines directly. The lifecycle layer builds one per connection, sized to whichever runtime components are globally registered (sorted by id for deterministic peer-agnostic order).
+In practice you do not construct pipelines yourself. The lifecycle layer builds one per connection. It sizes the pipeline to the runtime components that are globally registered, sorted by id for a deterministic peer-agnostic order.
 
 ## NetworkIds
 
-Entity paths are stable across worlds but verbose. The binary channel can't carry strings, so each side maintains a `NetworkIdTable` that allocates compact `u32`s for its own entities:
+Entity paths stay stable across worlds, but they are verbose. The binary channel cannot carry strings, so each side keeps a `NetworkIdTable` that allocates compact `u32` values for its own entities:
 
 ```
 Per-world (sender side):
@@ -57,13 +57,13 @@ Per-connection (receiver side):
   Map<u32, EntityPath>  ← received via control messages, resolved per packet
 ```
 
-When a new entity becomes dirty, the channel sends a `{ type: 'bind', bindings: [{ networkId, entityPath }] }` control message **over the transport's `events` channel** (reliable, ordered) so the receiver sees the binding before the binary packet that uses it arrives on the `stream` channel.
+When an entity becomes dirty for the first time, the channel sends a `{ type: 'bind', bindings: [{ networkId, entityPath }] }` control message **over the `events` channel of the transport**, which is reliable and ordered. The receiver therefore sees the binding before the binary packet that uses it arrives on the `stream` channel.
 
-The initial hello includes the local table snapshot, so the first binary packet after handshake can use any pre-existing entity without a separate `bind` control.
+The initial hello includes a snapshot of the local table. The first binary packet after the handshake can therefore use any entity that already exists, without a separate `bind` control message.
 
 ## Shadow maps and rewind
 
-The trick that makes per-field delta encoding cheap:
+This is the mechanism that makes per-field delta encoding cheap:
 
 ```ts
 // Inside the write loop, for each prop:
@@ -80,22 +80,22 @@ if (mask === 0) {
 writeMask(mask)  // commit the mask now that we know what was written
 ```
 
-The shadow map is keyed by `(typedArray, entity)` and stores the last-written value. `writePropIfChanged` compares the current store value against the shadow (with `PROP_EPSILON` tolerance for floats), writes if different, updates the shadow. If no field in any component changed for this entity, the whole entity block rewinds. If nothing changed for any entity, the packet is just a header — and the lifecycle layer skips sending header-only packets.
+The shadow map uses the key `(typedArray, entity)` and stores the value written last. `writePropIfChanged` compares the current store value against the shadow, with `PROP_EPSILON` tolerance for floats. It writes the value when the two differ, and then updates the shadow. If no field of any component changed for an entity, the whole entity block rewinds. If nothing changed for any entity, the packet holds only a header, and the lifecycle layer does not send header-only packets.
 
 ## Forcing full state
 
-Two ways to force a full snapshot regardless of shadow:
+Two calls force a full snapshot, whatever the shadow holds:
 
 ```ts
 pipe.write(meta, entries, true) // third arg = forceFullSync
 pipe.resetShadow()              // next write emits everything
 ```
 
-The per-connection channel also schedules periodic full syncs via `RuntimeTransportConfig.fullSyncInterval` — defaults to every 300 ticks (≈5 s at the default simulation tick rate). This provides automatic recovery from packet loss without explicit ACKs.
+The per-connection channel also schedules periodic full syncs, through `RuntimeTransportConfig.fullSyncInterval`. It defaults to every 300 ticks, which is about 5 seconds at the default simulation tick rate. This recovers from packet loss automatically, and needs no explicit ACKs.
 
 ## Optional compression
 
-Two compression schemes are opt-in per component+field:
+Two compression schemes are available, and you opt in per component and field:
 
 ```ts
 const pipe = createBinaryPipeline(world, [Transform], {
@@ -108,16 +108,16 @@ const pipe = createBinaryPipeline(world, [Transform], {
 })
 ```
 
-- **`vec3-int16`** — each axis quantised to a signed 16-bit integer spanning `[-range, +range]`. Good for positions/velocities with known bounds. Sub-percent error within range.
-- **`quat-smallest3`** — pack a unit quaternion into 32 bits using the smallest-three trick (2-bit largest-component index + 3×10-bit signed components, reconstruct the fourth). Roughly 0.005 absolute error per component.
+- **`vec3-int16`** — quantises each axis to a signed 16-bit integer that spans `[-range, +range]`. Use it for positions and velocities with known bounds. The error stays below one percent inside the range.
+- **`quat-smallest3`** — packs a unit quaternion into 32 bits with the smallest-three method: a 2-bit index of the largest component, plus three signed 10-bit components, and reconstruction of the fourth. The absolute error is approximately 0.005 per component.
 
-Compressed fields collapse multi-axis groups into single props with single mask bits. The shadow map still works field-by-field — if any of x/y/z changed, the whole packed payload is sent.
+Compressed fields collapse multi-axis groups into single props with single mask bits. The shadow map still works field by field. If any of x, y, or z changed, the codec sends the whole packed payload.
 
-These are tools, not defaults. Don't compress unless you've measured the bandwidth pressure. Quantisation error is real and can be visible in physics or animation.
+These schemes are tools, not defaults. Do not compress until you have measured the bandwidth pressure. The quantisation error is real, and it can become visible in physics or animation.
 
 ## RuntimeTransportConfig
 
-For per-component throttling and full-sync scheduling:
+Use this configuration for per-component throttling and full-sync scheduling:
 
 ```ts
 joinWorld(world, {
@@ -130,6 +130,6 @@ joinWorld(world, {
 })
 ```
 
-`rate` is a target Hz scaled against the simulation tick rate. On a 60 Hz simulation, `rate: 30` means publish every other tick; on a 120 Hz simulation, `rate: 30` skips three out of four. Leaving `rate` unset publishes every tick. `fullSyncInterval` is ticks between forced full snapshots. `interpolation` is advisory metadata for receivers.
+`rate` sets a target in Hz, scaled against the simulation tick rate. On a 60 Hz simulation, `rate: 30` publishes every second tick. On a 120 Hz simulation, `rate: 30` skips three ticks out of four. An unset `rate` publishes every tick. `fullSyncInterval` sets the number of ticks between forced full snapshots. `interpolation` is advisory metadata for receivers.
 
-Defaults (publish every tick, full sync every 300 ticks, interpolation on) are usually fine. Reach for the config when you have many components with very different cadence requirements.
+The defaults suit most applications: publish every tick, full sync every 300 ticks, and interpolation on. Use the configuration when you have many components with very different cadence requirements.

@@ -6,7 +6,7 @@ description: Worlds are logical scopes inside an Engine. Systems are how time an
 
 ## A world is a virtual scope inside an Engine
 
-The ECS runs on the [Engine](/engine): bitECS storage, per-component storage, time, systems. Identity caches (`nameCache`, `uidOf`, `parentOf`) live as per-engine WeakMaps on the `UIDComponent` / `BelongsTo` definitions. Everything that's "ECS" is engine-wide. A `World` is a virtual scope on top — its own `worldRoot` entity that anchors a `BelongsTo` subtree, its own network state (the `networks` map, the authored queue, the event log, the runtime-dirty set), and the local identity for that scope (`localAgent`, `localUser`, `localPeer`).
+The ECS runs on the [Engine](/engine), which holds bitECS storage, per-component storage, time, and systems. The identity caches (`nameCache`, `uidOf`, `parentOf`) live as per-engine WeakMaps on the `UIDComponent` and `BelongsTo` definitions. Everything that counts as "ECS" is engine-wide. A `World` is a virtual scope on top of that. It holds its own `worldRoot` entity, which anchors a `BelongsTo` subtree. It holds its own network state — the `networks` map, the authored queue, the event log, and the runtime-dirty set. It also holds the local identity for that scope: `localAgent`, `localUser`, and `localPeer`.
 
 ```ts
 import { createWorld, destroyWorld, createAnonAgent } from '@connectionengine/core'
@@ -21,29 +21,29 @@ const world = createWorld({
 destroyWorld(world) // closes networks, drops the worldRoot. Entities under it survive on the engine.
 ```
 
-Both options are required. Every call to `createWorld` takes an explicit `engine` built via `createEngine({ fixedTimeStep?, clock? })`.
+Both options are required. Every call to `createWorld` takes an explicit `engine`, built with `createEngine({ fixedTimeStep?, clock? })`.
 
-A few things worth internalising:
+Four points control how worlds behave:
 
-- **Entity IDs are engine-wide.** Two worlds sharing an engine see the same ID space. Per-world iteration walks the `BelongsTo` tree from `worldRoot`.
-- **The world's `worldRoot`** is a sentinel entity. Top-level named entities (created via `spawnPrefab`) bucket their UIDs under `world.worldRoot` in the engine's name cache. You use it occasionally — e.g. `getEntityByUID(world, world.worldRoot, 'scene:main')`.
-- **The event log is per-world, canonical.** Networks are sync topology; they don't have their own histories. See [Peers & Sessions](/networking).
-- **Spinning up isolated worlds is cheap.** Tests routinely create two and wire them with `connectInMemory` to simulate two peers in microseconds — each defaults to its own engine, so storage stays clean between tests.
+- **Entity IDs are engine-wide.** Two worlds that share an engine see the same ID space. Per-world iteration walks the `BelongsTo` tree from `worldRoot`.
+- **The `worldRoot` of the world** is a sentinel entity. Top-level named entities, created with `spawnPrefab`, hold their UIDs under `world.worldRoot` in the name cache of the engine. You use it occasionally, as in `getEntityByUID(world, world.worldRoot, 'scene:main')`.
+- **The event log is per-world, and canonical.** Networks are sync topology, and hold no history of their own. See [Peers & Sessions](/networking).
+- **Isolated worlds cost little.** Tests routinely create two worlds and link them with `connectInMemory` to simulate two peers in microseconds. Each world defaults to its own engine, so storage stays clean between tests.
 
 ## Time has two scales
 
-Time lives on the engine, not the world. Per frame, the engine advances on two scales:
+Time lives on the engine rather than on the world. The engine advances on two scales per frame:
 
-- **Variable step** — for `Input`, `Animation`, `Render` phases. The exact wall-clock delta since the last frame.
-- **Fixed step** — for `Simulation` phase. Always exactly `engine.fixedTimeStep` seconds. The frame loop may run zero, one, or many simulation substeps depending on the variable delta — the accumulator pattern.
+- **Variable step** — used by the `Input`, `Animation`, and `Render` phases. It carries the exact wall-clock delta since the last frame.
+- **Fixed step** — used by the `Simulation` phase. It is always exactly `engine.fixedTimeStep` seconds. The frame loop may run zero, one, or many simulation substeps, according to the variable delta. This is the accumulator pattern.
 
-This is the same dual-rate trick most game engines use, and for the same reason: physics + game logic want determinism; rendering + input want frame-tight responsiveness.
+Most game engines split time this way, because physics and game logic need determinism while rendering and input need frame-tight responsiveness.
 
-`tickEngine(engine, deltaSeconds, { fixed, variable })` is the low-level primitive. `runSystems(world, deltaSeconds)` is the convenience wrapper that runs every system registered against `world.engine` in its phase. It does NOT flush networking — the driver does that explicitly (see "Driving a frame" below).
+`tickEngine(engine, deltaSeconds, { fixed, variable })` is the low-level primitive. `runSystems(world, deltaSeconds)` is the convenience wrapper. It runs every system registered against `world.engine`, in its phase. It does NOT flush networking. The driver does that explicitly, as "Driving a frame" below shows.
 
 ## Systems
 
-A system is a phase-scoped function the scheduler runs every tick. You define them per-world:
+A system is a phase-scoped function that the scheduler runs every tick. You define systems per world:
 
 ```ts
 import { defineSystem } from '@connectionengine/core'
@@ -73,7 +73,7 @@ Four phases run in this order each frame:
 Input (variable) → Simulation (fixed, may repeat) → Animation (variable) → Render (variable)
 ```
 
-`runSystems` is pure ECS: it runs each phase, period. Networking is layered on top — the driver (runtime mode, test harness, application tick loop) calls `flushAuthored` + `flushRuntime` from `network/mutation` after `runSystems` returns:
+`runSystems` is pure ECS. It runs each phase, and nothing more. Networking sits above it. The driver — the runtime mode, the test harness, or the application tick loop — calls `flushAuthored` and then `flushRuntime` from `network/mutation` after `runSystems` returns:
 
 ```ts
 import { runSystems, flushAuthored, flushRuntime } from '@connectionengine/core'
@@ -84,11 +84,11 @@ flushAuthored(world)  // authored first — receivers see new entities before bi
 flushRuntime(world)   // then the binary delta
 ```
 
-Coalescing the flush at frame end means a frame's writes ship as a single outbound packet per channel per peer, rather than racing as systems execute. Authored before runtime so new entities are addressable on the receiver before the SoA payloads reference them.
+A flush at frame end coalesces the writes of that frame. Each channel therefore sends one outbound packet per peer, instead of racing as the systems execute. Authored data goes first, so that new entities are addressable on the receiver before the SoA payloads reference them.
 
 ## Ordering systems
 
-If system order matters within a phase, use `before` / `after`:
+Use `before` and `after` when the order of systems matters inside a phase:
 
 ```ts
 defineSystem(world, {
@@ -99,11 +99,11 @@ defineSystem(world, {
 })
 ```
 
-The scheduler topologically sorts each phase. Cycles fall back to insertion order. You can also `reorderSystem(world, handle, { before, after })` to change ordering at runtime.
+The scheduler sorts each phase topologically. A cycle falls back to insertion order. You can also call `reorderSystem(world, handle, { before, after })` to change the order at runtime.
 
 ## Reactors
 
-Each system can optionally have a `reactor` — a DOMless Solid component (logic only) mounted via `createRoot` at registration:
+Each system can hold an optional `reactor` — a DOMless Solid component, logic only, mounted with `createRoot` at registration:
 
 ```ts
 defineSystem(world, {
@@ -116,13 +116,13 @@ defineSystem(world, {
 })
 ```
 
-Reactors are useful for systems whose work is "react to changes" rather than "iterate entities" — UI bindings, telemetry, anything that wants Solid's signal graph. The reactor is disposed when the system is removed or the world is destroyed.
+Reactors suit systems whose work is "react to changes" rather than "iterate entities" — UI bindings, telemetry, and anything else that needs the signal graph of Solid. The engine disposes the reactor when it removes the system, or when it destroys the world.
 
-If you don't need reactivity, just provide `execute` and skip `reactor`.
+Supply `execute` alone, and omit `reactor`, when you do not need reactivity.
 
 ## Injecting and removing
 
-Systems are values you can move around:
+Systems are values that you can move:
 
 ```ts
 const handle = defineSystem(world, { name: 'Foo', phase: 'Render', execute: ... })
@@ -131,4 +131,4 @@ removeSystem(world, handle)
 injectSystem(world, handle) // re-attach + re-mount reactor
 ```
 
-This matters for plugin systems and hot-reload flows: keep a `SystemHandle` reference, detach during reload, re-inject after. The reactor gets a fresh `createRoot` each time it's injected.
+This matters for plugin systems and hot-reload flows. Keep a `SystemHandle` reference, detach during the reload, and inject again afterwards. Each injection gives the reactor a fresh `createRoot`.

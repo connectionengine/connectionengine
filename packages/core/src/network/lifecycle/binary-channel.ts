@@ -1,21 +1,23 @@
 /**
- * Per-connection binary runtime channel.
+ * Binary runtime channel for one connection.
  *
- * Owns one BinaryPipeline (with its own shadow map — independent delivery
- * state per peer) and one RemoteBindingTable (peer's networkId → local
- * entity).
+ * It owns one BinaryPipeline, which carries its own shadow map and therefore
+ * keeps an independent delivery state per peer. It also owns one
+ * RemoteBindingTable, which maps the networkId of the peer to a local entity.
  *
- * Outbound flow on each `publishRuntime(dirty)`:
- *   1. Allocate local networkIds for any newly-dirty entities.
- *   2. Send a `{type:'bind'}` control with bindings this peer hasn't seen yet.
- *   3. Encode + send the binary packet.
+ * Outbound flow, on each `publishRuntime(dirty)`:
+ *   1. Allocate a local networkId for each entity that became dirty.
+ *   2. Send a `{type:'bind'}` control with the bindings that this peer has not
+ *      seen yet.
+ *   3. Encode the binary packet, and send it.
  *
  * Inbound flow:
- *   1. `{type:'bind'}` → register entries in the remote table.
- *   2. ArrayBuffer  → pipeline.read with `(networkId) => remoteTable.resolve(world, id)`.
+ *   1. `{type:'bind'}` → register the entries in the remote table.
+ *   2. ArrayBuffer  → call pipeline.read with
+ *      `(networkId) => remoteTable.resolve(world, id)`.
  *
- * Per-component throttling + full-sync intervals come from the world's
- * `RuntimeTransportConfig[]` (see `network/transport.ts`).
+ * The per-component throttling and the full-sync intervals come from the
+ * `RuntimeTransportConfig[]` of the world. See `network/transport.ts`.
  */
 
 import type { Entity, World } from '../../ecs/world'
@@ -44,28 +46,29 @@ export const isBindControl = (payload: unknown): payload is BindControlMessage =
   Array.isArray((payload as { bindings?: unknown }).bindings)
 
 export interface ChannelOptions {
-  /** Runtime components in wire order. Must match between both peers. */
+  /** Runtime components, in wire order. Both peers must use the same order. */
   components: readonly ComponentDefinition[]
-  /** Optional per-component throttle + full-sync schedule. */
+  /** Optional per-component throttle, and the full-sync schedule. */
   configs?: RuntimeTransportConfig[]
 }
 
 export interface BinaryChannel {
-  /** Encode + send the dirty map across this connection. No-op if no relevant components. */
+  /** Encode the dirty map, and send it across this connection. The function
+   *  does nothing when the map holds no relevant component. */
   publish(dirty: Map<string, Set<Entity>>): void
-  /** Apply a received binary packet into the world. */
+  /** Apply a received binary packet to the world. */
   applyBuffer(buffer: ArrayBuffer): void
   /** Apply an incoming bindings control. */
   registerBindings(bindings: readonly NetworkIdBinding[]): void
   /** Force a full-state snapshot on the next publish. */
   resetShadow(): void
-  /** Send full state of currently-known bindings (used to seed a fresh peer). */
+  /** Send the full state of the bindings known now. This seeds a fresh peer. */
   sendInitialFullSync(): void
   readonly remoteTable: RemoteBindingTable
 }
 
 /**
- * Internal per-channel state. Public type kept narrow above.
+ * Internal state for one channel. The public type above stays narrow.
  */
 interface ChannelState {
   pipeline: BinaryPipeline
@@ -97,12 +100,11 @@ export const createBinaryChannel = (world: World, connection: Connection, option
   }
 
   /**
-   * Choose which dirty entries are eligible to ship this tick after applying
-   * the per-component publish rate. Components above their rate cap are
-   * deferred (their dirty entries remain in the world's dirty map for the
-   * next flush — but since flushRuntime clears, we keep them locally via the
-   * countdown only; the caller already drained the dirty map so this is
-   * advisory throttling per tick).
+   * Choose which dirty entries may go out on this tick, after the per-component
+   * publish rate applies. The channel defers every component that sits above
+   * its rate cap. The caller has already drained the dirty map, and
+   * flushRuntime clears it, so the countdown alone holds the deferral. This is
+   * therefore advisory throttling, applied per tick.
    */
   const eligibleEntries = (dirty: Map<string, Set<Entity>>): { entries: BinaryEntry[]; forceFull: boolean } => {
     const entries: BinaryEntry[] = []
@@ -110,17 +112,19 @@ export const createBinaryChannel = (world: World, connection: Connection, option
     for (const [componentId, entities] of dirty) {
       const cfg = state.resolvedConfig.get(componentId)
       if (!cfg) continue
-      // Decrement publish countdown; defer this component's entries when above rate.
+      // Decrement the publish countdown. Defer the entries of this component
+      // while it stays above its rate.
       const countdown = state.publishCountdown.get(componentId) ?? 0
       if (countdown > 0) {
         state.publishCountdown.set(componentId, countdown - 1)
         continue
       }
-      // Reset publish countdown based on rate. A rate equal to (or above) the
-      // simulation tick rate publishes every tick; halving it doubles the skip.
+      // Reset the publish countdown from the rate. A rate at or above the
+      // simulation tick rate publishes every tick. Half that rate doubles the
+      // skip.
       const skipTicks = cfg.rate > 0 ? Math.max(0, Math.floor(simRate / cfg.rate) - 1) : 0
       state.publishCountdown.set(componentId, skipTicks)
-      // Full-sync countdown — schedule a forced snapshot every N ticks.
+      // Full-sync countdown. It schedules a forced snapshot every N ticks.
       const fsLeft = (state.fullSyncCountdown.get(componentId) ?? cfg.fullSyncInterval) - 1
       if (fsLeft <= 0) {
         forceFull = true
@@ -157,7 +161,7 @@ export const createBinaryChannel = (world: World, connection: Connection, option
       if (entries.length === 0) return
       sendBindingsControl(entries)
       const buffer = state.pipeline.write({ fromPeerIndex: 0, timestamp: world.engine.clock.now() }, entries, forceFull)
-      // Skip pure-header packets — nothing to deliver.
+      // Skip a header-only packet. It carries nothing to deliver.
       if (buffer.byteLength <= HEADER_BYTES) return
       connection.stream.send(buffer)
     },
@@ -176,8 +180,8 @@ export const createBinaryChannel = (world: World, connection: Connection, option
     },
 
     sendInitialFullSync() {
-      // Seed this peer with our current bindings; the next publish will then
-      // include the actual SoA snapshots.
+      // Seed this peer with the current bindings. The next publish then carries
+      // the SoA snapshots themselves.
       const all = localTable.bindings()
       if (all.length === 0) return
       for (const b of all) state.notified.add(b.networkId)

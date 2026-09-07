@@ -1,15 +1,16 @@
 /**
- * Authored-channel codec — string-shaped binary envelope for the
- * low-frequency event-sourced channel.
+ * Authored-channel codec — a string-shaped binary envelope for the
+ * low-frequency, event-sourced channel.
  *
- * Built on the same `ViewCursor` primitives as the runtime binary codec
- * (`binary.ts`). The two channels share infrastructure but have different
+ * It builds on the same `ViewCursor` primitives as the runtime binary codec in
+ * `binary.ts`. The two channels share that infrastructure, and differ in their
  * semantics:
  *
- *   - Authored events carry semantic intent — predicate URIs, entity paths,
- *     JSON-encoded values — so strings dominate the payload.
- *   - Runtime binary uses change-mask delta encoding with no strings on the
- *     wire (entity is addressed via a per-connection NetworkIdTable).
+ *   - An authored event carries semantic intent: predicate URIs, entity paths,
+ *     and JSON-encoded values. Strings therefore dominate its payload.
+ *   - The runtime binary channel uses change-mask delta encoding, and puts no
+ *     strings on the wire. It addresses an entity through a per-connection
+ *     NetworkIdTable.
  *
  * Format (little-endian):
  *
@@ -53,7 +54,8 @@ const KIND_AUTHORED = 1
 const OP_CODES = { set: 0, remove: 1, spawn: 2, destroy: 3 } as const satisfies Record<AuthoredEvent['op'], number>
 const OP_FROM_CODE: readonly AuthoredEvent['op'][] = ['set', 'remove', 'spawn', 'destroy']
 
-/** Default authored-envelope buffer. 2 MiB covers ~40k events at typical sizes. */
+/** Default buffer for an authored envelope. 2 MiB holds about 40k events at
+ *  typical sizes. */
 const AUTHORED_BUFFER_BYTES = 2 * 1024 * 1024
 
 export const serializeAuthoredEnvelope = (envelope: AuthoredEnvelope): ArrayBuffer => {
@@ -97,7 +99,7 @@ export const deserializeAuthoredEnvelope = (buffer: ArrayBuffer): AuthoredEnvelo
   return { fromPeer, events }
 }
 
-/** Peek at a buffer's envelope kind without fully deserialising. */
+/** Read the envelope kind of a buffer, without a full deserialisation. */
 export const envelopeKind = (buffer: ArrayBuffer): 'authored' | 'unknown' => {
   if (buffer.byteLength < 5) return 'unknown'
   const view = createViewCursor(buffer)

@@ -1,22 +1,23 @@
 /**
- * Prefab + spawn — the networked-entity factory.
+ * Prefab and spawn — the factory for a networked entity.
  *
- * One concept, one function. Every wire-addressable entity is spawned via
- * `spawnPrefab` — with an optional prefab parameter that bundles a set of
- * components to apply at creation. The factory composes the four primitives
- * every networked entity needs:
+ * One concept, one function. `spawnPrefab` spawns every wire-addressable
+ * entity. Its optional prefab parameter bundles a set of components to apply at
+ * creation. The factory composes the four primitives that every networked
+ * entity needs:
  *
  *   1. `createEntity`               — allocate the bitECS entity
- *   2. `setUID(uid, { parent })`    — wire-addressable path
- *   3. `OwnedBy(owner)`             — permanent provenance (defaults to localUser)
- *   4. `AuthoritativeFor(authority)`— runtime authority (defaults to localPeer)
+ *   2. `setUID(uid, { parent })`    — give it a wire-addressable path
+ *   3. `OwnedBy(owner)`             — permanent provenance, default localUser
+ *   4. `AuthoritativeFor(authority)`— runtime authority, default localPeer
  *
- * Plus, when a prefab is given, applies its component bundle (defaults merged
- * under per-instance overrides).
+ * When the caller supplies a prefab, the factory also applies the component
+ * bundle of that prefab. It merges the prefab defaults under the per-instance
+ * overrides.
  *
- * For pure-ECS scaffolding (test entities, system caches, derived state that
- * doesn't replicate) use `createEntity` from `ecs/entity` directly. `spawnPrefab`
- * is for first-class networked things.
+ * For pure-ECS scaffolding, use `createEntity` from `ecs/entity` directly. That
+ * covers test entities, system caches, and derived state that never replicates.
+ * Use `spawnPrefab` for anything that has to reach another peer.
  */
 
 import type { ComponentDefinition, ComponentSchema } from '../ecs/component'
@@ -31,7 +32,7 @@ import { AuthoritativeFor, OwnedBy } from './authority'
 export interface PrefabDefinition {
   readonly name: string
   readonly components: ReadonlyArray<ComponentDefinition>
-  /** Composed ComponentSchema — union of constituent schemas. */
+  /** The composed ComponentSchema. It unions the constituent schemas. */
   readonly composedSchema: ComponentSchema
   readonly defaults: Readonly<Partial<Record<string, Record<string, unknown>>>>
 }
@@ -63,25 +64,27 @@ export const definePrefab = (name: string, options: DefinePrefabOptions): Prefab
   }
 }
 
-// ── spawnPrefab — the networked-entity factory ───────────────────────────────-
+// ── spawnPrefab — the factory for a networked entity ─────────────────────────-
 
 export interface SpawnPrefabOptions {
-  /** Apply this prefab's components to the spawned entity. */
+  /** Apply the components of this prefab to the spawned entity. */
   prefab?: PrefabDefinition
-  /** Parent entity. Defaults to `world.worldRoot` (top-level). */
+  /** Parent entity. It defaults to `world.worldRoot`, which is top level. */
   parent?: Entity
-  /** Owner user entity. Defaults to `world.localUser`. */
+  /** Owner user entity. It defaults to `world.localUser`. */
   owner?: Entity
-  /** Authority peer entity. Defaults to `world.localPeer`. */
+  /** Authority peer entity. It defaults to `world.localPeer`. */
   authority?: Entity
-  /** Per-component initial values, merged over prefab defaults. Ignored when no prefab. */
+  /** Per-component initial values. The factory merges them over the prefab
+   *  defaults, and ignores them when the caller supplies no prefab. */
   overrides?: Partial<Record<string, Record<string, unknown>>>
 }
 
 /**
- * Spawn a networked entity. Pass `{ prefab }` in options to also apply a
- * prefab's component bundle. Throws if no owner can be determined — every
- * networked entity must have an owner from creation.
+ * Spawn a networked entity. Pass `{ prefab }` in the options to apply the
+ * component bundle of a prefab as well. The function throws when it can
+ * determine no owner, because every networked entity must hold an owner from
+ * creation.
  *
  * @example
  *   spawnPrefab(world, 'scene:main')                         // bare scene root

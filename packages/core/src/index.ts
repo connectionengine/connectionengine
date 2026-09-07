@@ -1,27 +1,29 @@
 /**
- * @connectionengine/core — public API surface.
+ * @connectionengine/core — the public API surface.
  *
- * Two domain layers, matching the on-disk structure:
+ * Two domain layers, which match the on-disk structure:
  *
  *   ecs/     — Engine, World, Entity, Component, Relation, Observer, Query,
  *              Identity (UID + BelongsTo), System scheduler, Prefab.
- *              Pure local runtime — knows nothing about authoring, replication,
- *              peers, or governance.
+ *              A pure local runtime. It knows nothing about authoring,
+ *              replication, peers, or governance.
  *
  *   network/ — Mutation pipeline (authored queue + event log + flush + apply),
  *              Transport, Lifecycle (handshake / replay / sweep / fanout),
  *              Binary delta codec, Snapshot, User / Peer, Authority,
- *              Governance, Peers registry. Everything that exists *because*
+ *              Governance, Peers registry. Everything here exists *because*
  *              state is distributed across peers.
  *
  *   schema/  — TypeBox + SoA tag kinds (Vec3, Quat, ArrayBuffer, SoAStore, …)
  *   maths/   — Vec/Quat SoA classes
  *
- * Layering enforced mechanically: `ecs/` cannot import from `network/`.
+ * oxlint enforces the layering mechanically: `ecs/` cannot import from
+ * `network/`.
  *
- * Core is identity- and crypto-agnostic. For Ed25519 / did:key identity + ZCAP
- * capabilities, depend on @connectionengine/local. For AD4M-backed identity,
- * transport, and persistence, depend on @connectionengine/ad4m-bridge.
+ * Core is identity-agnostic and crypto-agnostic. For Ed25519 or did:key
+ * identity with ZCAP capabilities, depend on @connectionengine/local. For
+ * AD4M-backed identity, transport, and persistence, depend on
+ * @connectionengine/ad4m-bridge.
  */
 
 // ── Schema ────────────────────────────────────────────────────────────────────
@@ -49,9 +51,9 @@ export * from './ecs/entity'
 export * from './ecs/clock'
 export * from './ecs/component'
 export * from './ecs/relation'
-// Observers: re-export only the unique hook constructors. The operator
-// vocabulary (Or/And/Not/Any/All/None) lives in ./ecs/query for the canonical
-// import path; observers compose them via the same names.
+// Observers. Re-export only the unique hook constructors. The operator
+// vocabulary (Or, And, Not, Any, All, None) lives in ./ecs/query, which is the
+// canonical import path. Observers compose those operators under the same names.
 export { observe, onAdd, onRemove, onSet, onGet } from './ecs/observer'
 export type { ObserverTerm } from './ecs/observer'
 export * from './ecs/query'
@@ -59,7 +61,7 @@ export * from './ecs/query'
 // ── ECS scheduling ────────────────────────────────────────────────────────────
 export * from './ecs/system'
 
-// ── Network — everything distribution-related ────────────────────────────────-
+// ── Network. Everything here relates to distribution. ────────────────────────-
 export * from './network/transport'
 export * from './network/network'
 export * from './network/mutation'

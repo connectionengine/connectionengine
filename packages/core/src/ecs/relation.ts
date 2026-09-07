@@ -1,65 +1,67 @@
 /**
- * RelationDefinition + helpers.
+ * RelationDefinition and its helpers.
  *
- * Relationships are predicates — typed, queryable links between entities.
- * They always ship as authored events (discrete causal mutations) unless
- * marked `local: true`, in which case they stay machine-local.
+ * Relationships are predicates: typed, queryable links between entities. They
+ * always travel as authored events, which are discrete causal mutations. A
+ * relation marked `sync: false` is the one exception, and stays machine-local.
  *
- * Built on bitECS's createRelation; we wrap it to:
- *   - carry a stable name (predicate URI)
- *   - push relation add/remove onto `world.authoredQueue` (drained by the
- *     network-layer mutation pipeline at end of tick)
+ * This module builds on `createRelation` from bitECS. The wrapper adds two
+ * things:
+ *   - a stable name, which serves as the predicate URI
+ *   - a push of each relation add and remove onto `world.authoredQueue`, which
+ *     the network-layer mutation pipeline drains at the end of the tick
  *
- * Extension properties: any field on the `defineRelation` options object
- * that isn't a reserved key (`name`, `sync`, `exclusive`, `autoRemoveSubject`,
- * `store`, `onTargetRemoved`) is spread straight onto the definition with
- * its type preserved — used by built-in relations to attach their own
- * indexes (e.g. `BelongsTo.parentOf`) and available for user code to do the
- * same.
+ * Extension properties: `defineRelation` spreads any field on the options
+ * object that is not a reserved key (`name`, `sync`, `exclusive`,
+ * `autoRemoveSubject`, `store`, `onTargetRemoved`) straight onto the
+ * definition, and preserves its type. Built-in relations use this to attach
+ * their own indexes, such as `BelongsTo.parentOf`. User code can do the same.
  */
 
 import * as bitecs from 'bitecs'
 import type { Entity, Origin, World } from './world'
 
 export interface RelationOptions<T = void> {
-  /** Predicate name (used as the relation URI in semantic triples) */
+  /** Predicate name. It serves as the relation URI in semantic triples. */
   name: string
   /**
-   * Whether this relation replicates as authored events. Default `true`.
-   * Set to `false` to keep the relation machine-local.
+   * Whether this relation replicates as authored events. It defaults to `true`.
+   * Set it to `false` to keep the relation machine-local.
    */
   sync?: boolean
-  /** If true: exactly one target per subject. Assigning new target removes old. */
+  /** When true, each subject has exactly one target. A new target removes the
+   *  previous one. */
   exclusive?: boolean
-  /** If true: subject is destroyed when target is destroyed. */
+  /** When true, the engine destroys the subject when it destroys the target. */
   autoRemoveSubject?: boolean
-  /** Per-pair data factory. */
+  /** Factory for the per-pair data. */
   store?: () => T
-  /** Hook fired when the target entity is removed. */
+  /** Hook that runs when the engine removes the target entity. */
   onTargetRemoved?: (subject: Entity, target: Entity) => void
 }
 
 export interface RelationDefinition<T = void> {
   readonly name: string
-  /** Whether this relation replicates. Defaults to `true` at definition time. */
+  /** Whether this relation replicates. It defaults to `true` at definition time. */
   readonly sync: boolean
   readonly exclusive: boolean
   readonly autoRemoveSubject: boolean
-  /** Internal bitECS relation function — invoke with a target to get a pair component. */
+  /** Internal bitECS relation function. Call it with a target to get a pair
+   *  component. */
   readonly $relation: bitecs.Relation<T>
 }
 
-/** Reserved option keys consumed by `defineRelation` itself. Any other keys
- *  passed to `defineRelation` become typed extension properties on the
+/** Reserved option keys that `defineRelation` consumes itself. Every other key
+ *  passed to `defineRelation` becomes a typed extension property on the
  *  resulting definition. */
 type ReservedRelationOptionKey = keyof RelationOptions<unknown>
 
-/** Fields on an options object that are *not* part of `RelationOptions` —
- *  these are passed straight through onto the definition. */
+/** Fields on an options object that do *not* belong to `RelationOptions`.
+ *  `defineRelation` passes these straight through onto the definition. */
 export type RelationExtensions<O> = Omit<O, ReservedRelationOptionKey>
 
 // ── Global relation registry ─────────────────────────────────────────────────-
-// Relation definitions are module-level singletons, same as components.
+// Relation definitions are module-level singletons, as component definitions are.
 const relationsByName = new Map<string, RelationDefinition<unknown>>()
 const relationsByRef = new WeakMap<bitecs.Relation<unknown>, RelationDefinition<unknown>>()
 
@@ -160,7 +162,7 @@ export const hasRelation = <T>(
   target: Entity
 ): boolean => bitecs.hasComponent(world.engine.bitECS, subject, relation.$relation(target))
 
-// ── bitECS re-exports (for advanced query composition) ────────────────────────
+// ── bitECS re-exports. Use them for advanced query composition. ──────────────
 
 export const Wildcard = bitecs.Wildcard
 export const IsA = bitecs.IsA

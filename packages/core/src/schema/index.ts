@@ -1,11 +1,11 @@
 /**
  * Unified `Schema` namespace.
  *
- * Single recursive schema authoring surface: value-typed primitives map directly
- * to TypeBox; SoA-typed values (Vec3, Quat, Float32, ...) carry the SoAStore kind
- * tag. `defineComponent` walks the schema, materialises SoA stores for tagged
- * fields and an instance store for the rest, and derives mutation category from
- * field-type composition when not explicitly set.
+ * One recursive surface for schema authoring. A value-typed primitive maps
+ * directly to TypeBox. An SoA-typed value (Vec3, Quat, Float32, ...) carries
+ * the SoAStore kind tag. `defineComponent` walks the schema. It materialises an
+ * SoA store for each tagged field, and an instance store for the rest. It also
+ * derives the replication channel from the composition of the field types.
  *
  * Usage:
  *   Schema.Object({
@@ -19,7 +19,8 @@ import { Type } from '@sinclair/typebox'
 import { SoA } from './soa'
 
 export const Schema = {
-  // Value-typed (TypeBox-native — instance store + authored transport)
+  // Value-typed. These are TypeBox-native, and use the instance store and the
+  // authored transport.
   String: Type.String.bind(Type),
   Number: Type.Number.bind(Type),
   Boolean: Type.Boolean.bind(Type),
@@ -35,7 +36,7 @@ export const Schema = {
   Unknown: Type.Unknown.bind(Type),
   Enum: Type.Enum.bind(Type),
 
-  // SoA-typed (typed arrays — runtime transport by default)
+  // SoA-typed. These use typed arrays, and the runtime transport by default.
   Uint8: SoA.Uint8,
   Int8: SoA.Int8,
   Uint16: SoA.Uint16,

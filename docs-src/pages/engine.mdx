@@ -4,24 +4,24 @@ description: The runtime container — bitECS storage, time, and the per-engine 
 
 # Engine
 
-An **Engine** is the ECS runtime container. Per-engine state lives here — bitECS storage, per-component instance/view bags, time. Systems run at the engine level. Multiple `World` objects can coexist inside one engine; they share storage and tick together.
+An **Engine** is the ECS runtime container. Per-engine state lives here: bitECS storage, per-component instance and view bags, and time. Systems run at the engine level. Several `World` objects can coexist inside one engine, where they share storage and tick together.
 
-What the engine owns:
+The engine owns three things:
 
-- **One bitECS world.** All entities allocated in this engine share an ID space. CE Worlds scope themselves to subtrees inside it via the `BelongsTo` chain rooted at `worldRoot`.
-- **Per-component storage.** SoA typed arrays live directly on each `ComponentDefinition` (so `Transform.position.x[eid]` works without any lookup). Per-entity instance maps + view bags for value fields live on the engine in `componentStores`, keyed by `(ComponentDefinition, entity)`.
-- **Time state.** `clock`, `frameTime`, `simulationTime`, `fixedTimeStep`, `deltaSeconds`, `accumulator`. The engine ticks; `tickEngine` / `runSystems` drive every world rooted in it.
+- **One bitECS world.** Every entity allocated in this engine shares an ID space. A CE World scopes itself to a subtree inside that space, through the `BelongsTo` chain rooted at `worldRoot`.
+- **Per-component storage.** The SoA typed arrays live directly on each `ComponentDefinition`, so `Transform.position.x[eid]` works without a lookup. The per-entity instance maps and view bags for value fields live on the engine, in `componentStores`, keyed by `(ComponentDefinition, entity)`.
+- **Time state.** `clock`, `frameTime`, `simulationTime`, `fixedTimeStep`, `deltaSeconds`, and `accumulator`. The engine ticks, and `tickEngine` and `runSystems` drive every world rooted in it.
 
-What the engine does *not* own:
+The engine does *not* own two things:
 
-- **Component / Relation definitions** are module-level singletons. `defineComponent({ id: 'Foo', ... })` produces one `ComponentDefinition` object shared across every engine that uses it. Components defined at module load work for any engine that comes or goes — no per-engine registration step.
-- **Identity caches** (`nameCache`, `uidOf`, `parentOf`) live as typed extension properties on `UIDComponent` and `BelongsTo`. The extension itself is global; the inner maps are keyed by Engine so two engines in the same process keep their state isolated. Access via the `nameCacheFor(engine)` / `uidOfFor(engine)` / `parentOfFor(engine)` helpers.
+- **Component and Relation definitions** are module-level singletons. `defineComponent({ id: 'Foo', ... })` produces one `ComponentDefinition` object, shared across every engine that uses it. A component defined at module load works for any engine that starts or stops later, because there is no per-engine registration step.
+- **Identity caches** (`nameCache`, `uidOf`, `parentOf`) live as typed extension properties on `UIDComponent` and `BelongsTo`. The extension itself is global. The inner maps use the Engine as their key, so two engines in the same process keep their state isolated. Use the `nameCacheFor(engine)`, `uidOfFor(engine)`, and `parentOfFor(engine)` helpers to read them.
 
-CE Worlds are NOT engines. A World is a logical scope inside an engine — see [Worlds & Systems](/worlds-and-systems).
+A CE World is NOT an engine. A World is a logical scope inside an engine — see [Worlds & Systems](/worlds-and-systems).
 
 ## Always explicit
 
-Every `createWorld` takes an explicit `engine`. You decide what's shared and what's isolated at every call:
+Every `createWorld` takes an explicit `engine`. You decide what to share and what to isolate at every call:
 
 ```ts
 import { createEngine, createWorld, createAnonAgent, defineComponent } from '@connectionengine/core'
@@ -34,7 +34,7 @@ const engine = createEngine()
 const world = createWorld({ engine, agent: createAnonAgent() })
 ```
 
-Two worlds inside one engine share bitECS storage + clock + identity caches:
+Two worlds inside one engine share the bitECS storage, the clock, and the identity caches:
 
 ```ts
 const engine = createEngine()
@@ -42,7 +42,7 @@ const worldA = createWorld({ engine, agent: aliceAgent })
 const worldB = createWorld({ engine, agent: bobAgent })
 ```
 
-Two engines means full isolation — entity IDs, time, and identity caches all separate. Multi-peer test harnesses use this pattern to simulate independent machines:
+Two engines give full isolation. Entity IDs, time, and identity caches all stay separate. Multi-peer test harnesses use this pattern to simulate independent machines:
 
 ```ts
 const worldA = createWorld({ engine: createEngine(), agent: aliceAgent })
@@ -51,7 +51,7 @@ const worldB = createWorld({ engine: createEngine(), agent: bobAgent })
 
 ## Extension state on definitions
 
-Identity caches are an instance of a broader pattern: components and relations can carry arbitrary typed extension properties on their definitions. Anything you put on the options object (beyond the reserved keys) lands on the resulting definition with its type preserved.
+The identity caches are one instance of a broader pattern. Components and relations can carry any typed extension property on their definitions. Anything you put on the options object, beyond the reserved keys, lands on the resulting definition with its type preserved.
 
 ```ts
 import type { Engine, Entity } from '@connectionengine/core'
@@ -68,9 +68,9 @@ export const UIDComponent = defineComponent({
 // state, or a plain Map / object for genuinely process-global indexes.
 ```
 
-Reserved component option keys: `id`, `label`, `schema`, `sync`. Reserved relation keys: `name`, `sync`, `exclusive`, `autoRemoveSubject`, `store`, `onTargetRemoved`. Everything else flows through.
+The reserved component option keys are `id`, `label`, `schema`, and `sync`. The reserved relation keys are `name`, `sync`, `exclusive`, `autoRemoveSubject`, `store`, and `onTargetRemoved`. Every other key passes through.
 
-## What's on the engine — at a glance
+## What the engine holds — at a glance
 
 ```ts
 interface Engine {
@@ -84,4 +84,4 @@ interface Engine {
 }
 ```
 
-You almost never touch these fields directly. Most engine state is accessed through `defineComponent`, `defineRelation`, `getComponentById(id)`, `setComponent(world, e, def, value)`, etc. The fields are public so plugin code and tooling can introspect.
+You almost never touch these fields directly. `defineComponent`, `defineRelation`, `getComponentById(id)`, and `setComponent(world, e, def, value)` give access to most engine state. The fields stay public so that plugin code and tooling can inspect them.

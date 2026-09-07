@@ -6,13 +6,14 @@ export interface Vec3View {
   z: number
 }
 
-/** Mutable array shape used by `to()` write-targets and snapshot serialisers. */
+/** Mutable array shape. The `to()` write targets and the snapshot serialisers
+ *  use it. */
 export type Vec3Tuple = [number, number, number] | Float32Array
 
 /**
  * Canonical read shape for a Vec3 SoA field. `getComponent` returns this view.
- * The math API accepts arrays/typed arrays for writes via `from()` and
- * `setComponent`'s value parameter.
+ * The math API also accepts an array or a typed array for a write, through
+ * `from()` and through the value parameter of `setComponent`.
  */
 export type Vec3 = Vec3View
 
@@ -43,9 +44,9 @@ export class Vec3SoA<T extends TypedArrayConstructor> {
   }
 
   /**
-   * Return a stable per-entity view object whose `.x/.y/.z` accessors read and
-   * write the underlying SoA arrays directly. Cached per entity — the same
-   * object reference is returned on every call.
+   * Return a stable per-entity view object. Its `.x`, `.y`, and `.z` accessors
+   * read and write the underlying SoA arrays directly. The view is cached per
+   * entity, so every call returns the same object reference.
    */
   view(entity: number): Vec3View {
     let v = this.#views[entity]

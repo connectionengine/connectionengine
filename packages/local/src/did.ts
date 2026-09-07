@@ -1,18 +1,21 @@
 /**
- * DID & cryptographic primitives.
+ * DID and cryptographic primitives.
  *
- * Every state change in the engine can be a signed semantic triple. This module
- * provides the minimum needed: Ed25519 keypair generation, sign/verify, and
- * did:key encoding. Higher layers (governance, ZCAP) build on top.
+ * Every state change in the engine can become a signed semantic triple. This
+ * module supplies the minimum that such a triple needs: Ed25519 keypair
+ * generation, sign and verify, and did:key encoding. The higher layers, such as
+ * governance and ZCAP, build on top of it.
  *
- * The format follows did:key spec for Ed25519: did:key:z6Mk... (multibase base58btc
- * of multicodec 0xed01 + 32-byte public key).
+ * The format follows the did:key specification for Ed25519, which produces
+ * `did:key:z6Mk...`. That string is the multibase base58btc encoding of the
+ * multicodec prefix 0xed01 plus the 32-byte public key.
  */
 
 import * as ed from '@noble/ed25519'
 import { sha512 } from '@noble/hashes/sha2.js'
 
-// @noble/ed25519 v3 needs sha512 wired into `ed.hashes.sha512` for sync sign/verify.
+// Version 3 of @noble/ed25519 needs sha512 attached to `ed.hashes.sha512`,
+// for a synchronous sign and verify.
 ed.hashes.sha512 = sha512
 
 const concat = (...arrays: Uint8Array[]): Uint8Array => {
@@ -80,7 +83,7 @@ const base58btcDecode = (str: string): Uint8Array => {
   return result
 }
 
-// did:key multicodec prefix for Ed25519: 0xed 0x01
+// The did:key multicodec prefix for Ed25519: 0xed 0x01.
 const ED25519_MULTICODEC = new Uint8Array([0xed, 0x01])
 
 // ── hex helpers ───────────────────────────────────────────────────────────────
@@ -114,7 +117,7 @@ export const generateKeyPair = (seed?: Uint8Array): KeyPair => {
   }
 }
 
-/** Deterministic keypair from a string seed — useful in tests. */
+/** Build a deterministic keypair from a string seed. Tests use it. */
 export const keyPairFromSeed = (seed: string): KeyPair => {
   const encoded = new TextEncoder().encode(seed.padEnd(32, '\0'))
   return generateKeyPair(encoded.slice(0, 32))
@@ -155,27 +158,31 @@ export const verifyByDID = (signature: Uint8Array, message: Uint8Array, did: str
 
 // ── triple signing ────────────────────────────────────────────────────────────
 
-/** A semantic triple: <entity, predicate, value>. */
+/** A semantic triple, in the form (entity, predicate, value). */
 export interface Triple {
-  /** Entity path (BelongsTo chain + UID) — globally unique address */
+  /** Entity path: the BelongsTo chain plus the UID. It gives a globally unique
+   *  address. */
   entityPath: string[]
-  /** Predicate URI (component id or relation name, e.g. 'Transform', 'ChildOf') */
+  /** Predicate URI: a component id or a relation name, such as 'Transform' or
+   *  'ChildOf'. */
   predicate: string
-  /** The value being asserted (component data, target path, or null for removal) */
+  /** The value that the triple asserts. It holds the component data, the target
+   *  path, or null for a removal. */
   value: unknown
-  /** 'set' | 'remove' | 'spawn' | 'destroy' */
+  /** One of 'set', 'remove', 'spawn', or 'destroy'. */
   op: 'set' | 'remove' | 'spawn' | 'destroy'
 }
 
 export interface SignedTriple extends Triple {
   authorDID: DID
   timestamp: number
-  /** Hex-encoded Ed25519 signature over canonicalised triple bytes. */
+  /** Hex-encoded Ed25519 signature over the canonicalised bytes of the triple. */
   signature: string
 }
 
 const canonicaliseTriple = (triple: Triple, authorDID: string, timestamp: number): Uint8Array => {
-  // Stable JSON for signing — keys sorted, no whitespace
+  // Stable JSON for the signature. The keys stay sorted, and no whitespace
+  // appears.
   const payload = {
     authorDID,
     entityPath: triple.entityPath,

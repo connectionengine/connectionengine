@@ -1,10 +1,11 @@
 /**
  * TypeBox Kind extensions for SoA storage.
  *
- * SoA-tagged fields go into shared typed arrays indexed by entity ID.
- * Value-tagged fields (regular TypeBox primitives) go into per-entity instance
- * objects. The Kind tag is what defineComponent (../component.ts) walks to
- * decide where each field lives and how it's transported.
+ * An SoA-tagged field goes into a shared typed array, indexed by entity ID. A
+ * value-tagged field, which is a regular TypeBox primitive, goes into a
+ * per-entity instance object. `defineComponent` in ../ecs/component.ts walks
+ * the Kind tag to decide where each field lives, and how the engine transports
+ * it.
  */
 
 import type { TSchema } from '@sinclair/typebox'
