@@ -47,14 +47,14 @@ In practice you do not construct pipelines yourself. The lifecycle layer builds 
 
 ## NetworkIds
 
-Entity paths stay stable across worlds, but they are verbose. The binary channel cannot carry strings, so each side keeps a `NetworkIdTable` that allocates compact `u32` values for its own entities:
+Entity paths stay stable across worlds, but they are verbose. The binary channel cannot carry strings, so each entity that enters the wire gets a `NetworkId` component — a compact `u32` allocated lazily when the entity first becomes dirty:
 
 ```
 Per-world (sender side):
-  Map<Entity, u32>  ← allocated lazily when an entity first becomes dirty
+  NetworkId component on each entity  ← world.nextNetworkId allocates sequentially
 
 Per-connection (receiver side):
-  Map<u32, EntityPath>  ← received via control messages, resolved per packet
+  RemoteBindingTable: Map<u32, EntityPath>  ← received via control messages, resolved per packet
 ```
 
 When an entity becomes dirty for the first time, the channel sends a `{ type: 'bind', bindings: [{ networkId, entityPath }] }` control message **over the `events` channel of the transport**, which is reliable and ordered. The receiver therefore sees the binding before the binary packet that uses it arrives on the `stream` channel.

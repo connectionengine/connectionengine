@@ -149,6 +149,10 @@ export interface World {
 
   /** Local user entity. `createUser` sets it when passed `asLocal: true`. */
   localUser?: Entity
+
+  /** Counter for the next networkId allocation. The `NetworkId` component on
+   *  each entity stores the assigned value. Starts at 1 — 0 means unmapped. */
+  nextNetworkId: number
 }
 
 export interface CreateWorldOptions {
@@ -173,7 +177,8 @@ export const createWorld = (options: CreateWorldOptions): World => {
     eventLogSeen: new Set(),
     authoredSeq: 0,
     runtimeDirty: new Map(),
-    networks: new Map()
+    networks: new Map(),
+    nextNetworkId: 1
   }
   return world
 }

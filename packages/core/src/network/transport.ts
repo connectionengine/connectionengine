@@ -83,8 +83,8 @@ export interface RuntimeChannel {
 export interface Connection {
   /** Peer entity for the remote end. Zero until the handshake identifies it. */
   peer: number
-  /** Remote agent DID. It holds `'did:unknown:pending'` until the hello arrives. */
-  remoteDID: string
+  /** Remote agent DID. Undefined until the hello arrives. */
+  remoteDID?: string
   readonly events: TransportChannel
   readonly stream: TransportChannel<ArrayBuffer>
   /** Binary delta channel for this connection. Set when the connection is

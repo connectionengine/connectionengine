@@ -30,16 +30,17 @@
 import type { AuthoredEnvelope, AuthoredEvent, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
 import { allComponents, getComponent, hasSyncedSoA, setComponent } from '../../ecs/component'
+import { ensureEntityPath, getEntityPath } from '../../ecs/entity'
+import { addRelation } from '../../ecs/relation'
 import { applyAuthoredEnvelope, flushAuthored, isAuthoredEnvelope } from '../mutation'
-import { getEntityPath } from '../../ecs/entity'
-import { ConnectedTo, PeerComponent } from '../agents'
+import { ConnectedTo, PeerComponent, UserComponent } from '../agents'
+import { AuthoritativeFor, OwnedBy } from '../authority'
 import { disconnectPeer } from '../presence'
-import { ensureRemotePeerEntity } from '../peer'
 import type { Connection, RuntimeTransportConfig, TransportEndpoint } from '../transport'
 import type { Network } from '../network'
 import { ensureDefaultNetwork } from '../network'
 import { createBinaryChannel, isBindControl, type BinaryChannel } from './binary-channel'
-import { getNetworkIdTable, type NetworkIdBinding } from './network-id'
+import { networkIdBindings, type NetworkIdBinding } from './network-id'
 import {
   applyReplayChunk,
   applyStateSnapshot,
@@ -122,15 +123,6 @@ export interface JoinResult {
   snapshotEntityCount: number
 }
 
-const wrapEndpoint = (endpoint: TransportEndpoint): Connection => ({
-  peer: 0,
-  remoteDID: 'did:unknown:pending',
-  events: endpoint.events,
-  stream: endpoint.stream,
-  onClose: (h) => endpoint.onClose(h),
-  close: () => endpoint.close()
-})
-
 /**
  * Bring the local world up to date with the remote peer over `endpoint`. The
  * connection joins the `network` that the caller names. It defaults to the
@@ -152,7 +144,13 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
   const chunkSize = options.replayChunkSize ?? 256
   const myKnownCount = options.knownEventCount ?? 0
 
-  const connection = wrapEndpoint(endpoint)
+  const connection: Connection = {
+    peer: 0,
+    events: endpoint.events,
+    stream: endpoint.stream,
+    onClose: (h) => endpoint.onClose(h),
+    close: () => endpoint.close()
+  }
   attachRuntimeChannel(world, connection, {
     components: options.runtimeComponents,
     configs: options.runtimeConfigs
@@ -160,24 +158,38 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
 
   let replayedEventCount = 0
   let snapshotEntityCount = 0
-  let resolveReplay!: () => void
-  const replayPromise = new Promise<void>((r) => {
-    resolveReplay = r
-  })
+  let resolveReplay: (() => void) | undefined
+  const replayPromise = wantReplay
+    ? new Promise<void>((r) => {
+        resolveReplay = r
+      })
+    : undefined
 
   endpoint.events.onMessage((payload) => {
     if (isControl(payload)) {
       switch (payload.type) {
         case 'hello': {
           connection.remoteDID = payload.agentDID
-          connection.peer = ensureRemotePeerEntity(world, {
-            did: payload.agentDID,
-            peerId: payload.peerId,
-            userPath: payload.userPath,
-            peerPath: payload.peerPath
+          // Materialise the remote peer in the local world. The path falls back
+          // to synthetic UIDs when the remote side has no local identity (test or
+          // solo flow).
+          const userPath = payload.userPath.length > 0 ? payload.userPath : [`user:${payload.agentDID}`]
+          const peerPath = payload.peerPath.length > 0 ? payload.peerPath : [...userPath, `peer:${payload.peerId}`]
+          const remoteUser = ensureEntityPath(world, userPath, (entity) => {
+            setComponent(
+              world,
+              entity,
+              UserComponent,
+              { did: payload.agentDID, displayName: '' },
+              { origin: 'network' }
+            )
+            OwnedBy.set(world, entity, entity, { origin: 'network' })
           })
-          // Presence is a fact about the peer, so record it as one. Its removal
-          // is what drives disconnect cleanup — see `network/presence.ts`.
+          connection.peer = ensureEntityPath(world, peerPath, (entity) => {
+            setComponent(world, entity, PeerComponent, { peerId: payload.peerId, latency: 0 }, { origin: 'network' })
+            OwnedBy.set(world, entity, remoteUser, { origin: 'network' })
+            addRelation(world, entity, AuthoritativeFor, entity, { origin: 'network' })
+          })
           setComponent(world, connection.peer, ConnectedTo, { networkId: network.id })
           connection.channel?.registerBindings(payload.bindings)
           flushAuthored(world)
@@ -191,13 +203,13 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
           break
         }
         case 'snapshot':
-          snapshotEntityCount += applyStateSnapshot(world, payload.snapshot, connection.remoteDID, network)
+          snapshotEntityCount += applyStateSnapshot(world, payload.snapshot, connection.remoteDID!, network)
           break
         case 'replay-chunk':
-          replayedEventCount += applyReplayChunk(world, connection.remoteDID, payload.events, network)
+          replayedEventCount += applyReplayChunk(world, connection.remoteDID!, payload.events, network)
           break
         case 'replay-end':
-          resolveReplay()
+          resolveReplay?.()
           break
         case 'leave':
           connection.close()
@@ -227,11 +239,17 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
 
   attachConnection(world, network, connection)
 
-  const localBindings = options.runtimeComponents ? getNetworkIdTable(world).bindings() : []
+  // Read the local identity fields for the outbound hello.
+  let localPeerId = world.localAgent.did
+  if (world.localPeer !== undefined) {
+    const peerValue = getComponent(world, world.localPeer, PeerComponent) as { peerId?: string } | undefined
+    if (peerValue?.peerId) localPeerId = peerValue.peerId
+  }
+  const localBindings = options.runtimeComponents ? networkIdBindings(world) : []
   endpoint.events.send({
     type: 'hello',
     agentDID: world.localAgent.did,
-    peerId: localPeerId(world),
+    peerId: localPeerId,
     userPath: world.localUser !== undefined ? getEntityPath(world, world.localUser) : [],
     peerPath: world.localPeer !== undefined ? getEntityPath(world, world.localPeer) : [],
     knownEventCount: myKnownCount,
@@ -239,9 +257,9 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
     bindings: localBindings
   } satisfies HelloMessage)
 
-  if (wantReplay) await replayPromise
+  if (replayPromise) await replayPromise
 
-  return { connection, network, remoteDID: connection.remoteDID, replayedEventCount, snapshotEntityCount }
+  return { connection, network, remoteDID: connection.remoteDID!, replayedEventCount, snapshotEntityCount }
 }
 
 /** Backward-compatible alias. `joinWorld` calls `joinNetwork` over the default
@@ -260,20 +278,6 @@ export const leaveWorld = async (world: World, connection: Connection): Promise<
     // The peer may have gone already.
   }
   connection.close()
-}
-
-/**
- * Resolve the peerId of the local engine. HELLO carries that value, so that the
- * remote side can find a Peer entity that uniquely represents this engine
- * instance, or create one. The function falls back to the agent DID when no
- * local Peer entity exists yet, as in a test flow or a solo flow.
- */
-const localPeerId = (world: World): string => {
-  if (world.localPeer !== undefined) {
-    const value = getComponent(world, world.localPeer, PeerComponent) as { peerId?: string } | undefined
-    if (value?.peerId) return value.peerId
-  }
-  return world.localAgent.did
 }
 
 // ── Runtime channel + relay ──────────────────────────────────────────────────-

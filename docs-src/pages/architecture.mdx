@@ -125,7 +125,7 @@ Entities have integer IDs, allocated from the engine's bitECS world. The IDs are
 
 The path is what travels. Receivers look the path up in their own world, or create the chain on demand. The semantic graph view emerges the same way, because every path is a stable URI that other events can reference.
 
-Paths would be too verbose for the `continuous` channel. Each connection therefore keeps a `NetworkIdTable` — a compact `u32` mapping, exchanged at handshake and updated lazily as new entities appear.
+Paths would be too verbose for the `continuous` channel. Each entity that enters the binary wire gets a `NetworkId` component — a compact `u32` label, exchanged at handshake and updated lazily as new entities appear.
 
 ## Where the code maps to the docs
 

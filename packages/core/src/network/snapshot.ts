@@ -60,6 +60,7 @@ export const createSnapshot = (world: World, options: CreateSnapshotOptions = {}
     const components: Record<string, unknown> = {}
     const relations: Record<string, string[][]> = {}
     for (const def of componentDefs) {
+      if (!def.$sync) continue
       if (!hasComponent(world, entity, def)) continue
       if (includeIds && !includeIds.has(def.$id)) continue
       components[def.$id] = serialiseComponentValue(world, entity, def)

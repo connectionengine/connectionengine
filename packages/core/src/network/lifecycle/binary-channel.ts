@@ -23,6 +23,8 @@
 import type { Entity, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
 import { hasComponent } from '../../ecs/component'
+import { getEntityPath } from '../../ecs/entity'
+import { query } from '../../ecs/query'
 import type { BinaryEntry, BinaryPipeline } from '../binary'
 import { createBinaryPipeline } from '../binary'
 import type { CompressionConfig } from '../compression'
@@ -30,7 +32,10 @@ import type { Connection, RuntimeTransportConfig } from '../transport'
 import { resolveRuntimeConfig } from '../transport'
 import {
   createRemoteBindingTable,
-  getNetworkIdTable,
+  ensureNetworkId,
+  getNetworkId,
+  NetworkIdComponent,
+  networkIdBindings,
   type NetworkIdBinding,
   type RemoteBindingTable
 } from './network-id'
@@ -93,7 +98,6 @@ interface ChannelState {
 
 export const createBinaryChannel = (world: World, connection: Connection, options: ChannelOptions): BinaryChannel => {
   const components = options.components
-  const localTable = getNetworkIdTable(world)
   const remoteTable = createRemoteBindingTable()
 
   // Lookup for the full-sync widening below, which resolves a component id back
@@ -165,9 +169,11 @@ export const createBinaryChannel = (world: World, connection: Connection, option
         state.fullSyncCountdown.set(componentId, cfg.fullSyncInterval)
         const definition = componentsById.get(componentId)
         if (definition) {
-          for (const networkId of state.notified) {
-            const known = localTable.entityOf(networkId)
-            if (known !== undefined && hasComponent(world, known, definition)) selected.add(known)
+          for (const entity of query(world, [NetworkIdComponent])) {
+            const nid = getNetworkId(world, entity)
+            if (nid !== undefined && state.notified.has(nid) && hasComponent(world, entity, definition)) {
+              selected.add(entity)
+            }
           }
         }
       } else {
@@ -178,7 +184,7 @@ export const createBinaryChannel = (world: World, connection: Connection, option
 
     const entries: BinaryEntry[] = []
     for (const entity of selected) {
-      const networkId = localTable.ensureFor(entity)
+      const networkId = ensureNetworkId(world, entity)
       if (networkId === undefined) continue
       entries.push({ networkId, entity })
     }
@@ -190,8 +196,8 @@ export const createBinaryChannel = (world: World, connection: Connection, option
     for (const entry of entries) {
       if (state.notified.has(entry.networkId)) continue
       state.notified.add(entry.networkId)
-      const binding = localTable.bindingFor(entry.networkId)
-      if (binding) newBindings.push(binding)
+      const entityPath = getEntityPath(world, entry.entity)
+      if (entityPath.length > 0) newBindings.push({ networkId: entry.networkId, entityPath })
     }
     if (newBindings.length === 0) return
     const msg: BindControlMessage = { type: 'bind', bindings: newBindings }
@@ -228,7 +234,7 @@ export const createBinaryChannel = (world: World, connection: Connection, option
     sendInitialFullSync() {
       // Seed this peer with the current bindings. The next publish then carries
       // the SoA snapshots themselves.
-      const all = localTable.bindings()
+      const all = networkIdBindings(world)
       if (all.length === 0) return
       for (const b of all) state.notified.add(b.networkId)
       const msg: BindControlMessage = { type: 'bind', bindings: all }
