@@ -25,13 +25,17 @@ owned by anyone else →  no-op
 no UID path        →  no-op (the wire cannot address it)
 ```
 
-Removal replicates **reactively**. `removeEntity` is plain ECS and knows nothing about peers; the network layer observes `onRemove(UIDComponent)` and queues the `destroy` itself. There is no networked twin of `removeEntity` to remember to call.
+Removal authors **inline**, like every other mutation verb. `setComponent` pairs with `removeComponent`, `addRelation` pairs with `removeRelation`, and `setUID` pairs with `removeEntity`. Each of those verbs queues its own reverse at the point of the mutation, so there is no networked twin of `removeEntity` to remember to call.
 
-**Ownership is the only gate, and it does two jobs.** A peer cannot announce the removal of something it does not own. And the echo suppresses itself: when a received destroy is applied, the entity belongs to the *remote* user, so the observer declines to queue and the destroy stops rather than bouncing between peers.
+**Queueing is not sending.** `removeEntity` queues every named removal; `flushAuthored` decides what travels, and it drops a destroy this peer does not own. Who may announce a removal is a distribution question, so the rule lives in the flush rather than in the ECS verb.
+
+**Ownership is the only gate, and it does three jobs.** A peer cannot announce the removal of something it does not own. The echo suppresses itself: a received destroy names an entity owned by the *remote* user, so the queued entry never leaves. And local cleanup stays local, because the disconnect sweep removes entities owned by the departing user, never by this one.
 
 That also covers local cleanup with no special case. Disconnect cleanup removes entities owned by the departing user, which are never the local user's, so it stays local — as it must, since every peer performs its own.
 
-`removeEntity` runs the bitECS removal before it clears the identity caches, so the path of the departing entity is still resolvable when the observer fires. `flushAuthored` runs later and could not resolve one, which is why the event carries the path.
+`removeEntity` captures both the path and the entity's relation indexes **before** the bitECS removal, because neither survives to flush time: the cascade takes the `OwnedBy` relation, and `cleanupIdentity` takes the path. Entity ids recycle immediately, so reading either one later could answer for a different entity entirely.
+
+The owner comes from the index `OwnedBy` declares. An exclusive relation may pass `index: true` to `defineRelation`, which supplies a per-engine subject → target map plus `get`, `set`, and `indexFor` on the definition itself. `OwnedBy.get(world, entity)` and `AuthoritativeFor.get(world, entity)` answer in O(1). The index answers one question the relation cannot — what the target *was*, for a subject the engine has already removed.
 
 One write can land in both queues. The authored event carries the **whole** component, including the SoA fields as plain arrays, so governance can inspect the creating write in full. A write that only moves SoA fields on an existing component marks the entity dirty and never reaches the event log. That is the per-tick case. See [Components](/components).
 

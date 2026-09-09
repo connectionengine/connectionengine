@@ -75,7 +75,6 @@ export * from './network/peer'
 export * from './network/authority'
 export * from './network/governance'
 export * from './network/prefab'
-// Side-effecting: registers the disconnect observer via onWorldCreate.
 export * from './network/presence'
 
 // ── Testing helpers. Not part of the production path. ────────────────────────-

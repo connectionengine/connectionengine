@@ -17,7 +17,7 @@
 
 import { Schema } from '../schema'
 import { defineComponent, getComponent, hasComponent } from '../ecs/component'
-import { parentOfFor } from '../ecs/entity'
+import { BelongsTo } from '../ecs/entity'
 import { query } from '../ecs/query'
 import type { Entity, World } from '../ecs/world'
 
@@ -87,7 +87,7 @@ export const getUserDID = (world: World, user: Entity): string | undefined => {
 /** Find a peer entity by its peerId, under one specific user. The scan is linear. */
 export const findPeerByIdForUser = (world: World, user: Entity, peerId: string): Entity | undefined => {
   for (const entity of query(world, [PeerComponent])) {
-    if (parentOfFor(world.engine).get(entity) !== user) continue
+    if (BelongsTo.indexFor(world.engine).get(entity) !== user) continue
     const value = getComponent(world, entity, PeerComponent) as { peerId?: string } | undefined
     if (value?.peerId === peerId) return entity
   }
@@ -98,7 +98,7 @@ export const findPeerByIdForUser = (world: World, user: Entity, peerId: string):
 export const getPeersForUser = (world: World, user: Entity): Entity[] => {
   const peers: Entity[] = []
   for (const entity of query(world, [PeerComponent])) {
-    if (parentOfFor(world.engine).get(entity) === user) peers.push(entity)
+    if (BelongsTo.indexFor(world.engine).get(entity) === user) peers.push(entity)
   }
   return peers
 }

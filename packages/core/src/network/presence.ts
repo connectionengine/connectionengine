@@ -1,16 +1,21 @@
 /**
- * Disconnect handling, derived from presence rather than invoked.
+ * What a lost connection undoes.
  *
- * A peer either has a live connection or it does not, and `ConnectedTo` records
- * which. The lifecycle writes that component when a handshake completes and
- * removes it when the endpoint closes. Everything that must happen on a
- * disconnect happens because the component went away.
+ * The forward effect runs in `attachConnection`: a completed handshake writes
+ * `ConnectedTo`, adds the connection to its network, and grants the remote peer
+ * authority over its own entities. `disconnectPeer` reverses exactly that, and
+ * `attachConnection` registers it on `connection.onClose` at the moment it does
+ * the forward half. Setup and teardown therefore land together, and no call
+ * site can perform one without the other.
  *
- * This replaces a `sweepDisconnectedPeer(world, connection)` that four separate
- * call sites had to remember: the graceful-leave message, the endpoint close,
- * `leaveWorld`, and the in-memory link. Missing one of them left a departed
- * peer holding authority forever, with nothing to signal the mistake. The
- * observer cannot be forgotten, because there is no call to omit.
+ * This replaces an observer on `onRemove(ConnectedTo)`. The observer registered
+ * per world but fired per engine, so every world sharing an engine ran the
+ * cleanup for every other world's disconnect, and it never detached. Pairing
+ * the teardown with the setup fixes both, and keeps the answer to "what happens
+ * when a peer drops?" in one function.
+ *
+ * `ConnectedTo` stays as state — `connectedPeers` and the last-peer-standing
+ * query read it. It simply stops serving as an event source.
  *
  * Two consequences follow from one peer disconnecting:
  *
@@ -21,15 +26,16 @@
  *
  * Neither authors. Every peer observes the same disconnect and runs the same
  * deterministic cleanup, so broadcasting it would tell peers that never lost
- * the connection to discard state they can still see.
+ * the connection to discard state they can still see. `flushAuthored` enforces
+ * that structurally: the swept entities belong to the departing user, never to
+ * the local one, so the ownership gate drops every queued destroy.
  */
 
-import { hasComponent } from '../ecs/component'
-import { onWorldCreate, type Entity, type World } from '../ecs/world'
-import { observe, onRemove } from '../ecs/observer'
-import { parentOfFor, removeEntity } from '../ecs/entity'
+import { hasComponent, removeComponent } from '../ecs/component'
+import type { Entity, World } from '../ecs/world'
+import { BelongsTo, removeEntity } from '../ecs/entity'
 import * as bitecs from 'bitecs'
-import { AuthoritativeFor, OwnedBy, getAuthority, recoverAuthority } from './authority'
+import { AuthoritativeFor, OwnedBy, recoverAuthority } from './authority'
 import { ConnectedTo, PeerComponent } from './agents'
 
 /**
@@ -41,7 +47,7 @@ import { ConnectedTo, PeerComponent } from './agents'
 const recoverAuthorityFrom = (world: World, peer: Entity): void => {
   const stranded: Entity[] = []
   for (const candidate of bitecs.query(world.engine.bitECS, [AuthoritativeFor.$relation(peer)]) as Entity[]) {
-    if (getAuthority(world, candidate) === peer) stranded.push(candidate)
+    if (AuthoritativeFor.get(world, candidate) === peer) stranded.push(candidate)
   }
   for (const entity of stranded) recoverAuthority(world, entity, peer)
 }
@@ -55,12 +61,12 @@ const recoverAuthorityFrom = (world: World, peer: Entity): void => {
  * entity.
  */
 const sweepOwnerIfLastPeer = (world: World, peer: Entity): void => {
-  const user = parentOfFor(world.engine).get(peer)
+  const user = BelongsTo.indexFor(world.engine).get(peer)
   if (user === undefined) return
   // Another peer of the same user still connected? Then the user is present.
   for (const sibling of bitecs.query(world.engine.bitECS, [ConnectedTo.$ref, PeerComponent.$ref]) as Entity[]) {
     if (sibling === peer) continue
-    if (parentOfFor(world.engine).get(sibling) === user) return
+    if (BelongsTo.indexFor(world.engine).get(sibling) === user) return
   }
   // Snapshot first: removeEntity mutates the relation index being walked.
   const owned = Array.from(bitecs.query(world.engine.bitECS, [OwnedBy.$relation(user)]) as Entity[])
@@ -70,13 +76,21 @@ const sweepOwnerIfLastPeer = (world: World, peer: Entity): void => {
   }
 }
 
-onWorldCreate((world) => {
-  observe(world, onRemove(ConnectedTo), (peer: Entity) => {
-    // bitECS fires this while tearing an entity down as well as on a plain
-    // component removal. A peer entity that is itself going away has no
-    // authority left to recover and no session to close.
-    if (!hasComponent(world, peer, PeerComponent)) return
-    recoverAuthorityFrom(world, peer)
-    sweepOwnerIfLastPeer(world, peer)
-  })
-})
+/**
+ * Undo what a connection established. `attachConnection` registers this on
+ * `connection.onClose`, so it runs however the connection ends: a graceful
+ * `leave`, a dropped transport, `leaveWorld`, or a closed in-memory link.
+ *
+ * The function tolerates a second call. Dropping `ConnectedTo` first means a
+ * repeat finds nothing connected and stops, which matters because a transport
+ * may report a close more than once.
+ */
+export const disconnectPeer = (world: World, peer: Entity): void => {
+  // A peer entity already torn down has no authority to recover and no session
+  // to close.
+  if (!hasComponent(world, peer, PeerComponent)) return
+  if (!hasComponent(world, peer, ConnectedTo)) return
+  removeComponent(world, peer, ConnectedTo)
+  recoverAuthorityFrom(world, peer)
+  sweepOwnerIfLastPeer(world, peer)
+}

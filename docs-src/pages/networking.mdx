@@ -137,12 +137,14 @@ The same `Snapshot` API in `network/snapshot.ts` stays useful on its own, for pe
 
 ## Disconnect cleanup
 
-Disconnect cleanup is **derived, not invoked**. A completed handshake writes `ConnectedTo` onto the peer entity, and closing the endpoint removes it. An observer on that removal does the rest:
+Disconnect cleanup is **paired with connection setup**. `attachConnection` puts a connection on its network and registers `disconnectPeer` on `connection.onClose` in the same function, so attaching is what registers the detach. `onClose` fires however the connection ends — a graceful `leave`, a dropped transport, `leaveWorld`, or a closed in-memory link. The teardown does this:
 
 - **Authority moves on.** Every entity whose `AuthoritativeFor` names the departed peer gets a new writer, or it would freeze.
 - **The user's entities go**, but only once their *last* peer disconnects. A user with a desktop and a phone stays present while either survives, which `query([ConnectedTo, …])` answers directly.
 
-Presence being a component rather than a procedure matters: cleanup used to be a `sweepDisconnectedPeer(world, connection)` that four call sites had to remember — the graceful `leave`, the endpoint close, `leaveWorld`, and the in-memory link. Missing one left a departed peer holding authority forever with nothing to signal it. An observer cannot be forgotten, because there is no call to omit.
+Cleanup used to be a `sweepDisconnectedPeer(world, connection)` that those same four call sites had to remember, and missing one left a departed peer holding authority forever with nothing to signal it. An observer on `onRemove(ConnectedTo)` replaced it, and traded that fault for two others: the observer registered per world but fired per *engine*, so every world sharing an engine ran cleanup for every other world's disconnect, and it never detached. Pairing the teardown with the setup fixes all three — one registration, at the one place a connection gets built.
+
+`ConnectedTo` stays as **state**: `connectedPeers` and the last-peer-standing query read it. It simply stops serving as an event source — a fact, not a trigger.
 
 `ConnectedTo` is `sync: false`. It records a local observation, not shared truth — Alice seeing Bob connected says nothing about whether Carol can reach him.
 

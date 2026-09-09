@@ -25,7 +25,6 @@ import {
   flushAsync,
   flushAuthored,
   flushRuntime,
-  getAuthority,
   getComponent,
   getEntityByUID,
   getNetwork,
@@ -284,9 +283,11 @@ describe('joinWorld — continuous-channel bootstrap via state snapshot', () => 
       joinWorld(joiner, { endpoint: link.b, knownEventCount: 0 })
     ])
 
-    // Snapshot applies with origin='network': no authored queue entries, no
-    // runtime dirty flags, so nothing echoes back to the host.
-    expect(joiner.authoredQueue.length).toBe(0)
+    // The snapshot applies with origin='network', so nothing echoes back to the
+    // host. A replacing apply removes the previous entities, which queues a
+    // destroy for each; every one names an entity the host owns, so the
+    // ownership gate in `flushAuthored` drops them all.
+    expect(flushAuthored(joiner)).toBeUndefined()
     expect(joiner.runtimeDirty.get('LC.Position')?.size ?? 0).toBe(0)
 
     link.close()
@@ -415,7 +416,7 @@ describe('Authority — receive-side gate', () => {
 
     // Authority unchanged — the receive-side standing check dropped the
     // forged event before applyEvent ran.
-    expect(getAuthority(host, e)).toBe(hostPeer)
+    expect(AuthoritativeFor.get(host, e)).toBe(hostPeer)
     void roguePeer
     destroyWorld(host)
   })
@@ -444,7 +445,7 @@ describe('Authority — receive-side gate', () => {
       ]
     })
 
-    expect(getAuthority(host, e)).toBe(otherPeer)
+    expect(AuthoritativeFor.get(host, e)).toBe(otherPeer)
     destroyWorld(host)
   })
 })
@@ -474,14 +475,14 @@ describe('Authority — auto-recovery on disconnect', () => {
     const e = spawnPrefab(host, 'shared', { parent: scene })
     // Transfer authority — hostPeer (local) has standing as the current holder.
     grantAuthority(host, e, hostJoinerPeer)
-    expect(getAuthority(host, e)).toBe(hostJoinerPeer)
+    expect(AuthoritativeFor.get(host, e)).toBe(hostJoinerPeer)
 
     // Joiner disconnects
     await leaveWorld(joiner, getNetwork(joiner, 'default')!.connections.values().next().value!)
     await flushAsync()
 
     // Sweep should have moved authority off the disconnected peer.
-    const after = getAuthority(host, e)
+    const after = AuthoritativeFor.get(host, e)
     expect(after).not.toBe(hostJoinerPeer)
     // Falls back to the lowest available peer of the owner — here, hostPeer.
     expect(after).toBe(hostPeer)

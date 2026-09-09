@@ -22,7 +22,7 @@
 
 import { getComponent, setComponent, type ComponentDefinition } from '../ecs/component'
 import { defineRelation, addRelation, getRelationTargets } from '../ecs/relation'
-import { createEntity, entityExists, parentOfFor, resolveEntityPath } from '../ecs/entity'
+import { createEntity, entityExists, BelongsTo, resolveEntityPath } from '../ecs/entity'
 import { query } from '../ecs/query'
 import type { AuthoredEvent, Entity, World } from '../ecs/world'
 
@@ -128,7 +128,7 @@ export const resolveConstraints = (world: World, entity: Entity): ResolvedConstr
       const kindData = constraintKindFor(world, candidate)
       if (kindData) out.push({ entity: candidate, kind: kindData.kind, data: kindData.data, scope })
     }
-    scope = parentOfFor(world.engine).get(scope)
+    scope = BelongsTo.indexFor(world.engine).get(scope)
   }
   return out
 }

@@ -15,7 +15,7 @@ The engine owns three things:
 The engine does *not* own two things:
 
 - **Component and Relation definitions** are module-level singletons. `defineComponent({ id: 'Foo', ... })` produces one `ComponentDefinition` object, shared across every engine that uses it. A component defined at module load works for any engine that starts or stops later, because there is no per-engine registration step.
-- **Identity caches** (`nameCache`, `uidOf`, `parentOf`) live as typed extension properties on `UIDComponent` and `BelongsTo`. The extension itself is global. The inner maps use the Engine as their key, so two engines in the same process keep their state isolated. Use the `nameCacheFor(engine)`, `uidOfFor(engine)`, and `parentOfFor(engine)` helpers to read them.
+- **Identity indexes** live on the definitions they describe. `BelongsTo` declares `index: true`, so `defineRelation` supplies `BelongsTo.get(world, entity)` and `BelongsTo.indexFor(engine)`. `UIDComponent` carries `nameCache` and `uidOf` as typed extension properties, read through `UIDComponent.get(world, entity)`, `nameCacheFor(engine)`, and `uidOfFor(engine)`. Each extension is global; the inner maps key on the Engine, so two engines in one process keep their state apart.
 
 A CE World is NOT an engine. A World is a logical scope inside an engine — see [Worlds & Systems](/worlds-and-systems).
 
@@ -61,12 +61,29 @@ export const UIDComponent = defineComponent({
   schema: Schema.Object({ value: Schema.String({ default: '' }) }),
   // Typed extension — keyed by Engine so each engine keeps its own buckets.
   nameCache: new WeakMap<Engine, Map<Entity, Map<string, Entity>>>(),
-  uidOf: new WeakMap<Engine, Map<Entity, string>>()
+  uidOf: new WeakMap<Engine, Map<Entity, string>>(),
+  // Accessors belong on the definition too, so the component answers
+  // questions about itself rather than exporting a `getUID` free function.
+  get: (world: World, entity: Entity): string | undefined => /* ... */
 })
 
 // Anything else can do the same. Use WeakMap<Engine, ...> for per-engine
 // state, or a plain Map / object for genuinely process-global indexes.
 ```
+
+An **exclusive relation** needs none of that boilerplate. Declare `index: true` and `defineRelation` supplies the map and its accessors, because a relation index always maps one entity onto another:
+
+```ts
+export const OwnedBy = defineRelation({ name: 'OwnedBy', exclusive: true, index: true })
+
+OwnedBy.get(world, entity)        // Entity | undefined, O(1)
+OwnedBy.set(world, entity, user)  // adds the relation; the index follows
+OwnedBy.indexFor(engine)          // the whole map, to iterate
+```
+
+`addRelation` and `removeRelation` maintain the map, so no caller touches it. A relation that omits the option carries no accessors, and the compiler says so.
+
+`index: true` requires `exclusive: true`. An index holds one target per subject, so pairing it with a relation that holds many would give a map that disagrees with its own relation. The compiler rejects the combination, and `defineRelation` throws for a caller that reached it without types.
 
 The reserved component option keys are `id`, `label`, `schema`, and `sync`. The reserved relation keys are `name`, `sync`, `exclusive`, `autoRemoveSubject`, `store`, and `onTargetRemoved`. Every other key passes through.
 

@@ -16,7 +16,7 @@ import { defineComponent, getComponent, setComponent } from '../src/ecs/componen
 import { createEntity } from '../src/ecs/entity'
 import { getEntityByUID, setUID } from '../src/ecs/entity'
 import { createPeer, createUser } from '../src/network/peer'
-import { getAuthority, grantAuthority, setOwner, transferAuthority } from '../src/network/authority'
+import { AuthoritativeFor, grantAuthority, OwnedBy, transferAuthority } from '../src/network/authority'
 import { spawnPrefab } from '../src/network/prefab'
 import { addConstraint, registerConstraintKind, validateEvent } from '../src/network/governance'
 import { applySnapshot, createSnapshot } from '../src/network/snapshot'
@@ -144,11 +144,11 @@ describe('Scenario: authority transfer between peers', () => {
 
     const vehicle = createEntity(world)
     setUID(world, vehicle, 'vehicle:1', { parent: spawnPrefab(world, 'scene:roads') })
-    setOwner(world, vehicle, user)
+    OwnedBy.set(world, vehicle, user)
     grantAuthority(world, vehicle, desktopPeer)
 
     transferAuthority(world, vehicle, phonePeer)
-    expect(getAuthority(world, vehicle)).toBe(phonePeer)
+    expect(AuthoritativeFor.get(world, vehicle)).toBe(phonePeer)
 
     destroyWorld(world)
   })

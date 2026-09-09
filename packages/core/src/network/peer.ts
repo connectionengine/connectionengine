@@ -46,7 +46,7 @@ export const createUser = (world: World, options: CreateUserOptions): Entity => 
   const entity = createEntity(world)
   setUID(world, entity, uid)
   setComponent(world, entity, UserComponent, { did: options.did, displayName: options.displayName ?? '' })
-  addRelation(world, entity, OwnedBy, entity)
+  OwnedBy.set(world, entity, entity)
   if (options.asLocal) world.localUser = entity
   return entity
 }
@@ -77,7 +77,7 @@ export const createPeer = (world: World, options: CreatePeerOptions): Entity => 
   const entity = createEntity(world)
   setUID(world, entity, uid, { parent: options.user })
   setComponent(world, entity, PeerComponent, { peerId, latency: 0 })
-  addRelation(world, entity, OwnedBy, options.user)
+  OwnedBy.set(world, entity, options.user)
   addRelation(world, entity, AuthoritativeFor, entity)
   if (options.asLocal) {
     world.localPeer = entity

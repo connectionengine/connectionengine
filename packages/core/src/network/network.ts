@@ -23,7 +23,6 @@
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
-import { onWorldDestroy } from '../ecs/world'
 import type { Connection } from './transport'
 
 // ── Behaviours ───────────────────────────────────────────────────────────────-
@@ -161,9 +160,3 @@ export const ensureDefaultNetwork = (world: World, options: Omit<AddNetworkOptio
   if (existing) return existing
   return addNetwork(world, { ...options, id: DEFAULT_NETWORK_ID })
 }
-
-// Closing a connection is a side effect, so it stays a hook rather than
-// something `destroyWorld` performs. Clearing the map is the world's own job.
-onWorldDestroy((world) => {
-  for (const network of world.networks.values()) network.close()
-})

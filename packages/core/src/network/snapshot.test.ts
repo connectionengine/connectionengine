@@ -8,7 +8,7 @@ import { getEntityByUID, setUID } from '../ecs/entity'
 import { createEntity } from '../ecs/entity'
 import { applySnapshot, createSnapshot } from './snapshot'
 import { ensureDefaultNetwork } from './network'
-import { AuthoritativeFor, getAuthority } from './authority'
+import { AuthoritativeFor } from './authority'
 import { createPeer, createUser } from './peer'
 import { spawnPrefab } from './prefab'
 
@@ -178,7 +178,7 @@ describe('applySnapshot — governance', () => {
     const hostUser = createUser(host, { did: 'did:test:host', uid: 'user:host', asLocal: true })
     const hostPeer = createPeer(host, { user: hostUser, peerId: 'host-p', uid: 'peer:host-p', asLocal: true })
     const thing = spawnPrefab(host, 'thing')
-    expect(getAuthority(host, thing)).toBe(hostPeer)
+    expect(AuthoritativeFor.get(host, thing)).toBe(hostPeer)
 
     // A rogue peer known locally, and a forged snapshot claiming authority.
     const rogueUser = createUser(host, { did: 'did:test:rogue', uid: 'user:rogue' })
@@ -191,7 +191,7 @@ describe('applySnapshot — governance', () => {
     applySnapshot(host, forged, { from: { author: 'did:test:rogue' } })
 
     // The standing check runs even with no network gate installed.
-    expect(getAuthority(host, thing)).toBe(hostPeer)
+    expect(AuthoritativeFor.get(host, thing)).toBe(hostPeer)
     destroyWorld(host)
   })
 

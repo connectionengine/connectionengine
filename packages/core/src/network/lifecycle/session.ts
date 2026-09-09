@@ -29,13 +29,14 @@
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
-import { allComponents, getComponent, hasSyncedSoA, removeComponent, setComponent } from '../../ecs/component'
+import { allComponents, getComponent, hasSyncedSoA, setComponent } from '../../ecs/component'
 import { applyAuthoredEnvelope, flushAuthored } from '../mutation'
 import { createEntity } from '../../ecs/entity'
 import { getEntityByUID, getEntityPath, setUID } from '../../ecs/entity'
 import { addRelation } from '../../ecs/relation'
 import { AuthoritativeFor, OwnedBy } from '../authority'
 import { ConnectedTo, PeerComponent, UserComponent } from '../agents'
+import { disconnectPeer } from '../presence'
 import type { Connection, RuntimeTransportConfig, TransportEndpoint } from '../transport'
 import type { Network } from '../network'
 import { ensureDefaultNetwork } from '../network'
@@ -224,12 +225,7 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
     connection.channel?.applyBuffer(buffer)
   })
 
-  endpoint.onClose(() => {
-    disconnected(world, connection)
-    network.connections.delete(connection)
-  })
-
-  network.connections.add(connection)
+  attachConnection(world, network, connection)
 
   const localBindings = options.runtimeComponents ? getNetworkIdTable(world).bindings() : []
   endpoint.events.send({
@@ -295,11 +291,11 @@ const ensureRemotePeerEntity = (world: World, hello: HelloMessage): Entity => {
   const peerPath = hello.peerPath.length > 0 ? hello.peerPath : [...userPath, `peer:${hello.peerId}`]
   const user = ensureAgentPath(world, userPath, (cursor) => {
     setComponent(world, cursor, UserComponent, { did: hello.agentDID, displayName: '' }, { origin: 'network' })
-    addRelation(world, cursor, OwnedBy, cursor, { origin: 'network' })
+    OwnedBy.set(world, cursor, cursor, { origin: 'network' })
   })
   return ensureAgentPath(world, peerPath, (cursor) => {
     setComponent(world, cursor, PeerComponent, { peerId: hello.peerId, latency: 0 }, { origin: 'network' })
-    addRelation(world, cursor, OwnedBy, user, { origin: 'network' })
+    OwnedBy.set(world, cursor, user, { origin: 'network' })
     addRelation(world, cursor, AuthoritativeFor, cursor, { origin: 'network' })
   })
 }
@@ -407,7 +403,21 @@ export const rebroadcastAuthored = (
  * owner sweep are observers of that removal, in `network/presence.ts`, so
  * nothing here has to remember to perform them.
  */
-export const disconnected = (world: World, connection: Connection): void => {
-  if (!connection.peer) return
-  removeComponent(world, connection.peer, ConnectedTo)
+/**
+ * Put a connection on a network, and register its teardown in the same breath.
+ *
+ * The two halves live here together on purpose. Cleanup used to sit behind an
+ * observer, and before that behind a `sweepDisconnectedPeer` that four call
+ * sites had to remember. `connection.onClose` fires however the connection
+ * ends — a graceful `leave`, a dropped transport, `leaveWorld`, or a closed
+ * in-memory link — so registering once at the point of setup covers every one
+ * of them. A caller that attaches a connection cannot forget to detach it,
+ * because attaching is what registers the detach.
+ */
+export const attachConnection = (world: World, network: Network, connection: Connection): void => {
+  network.connections.add(connection)
+  connection.onClose(() => {
+    network.connections.delete(connection)
+    if (connection.peer) disconnectPeer(world, connection.peer)
+  })
 }

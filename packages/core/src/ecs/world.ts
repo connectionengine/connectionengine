@@ -88,6 +88,15 @@ export interface QueuedAuthored {
    * flush runs, so a destroy has to carry its own path.
    */
   entityPath?: string[]
+  /**
+   * Index entries captured at queue time, for the same reason as `entityPath`:
+   * the entity no longer exists when the flush runs. Keyed by relation
+   * definition, so a reader stays typed — `queued.indexed?.get(OwnedBy)`.
+   *
+   * `flushAuthored` reads the `OwnedBy` entry to decide whether this peer may
+   * announce the removal.
+   */
+  indexed?: ReadonlyMap<import('./relation').RelationDefinition<unknown>, Entity>
 }
 
 export interface DirtyKey {
@@ -144,31 +153,6 @@ export interface World {
 
 export const Worlds = new Set<World>()
 
-// ── World hooks ───────────────────────────────────────────────────────────────
-//
-// A higher layer, such as `network/` or a plugin, attaches to the life of a
-// world without `ecs/` naming it. `network/` uses the create hook to observe
-// removals for replication, and the destroy hook to close its connections.
-
-type WorldHook = (world: World) => void
-const createHooks = new Set<WorldHook>()
-const destroyHooks = new Set<WorldHook>()
-
-/** Register a callback. `createWorld` runs it on every new world. `network/`
- *  uses it to attach the replication observers without `ecs/` naming them.
- *  This function returns an unregister function. */
-export const onWorldCreate = (hook: WorldHook): (() => void) => {
-  createHooks.add(hook)
-  return () => createHooks.delete(hook)
-}
-
-/** Register a callback. `destroyWorld` runs it before it removes the world from
- *  `Worlds`. This function returns an unregister function. */
-export const onWorldDestroy = (hook: WorldHook): (() => void) => {
-  destroyHooks.add(hook)
-  return () => destroyHooks.delete(hook)
-}
-
 export interface CreateWorldOptions {
   /** Engine that allocates this world. Always pass it explicitly. A production
    *  app constructs one engine and composes its worlds inside it. A
@@ -194,19 +178,15 @@ export const createWorld = (options: CreateWorldOptions): World => {
     networks: new Map()
   }
   Worlds.add(world)
-  for (const hook of createHooks) hook(world)
   return world
 }
 
 export const destroyWorld = (world: World): void => {
   if (!Worlds.has(world)) return
-  // Higher-layer cleanup runs first. It closes and clears the networks, and it
-  // clears the plugin state.
-  for (const hook of destroyHooks) hook(world)
-  world.authoredQueue.length = 0
-  world.eventLog.length = 0
-  world.eventLogSeen.clear()
-  world.runtimeDirty.clear()
+  // The world holds its networks, so it closes them. `World` already names the
+  // `Network` type, and `close()` is part of that type, so this needs no hook
+  // and no import.
+  for (const network of world.networks.values()) network.close()
   world.networks.clear()
   // Sweep every entity that is reachable from worldRoot. The identity caches
   // are per-engine, through the WeakMaps on UIDComponent and BelongsTo. Cleanup
@@ -216,6 +196,13 @@ export const destroyWorld = (world: World): void => {
   if (bitecs.entityExists(world.engine.bitECS, world.worldRoot)) {
     bitecs.removeEntity(world.engine.bitECS, world.worldRoot)
   }
+  // The pipeline state clears last. Each `removeEntity` above queues a destroy,
+  // so clearing first would leave the queue dirty on a world that no longer
+  // exists.
+  world.authoredQueue.length = 0
+  world.eventLog.length = 0
+  world.eventLogSeen.clear()
+  world.runtimeDirty.clear()
   Worlds.delete(world)
 }
 

@@ -33,22 +33,12 @@
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
-import { onWorldCreate } from '../ecs/world'
 import type { ComponentDefinition } from '../ecs/component'
 import { allComponents, getComponentById, hasSyncedSoA, removeComponent, setComponent } from '../ecs/component'
 import type { RelationDefinition } from '../ecs/relation'
 import { addRelation, allRelations, getRelationByName, removeRelation } from '../ecs/relation'
-import {
-  UIDComponent,
-  createEntity,
-  getEntityByUID,
-  getEntityPath,
-  removeEntity,
-  resolveEntityPath,
-  setUID
-} from '../ecs/entity'
-import { observe, onRemove } from '../ecs/observer'
-import { checkAuthorityChangeStanding, getOwner } from './authority'
+import { createEntity, getEntityByUID, getEntityPath, removeEntity, resolveEntityPath, setUID } from '../ecs/entity'
+import { checkAuthorityChangeStanding, OwnedBy } from './authority'
 import type { Network } from './network'
 import { getNetwork, getNetworks, publishAuthored, publishRuntime, reportRejected, validateAuthored } from './network'
 
@@ -65,51 +55,6 @@ const routeNetworks = (world: World, _entity: Entity): Network[] => {
   void _entity
   return Array.from(getNetworks(world).values())
 }
-
-// ── Reactive replication of entity removal ───────────────────────────────────-
-
-/**
- * Predicate carried by a `destroy` event. The apply path branches on `op`
- * before it resolves a predicate, so this never names a component or a
- * relation. The `@` prefix keeps it clear of user predicates.
- */
-export const DESTROY_PREDICATE = '@destroy'
-
-/**
- * Replicate the removal of any entity this world's user owns.
- *
- * `removeEntity` is plain ECS and knows nothing about peers. The network layer
- * watches instead: losing `UIDComponent` means a wire-addressable entity went
- * away, and this queues the matching `destroy`. Nothing to remember, no
- * networked twin of `removeEntity` to call.
- *
- * Ownership is the whole gate, and it does two jobs at once. It keeps a peer
- * from announcing the removal of something it does not own. And it suppresses
- * the echo for free: when a received destroy is applied, the entity belongs to
- * the *remote* user, so the observer declines to queue and the destroy stops
- * there instead of bouncing between peers.
- *
- * `removeEntity` runs the bitECS removal before it clears the identity caches,
- * so the path of the departing entity is still resolvable here. `flushAuthored`
- * runs later and could not resolve one, which is why the event carries the path
- * rather than the entity.
- */
-onWorldCreate((world) => {
-  observe(world, onRemove(UIDComponent), (entity: Entity) => {
-    if (world.localUser === undefined) return
-    if (getOwner(world, entity) !== world.localUser) return
-    const entityPath = getEntityPath(world, entity)
-    if (entityPath.length === 0) return
-    world.authoredQueue.push({
-      entity,
-      predicate: DESTROY_PREDICATE,
-      op: 'destroy',
-      value: null,
-      origin: 'local',
-      entityPath
-    })
-  })
-})
 
 // ── Predicate resolution ─────────────────────────────────────────────────────-
 //
@@ -172,6 +117,20 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
   const author = world.localAgent.did
   for (const queued of world.authoredQueue) {
     if (queued.origin !== 'local') continue
+    // The ownership gate on entity removal. `removeEntity` queues every named
+    // removal and leaves the decision here, because who may announce a removal
+    // is a distribution question, not an ECS one.
+    //
+    // The same comparison does three jobs. It stops a peer announcing the
+    // removal of something it does not own. It suppresses the echo, because a
+    // received destroy names an entity owned by the remote user. And it keeps
+    // local cleanup local: the disconnect sweep removes entities owned by the
+    // departing user, never by this one, so nothing goes out.
+    // `undefined === undefined` would let a world with no local identity
+    // announce the removal of an unowned entity, so the local user has to
+    // exist before any destroy travels.
+    if (queued.op === 'destroy' && (world.localUser === undefined || queued.indexed?.get(OwnedBy) !== world.localUser))
+      continue
     // A destroy carries the path captured before `removeEntity` cleared the
     // identity caches. Everything else resolves its path now.
     const path = queued.entityPath ?? getEntityPath(world, queued.entity)

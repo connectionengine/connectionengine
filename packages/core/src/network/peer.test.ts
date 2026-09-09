@@ -4,7 +4,7 @@ import { createEngine } from '../ecs/engine'
 import { createPeer, createUser } from './peer'
 import { findUserByDID, getPeersForUser, PeerComponent, UserComponent } from './agents'
 import { getComponent, hasComponent } from '../ecs/component'
-import { getParent } from '../ecs/entity'
+import { BelongsTo } from '../ecs/entity'
 
 const mkWorld = () => createWorld({ engine: createEngine(), agent: createAnonAgent('test') })
 const did = (name: string): string => `did:test:${name}`
@@ -41,7 +41,7 @@ describe('User + Peer', () => {
     const user = createUser(world, { did: did('u') })
     const peer = createPeer(world, { user, peerId: 'peer-1' })
     expect(getComponent(world, peer, PeerComponent)).toMatchObject({ peerId: 'peer-1', latency: 0 })
-    expect(getParent(world, peer)).toBe(user)
+    expect(BelongsTo.get(world, peer)).toBe(user)
     destroyWorld(world)
   })
 

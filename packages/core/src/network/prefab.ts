@@ -102,7 +102,7 @@ export const spawnPrefab = (world: World, uid: string, options: SpawnPrefabOptio
   const entity = createEntity(world)
   if (options.parent !== undefined) setUID(world, entity, uid, { parent: options.parent })
   else setUID(world, entity, uid)
-  addRelation(world, entity, OwnedBy, owner)
+  OwnedBy.set(world, entity, owner)
   const authority = options.authority ?? world.localPeer
   if (authority !== undefined) addRelation(world, entity, AuthoritativeFor, authority)
   if (options.prefab) {

@@ -32,36 +32,37 @@
  *     failed event is rejected and never applied.
  */
 
-import { defineRelation, getRelationTargets, addRelation } from '../ecs/relation'
+import { defineRelation } from '../ecs/relation'
 import { hasComponent } from '../ecs/component'
-import { parentOfFor, resolveEntityPath } from '../ecs/entity'
+import { BelongsTo, resolveEntityPath } from '../ecs/entity'
 import { getUserDID, PeerComponent } from './agents'
 import type { Entity, Origin, World, AuthoredEvent } from '../ecs/world'
 
+/**
+ * Provenance and runtime authority. Both declare `index: true`, so each carries
+ * `OwnedBy.get(world, entity)`, `OwnedBy.set(...)`, and `OwnedBy.indexFor(engine)`
+ * without a free function per relation.
+ *
+ * The index earns its place by answering after the entity has gone. The bitECS
+ * cascade takes a relation with its subject, so a query cannot attribute the
+ * removal of an entity that no longer exists — and attribution is exactly what
+ * `flushAuthored` needs to decide whether a destroy may travel.
+ */
 export const OwnedBy = defineRelation({
   name: 'OwnedBy',
-  exclusive: true
+  exclusive: true,
+  index: true
 })
 
 export const AuthoritativeFor = defineRelation({
   name: 'AuthoritativeFor',
-  exclusive: true
+  exclusive: true,
+  index: true
 })
 
 // ── Ownership ────────────────────────────────────────────────────────────────-
 
-/**
- * Direct owner assignment. Callers need it rarely, because `spawnPrefab`
- * normally sets the owner once. Two places use it. The bootstrap helpers use
- * it: `createUser` makes a user self-owned, and `createPeer` puts a peer under
- * its user. The receive path uses it when it materialises a remote identity.
- */
-export const setOwner = (world: World, entity: Entity, user: Entity): void => {
-  addRelation(world, entity, OwnedBy, user)
-}
-
-export const getOwner = (world: World, entity: Entity): Entity | undefined =>
-  getRelationTargets(world, entity, OwnedBy)[0]
+// Ownership reads and writes go through `OwnedBy.get` and `OwnedBy.set`.
 
 // ── Authority ─────────────────────────────────────────────────────────────────
 
@@ -79,14 +80,13 @@ export const getOwner = (world: World, entity: Entity): Entity | undefined =>
 export const canRequestAuthority = (world: World, entity: Entity): boolean => {
   const localPeer = world.localPeer
   if (localPeer === undefined) return false
-  if (getAuthority(world, entity) === localPeer) return true
-  const owner = getOwner(world, entity)
+  if (AuthoritativeFor.get(world, entity) === localPeer) return true
+  const owner = OwnedBy.get(world, entity)
   if (owner === undefined) return false
-  return parentOfFor(world.engine).get(localPeer) === owner
+  return BelongsTo.indexFor(world.engine).get(localPeer) === owner
 }
 
-export const getAuthority = (world: World, entity: Entity): Entity | undefined =>
-  getRelationTargets(world, entity, AuthoritativeFor)[0]
+// Authority reads go through `AuthoritativeFor.get`.
 
 export interface AuthorityRequestResult {
   granted: boolean
@@ -113,11 +113,11 @@ export interface AuthorityRequestResult {
  * authority. The peers would disagree permanently.
  */
 export const requestAuthority = (world: World, entity: Entity, peer: Entity): AuthorityRequestResult => {
-  if (getAuthority(world, entity) === peer) return { granted: true }
+  if (AuthoritativeFor.get(world, entity) === peer) return { granted: true }
   if (world.localPeer === undefined) {
     return { granted: false, reason: 'world has no local peer' }
   }
-  if (getOwner(world, entity) === undefined) {
+  if (OwnedBy.get(world, entity) === undefined) {
     return { granted: false, reason: 'entity has no owner — invariant violation' }
   }
   if (!canRequestAuthority(world, entity)) {
@@ -145,8 +145,8 @@ export const transferAuthority = (world: World, entity: Entity, newPeer: Entity)
  * calls `requestAuthority` instead.
  */
 export const grantAuthority = (world: World, entity: Entity, peer: Entity, options: { origin?: Origin } = {}): void => {
-  if (getRelationTargets(world, entity, AuthoritativeFor)[0] === peer) return
-  addRelation(world, entity, AuthoritativeFor, peer, { origin: options.origin ?? 'local' })
+  if (AuthoritativeFor.get(world, entity) === peer) return
+  AuthoritativeFor.set(world, entity, peer, { origin: options.origin ?? 'local' })
 }
 
 // ── Receive-side standing check ───────────────────────────────────────────────-
@@ -171,13 +171,13 @@ export const checkAuthorityChangeStanding = (world: World, event: AuthoredEvent)
   if (event.predicate !== AuthoritativeFor.name) return undefined
   const entity = resolveEntityPath(world, event.entityPath)
   if (entity === undefined) return 'subject entity does not exist locally'
-  const owner = getOwner(world, entity)
+  const owner = OwnedBy.get(world, entity)
   if (owner === undefined) return 'subject entity has no owner — invariant violation'
   const ownerDID = getUserDID(world, owner)
   if (ownerDID !== undefined && event.author === ownerDID) return undefined
-  const current = getAuthority(world, entity)
+  const current = AuthoritativeFor.get(world, entity)
   if (current !== undefined) {
-    const authorityUser = parentOfFor(world.engine).get(current)
+    const authorityUser = BelongsTo.indexFor(world.engine).get(current)
     if (authorityUser !== undefined) {
       const authorityDID = getUserDID(world, authorityUser)
       if (authorityDID !== undefined && event.author === authorityDID) return undefined
@@ -204,12 +204,12 @@ export const checkAuthorityChangeStanding = (world: World, event: AuthoredEvent)
  * what the receive-side standing check rejects.
  */
 export const recoverAuthority = (world: World, entity: Entity, disconnectedPeer: Entity): void => {
-  const current = getAuthority(world, entity)
+  const current = AuthoritativeFor.get(world, entity)
   if (current !== disconnectedPeer) return
-  const owner = getOwner(world, entity)
+  const owner = OwnedBy.get(world, entity)
   if (owner === undefined) return
   let lowest: Entity | undefined
-  for (const [child, parent] of parentOfFor(world.engine)) {
+  for (const [child, parent] of BelongsTo.indexFor(world.engine)) {
     if (parent !== owner) continue
     if (child === disconnectedPeer) continue
     // Every child of the owner-user shares this index, including ordinary

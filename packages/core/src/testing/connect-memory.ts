@@ -44,8 +44,8 @@ import {
 } from '../network/transport'
 import { ensureDefaultNetwork, type AddNetworkOptions, type Network } from '../network/network'
 import {
+  attachConnection,
   attachRuntimeChannel,
-  disconnected,
   isBindControl,
   rebroadcastAuthored,
   type BindControlMessage
@@ -117,11 +117,7 @@ const wireSide = (
   endpoint.stream.onMessage((buffer) => {
     connection.channel?.applyBuffer(buffer)
   })
-  endpoint.onClose(() => {
-    disconnected(world, connection)
-    network.connections.delete(connection)
-  })
-  network.connections.add(connection)
+  attachConnection(world, network, connection)
   return connection
 }
 
@@ -165,11 +161,11 @@ const ensureRemotePeerEntity = (world: World, remote: RemoteIdentity): Entity =>
   const peerPath = remote.peerPath.length > 0 ? remote.peerPath : [...userPath, `peer:${remote.peerId}`]
   const user = ensureAgentPath(world, userPath, (cursor) => {
     setComponent(world, cursor, UserComponent, { did: remote.did, displayName: '' }, { origin: 'network' })
-    addRelation(world, cursor, OwnedBy, cursor, { origin: 'network' })
+    OwnedBy.set(world, cursor, cursor, { origin: 'network' })
   })
   return ensureAgentPath(world, peerPath, (cursor) => {
     setComponent(world, cursor, PeerComponent, { peerId: remote.peerId, latency: 0 }, { origin: 'network' })
-    addRelation(world, cursor, OwnedBy, user, { origin: 'network' })
+    OwnedBy.set(world, cursor, user, { origin: 'network' })
     addRelation(world, cursor, AuthoritativeFor, cursor, { origin: 'network' })
   })
 }

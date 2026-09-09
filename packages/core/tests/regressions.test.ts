@@ -10,13 +10,21 @@ import { describe, expect, it } from 'vitest'
 import { Schema } from '../src/schema'
 import { createEngine } from '../src/ecs/engine'
 import { createManualClock } from '../src/ecs/clock'
-import { createAnonAgent, createWorld, destroyWorld, type AuthoredEvent, type World } from '../src/ecs/world'
+import {
+  createAnonAgent,
+  createWorld,
+  destroyWorld,
+  type AuthoredEvent,
+  type Entity,
+  type World
+} from '../src/ecs/world'
 import { defineComponent, getComponent, setComponent } from '../src/ecs/component'
 import { createEntity, getEntityByUID, removeEntity, setUID, getEntityPath } from '../src/ecs/entity'
 import { addRelation } from '../src/ecs/relation'
 import { spawnPrefab } from '../src/network/prefab'
 import { createPeer, createUser } from '../src/network/peer'
 import { isPeerConnected } from '../src/network/agents'
+import { getRelationTargets, removeRelation } from '../src/ecs/relation'
 import '../src/network/presence'
 import { applyAuthoredEnvelope, flushAuthored, flushRuntime } from '../src/network/mutation'
 import { addNetwork, ensureDefaultNetwork, validateAuthored } from '../src/network/network'
@@ -27,9 +35,8 @@ import {
   AuthoritativeFor,
   OwnedBy,
   checkAuthorityChangeStanding,
-  getAuthority,
-  recoverAuthority,
-  grantAuthority
+  grantAuthority,
+  recoverAuthority
 } from '../src/network/authority'
 import { createPeerPair } from './test-utils/peer-pair'
 
@@ -45,6 +52,17 @@ const Pose = defineComponent({
 
 const machine = (name: string): World =>
   createWorld({ engine: createEngine({ clock: createManualClock(0) }), agent: createAnonAgent(name) })
+
+/**
+ * The destroy events a flush would put on the wire.
+ *
+ * `removeEntity` queues every named removal, and `flushAuthored` applies the
+ * ownership gate. The queue is therefore an intermediate: a queued destroy for
+ * an entity this peer does not own never becomes an event. These tests assert
+ * on what travels rather than on what got queued.
+ */
+const flushedDestroys = (world: World): AuthoredEvent[] =>
+  (flushAuthored(world)?.events ?? []).filter((e) => e.op === 'destroy')
 
 /** A minimal inbound event, used to ask a network what its gate says. */
 const probeEvent = (): AuthoredEvent => ({
@@ -207,7 +225,7 @@ describe('authority transfer', () => {
     expect(authorityEvents).toHaveLength(1)
     expect(authorityEvents[0].op).toBe('set')
     // Exclusivity drops the previous holder without a separate remove event.
-    expect(getAuthority(world, e)).toBe(nextPeer)
+    expect(AuthoritativeFor.get(world, e)).toBe(nextPeer)
     destroyWorld(world)
   })
 
@@ -253,7 +271,7 @@ describe('authority transfer', () => {
     addRelation(world, e, AuthoritativeFor, gone)
 
     recoverAuthority(world, e, gone)
-    const successor = getAuthority(world, e)
+    const successor = AuthoritativeFor.get(world, e)
     expect(successor).not.toBe(belonging)
     expect([gone, alive]).toContain(successor)
     expect(successor).toBe(alive)
@@ -281,9 +299,10 @@ describe('entity destruction', () => {
     await p.tick()
     removeEntity(p.a.world, e)
     await p.tick()
-    // B applied the destroy. Its own queue must stay empty, or the two peers
-    // would trade the same destroy forever.
-    expect(p.b.world.authoredQueue).toHaveLength(0)
+    // B applied the destroy. Nothing may go back out, or the two peers would
+    // trade the same destroy forever. B queued one when it applied the removal;
+    // the ownership gate drops it, because the entity belongs to A.
+    expect(flushedDestroys(p.b.world)).toEqual([])
     p.dispose()
   })
 
@@ -308,7 +327,7 @@ describe('entity destruction', () => {
 
     // B swept A's entities locally. That sweep must not become an authored
     // destroy, or it would travel to peers that never lost A.
-    expect(p.b.world.authoredQueue).toHaveLength(0)
+    expect(flushedDestroys(p.b.world)).toEqual([])
     expect(p.b.world.eventLog.length).toBe(before)
     p.dispose()
   })
@@ -391,7 +410,7 @@ describe('ownership gates outbound removal', () => {
     // and must not travel, or one peer could delete another peer's data.
     const onB = getEntityByUID(p.b.world, p.b.world.worldRoot, 'alices-thing')!
     removeEntity(p.b.world, onB)
-    expect(p.b.world.authoredQueue).toHaveLength(0)
+    expect(flushedDestroys(p.b.world)).toEqual([])
     await p.tick()
 
     expect(getEntityByUID(p.a.world, p.a.world.worldRoot, 'alices-thing')).toBeDefined()
@@ -409,7 +428,7 @@ describe('ownership gates outbound removal', () => {
 
     // B swept the entities of the departing user. Those belong to A, so the
     // ownership gate keeps the sweep local — as every peer runs its own.
-    expect(p.b.world.authoredQueue).toHaveLength(0)
+    expect(flushedDestroys(p.b.world)).toEqual([])
     expect(p.b.world.eventLog.length).toBe(before)
     p.dispose()
   })
@@ -452,7 +471,7 @@ describe('presence derives disconnect cleanup', () => {
     // a peer it still has — its own — rather than leave the entity frozen.
     const onA = getEntityByUID(p.a.world, p.a.world.worldRoot, 'bobs-thing')!
     const bPeerOnA = p.link.a.peer
-    expect(getAuthority(p.a.world, onA)).toBe(bPeerOnA)
+    expect(AuthoritativeFor.get(p.a.world, onA)).toBe(bPeerOnA)
 
     p.link.close()
     await p.flush()
@@ -471,8 +490,8 @@ describe('presence derives disconnect cleanup', () => {
     spawnPrefab(p.a.world, 'sibling')
     await p.tick()
 
-    // Removing the owner's entities fires the destroy observer for each, which
-    // runs while the disconnect observer is still on the stack.
+    // Removing the owner's entities queues a destroy for each, while the
+    // teardown that triggered them is still on the stack.
     expect(() => {
       p.link.close()
     }).not.toThrow()
@@ -481,8 +500,8 @@ describe('presence derives disconnect cleanup', () => {
     for (const uid of ['parent', 'child', 'sibling']) {
       expect(getEntityByUID(p.b.world, p.b.world.worldRoot, uid)).toBeUndefined()
     }
-    // The cleanup is local, so it must not have queued anything outbound.
-    expect(p.b.world.authoredQueue).toHaveLength(0)
+    // The cleanup is local, so nothing may travel.
+    expect(flushedDestroys(p.b.world)).toEqual([])
     p.dispose()
   })
 })
@@ -557,5 +576,179 @@ describe('worlds with no continuous components', () => {
     link.close()
     destroyWorld(a)
     destroyWorld(b)
+  })
+})
+
+describe('two worlds sharing one engine', () => {
+  it('a removal in one world authors in that world alone', () => {
+    // The destroy used to come from an observer registered per world but fired
+    // per engine, so each removal ran the handler once per world sharing the
+    // engine — with a different `world` closed over each time. `removeEntity`
+    // now queues onto the world it was handed, so the count cannot drift with
+    // the number of worlds.
+    const engine = createEngine({ clock: createManualClock(0) })
+    const a = createWorld({ engine, agent: createAnonAgent('shared-a') })
+    const b = createWorld({ engine, agent: createAnonAgent('shared-b') })
+    const c = createWorld({ engine, agent: createAnonAgent('shared-c') })
+    for (const [w, n] of [
+      [a, 'shared-a'],
+      [b, 'shared-b'],
+      [c, 'shared-c']
+    ] as const)
+      bootstrap(w, n)
+    for (const w of [a, b, c]) flushAuthored(w)
+
+    const e = spawnPrefab(a, 'only-in-a')
+    for (const w of [a, b, c]) flushAuthored(w)
+    removeEntity(a, e)
+
+    expect(flushedDestroys(a)).toHaveLength(1)
+    expect(flushedDestroys(b)).toEqual([])
+    expect(flushedDestroys(c)).toEqual([])
+    for (const w of [a, b, c]) destroyWorld(w)
+  })
+
+  it('a destroyed world stops authoring, and leaves the survivors intact', () => {
+    // The observers never detached, so a destroyed world kept running its
+    // handler on every later removal in the same engine.
+    const engine = createEngine({ clock: createManualClock(0) })
+    const gone = createWorld({ engine, agent: createAnonAgent('gone') })
+    const live = createWorld({ engine, agent: createAnonAgent('live') })
+    bootstrap(gone, 'gone')
+    bootstrap(live, 'live')
+    destroyWorld(gone)
+
+    flushAuthored(live)
+    const e = spawnPrefab(live, 'survivor')
+    flushAuthored(live)
+    removeEntity(live, e)
+
+    expect(flushedDestroys(live)).toHaveLength(1)
+    expect(gone.authoredQueue).toHaveLength(0)
+    destroyWorld(live)
+  })
+})
+
+describe('entity ids recycle', () => {
+  it('attributes a destroy to the owner the entity had, not a later tenant', () => {
+    // The owner has to be captured while the entity still exists. Reading it at
+    // flush time would consult an index whose key may already belong to a
+    // different entity.
+    const world = machine('recycle')
+    bootstrap(world, 'recycle')
+    const stranger = createUser(world, { did: 'did:key:STRANGER' })
+
+    const mine = spawnPrefab(world, 'mine')
+    const theirs = spawnPrefab(world, 'theirs', { owner: stranger })
+    flushAuthored(world)
+
+    removeEntity(world, mine)
+    removeEntity(world, theirs)
+    const destroyed = flushedDestroys(world)
+
+    expect(destroyed).toHaveLength(1)
+    expect(destroyed[0].entityPath).toEqual(['mine'])
+    destroyWorld(world)
+  })
+
+  it('drops the owner index entry when the entity goes', () => {
+    const world = machine('index')
+    bootstrap(world, 'index')
+    const e = spawnPrefab(world, 'indexed')
+    expect(OwnedBy.indexFor(world.engine).get(e)).toBe(world.localUser)
+    removeEntity(world, e)
+    expect(OwnedBy.indexFor(world.engine).has(e)).toBe(false)
+    destroyWorld(world)
+  })
+})
+
+describe('destroyWorld closes its own networks', () => {
+  it('closes every network without a registered hook', () => {
+    const world = machine('closing')
+    bootstrap(world, 'closing')
+    const first = addNetwork(world, { id: 'first' })
+    const second = addNetwork(world, { id: 'second' })
+    let closed = 0
+    for (const n of [first, second]) {
+      const endpoint = createMemoryTransport()
+      n.connections.add({
+        peer: 0,
+        remoteDID: 'did:key:X',
+        events: endpoint.a.events,
+        stream: endpoint.a.stream,
+        onClose: (h) => endpoint.a.onClose(h),
+        close: () => {
+          closed++
+        }
+      })
+    }
+    destroyWorld(world)
+    expect(closed).toBe(2)
+    expect(world.networks.size).toBe(0)
+  })
+})
+
+describe('relation indexes agree with their relations', () => {
+  it('tracks OwnedBy and AuthoritativeFor through every mutation path', () => {
+    // The index is a cache of the relation, kept by `addRelation` and
+    // `removeRelation`. A write path that bypassed those wrappers would leave
+    // the two disagreeing, and `OwnedBy.get` would answer from the stale one.
+    const world = machine('agree')
+    bootstrap(world, 'agree')
+    const owner = world.localUser!
+    const peer = world.localPeer!
+    const other = createUser(world, { did: 'did:key:OTHER' })
+    const otherPeer = createPeer(world, { user: other, peerId: 'other-p' })
+
+    const e = spawnPrefab(world, 'tracked')
+    const agrees = (entity: Entity): void => {
+      expect(OwnedBy.indexFor(world.engine).get(entity)).toBe(getRelationTargets(world, entity, OwnedBy)[0])
+      expect(AuthoritativeFor.indexFor(world.engine).get(entity)).toBe(
+        getRelationTargets(world, entity, AuthoritativeFor)[0]
+      )
+    }
+    agrees(e)
+    expect(OwnedBy.get(world, e)).toBe(owner)
+    expect(AuthoritativeFor.get(world, e)).toBe(peer)
+
+    // An exclusive relation replaces its target rather than adding a second.
+    grantAuthority(world, e, otherPeer)
+    agrees(e)
+    expect(AuthoritativeFor.get(world, e)).toBe(otherPeer)
+
+    // Removing a target this relation no longer names must leave it standing.
+    removeRelation(world, e, AuthoritativeFor, peer)
+    expect(AuthoritativeFor.get(world, e)).toBe(otherPeer)
+    agrees(e)
+
+    // Removing the target it does name clears it.
+    removeRelation(world, e, AuthoritativeFor, otherPeer)
+    expect(AuthoritativeFor.get(world, e)).toBeUndefined()
+    agrees(e)
+
+    // Reassignment through `OwnedBy.set` keeps both in step.
+    OwnedBy.set(world, e, other)
+    expect(OwnedBy.get(world, e)).toBe(other)
+    agrees(e)
+    destroyWorld(world)
+  })
+
+  it('survives an id recycled between the removal and the flush', () => {
+    // `removeEntity` captures the owner rather than leaving it to be looked up
+    // later, so a fresh entity taking the same id cannot rewrite the answer for
+    // a destroy already queued.
+    const world = machine('recycled')
+    bootstrap(world, 'recycled')
+    const stranger = createUser(world, { did: 'did:key:STRANGER' })
+
+    const theirs = spawnPrefab(world, 'theirs', { owner: stranger })
+    flushAuthored(world)
+    removeEntity(world, theirs)
+    // Whatever id this takes — including the one just freed — its own owner
+    // must not decide what the pending destroy says.
+    spawnPrefab(world, 'mine')
+
+    expect(flushedDestroys(world)).toEqual([])
+    destroyWorld(world)
   })
 })

@@ -16,7 +16,7 @@ export { joinNetwork, joinWorld, leaveWorld } from './session'
 // The pieces a transport implementation wires for itself when it does not use
 // the full `joinNetwork` handshake. `testing/connect-memory.ts` is the worked
 // example.
-export { attachRuntimeChannel, disconnected, rebroadcastAuthored } from './session'
+export { attachConnection, attachRuntimeChannel, rebroadcastAuthored } from './session'
 export type { NetworkIdBinding, NetworkIdTable, RemoteBindingTable } from './network-id'
 export { createRemoteBindingTable, getNetworkIdTable } from './network-id'
 export type { BinaryChannel, BindControlMessage, ChannelOptions } from './binary-channel'

@@ -3,9 +3,9 @@ import { Schema } from '../schema'
 import { defineComponent, getComponent, hasComponent } from '../ecs/component'
 import { createAnonAgent, createWorld, destroyWorld, type World } from '../ecs/world'
 import { createEngine } from '../ecs/engine'
-import { getEntityByUID, getUID } from '../ecs/entity'
+import { getEntityByUID, UIDComponent } from '../ecs/entity'
 import { definePrefab, spawnPrefab } from './prefab'
-import { getAuthority, getOwner } from './authority'
+import { AuthoritativeFor, OwnedBy } from './authority'
 import { createPeer, createUser } from './peer'
 
 /** Bootstrap a local user + peer so spawnPrefab has defaults to draw on. */
@@ -46,9 +46,9 @@ describe('spawnPrefab', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     bootstrap(world)
     const e = spawnPrefab(world, 'scene:bare')
-    expect(getUID(world, e)).toBe('scene:bare')
-    expect(getOwner(world, e)).toBe(world.localUser)
-    expect(getAuthority(world, e)).toBe(world.localPeer)
+    expect(UIDComponent.get(world, e)).toBe('scene:bare')
+    expect(OwnedBy.get(world, e)).toBe(world.localUser)
+    expect(AuthoritativeFor.get(world, e)).toBe(world.localPeer)
     expect(hasComponent(world, e, Health)).toBe(false)
     destroyWorld(world)
   })
@@ -87,7 +87,7 @@ describe('spawnPrefab', () => {
     bootstrap(world)
     const scene = spawnPrefab(world, 'scene:prefabs')
     const e = spawnPrefab(world, 'alice', { prefab: Avatar, parent: scene })
-    expect(getUID(world, e)).toBe('alice')
+    expect(UIDComponent.get(world, e)).toBe('alice')
     expect(getEntityByUID(world, scene, 'alice')).toBe(e)
     destroyWorld(world)
   })
@@ -104,6 +104,6 @@ describe('spawnPrefab', () => {
     bootstrap(world)
     const other = createUser(world, { did: 'did:test:other' })
     const e = spawnPrefab(world, 'thing', { owner: other })
-    expect(getOwner(world, e)).toBe(other)
+    expect(OwnedBy.get(world, e)).toBe(other)
   })
 })

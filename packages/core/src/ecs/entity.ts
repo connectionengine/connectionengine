@@ -11,16 +11,18 @@
  *     Authored events carry this path on the wire.
  *
  * Identity composes from two ECS primitives: `UIDComponent`, a string, and
- * `BelongsTo`, an exclusive relation. Each one carries its own typed extension
- * caches, which keep lookups O(1):
+ * `BelongsTo`, an exclusive relation. Each one carries its own index, which
+ * keeps lookups O(1):
  *
  *   UIDComponent.nameCache : parent → (uid → entity)   for `getEntityByUID`
- *   UIDComponent.uidOf     : entity → uid              for `getUID` + path walking
- *   BelongsTo.parentOf     : child  → parent           for path walking + cache invalidation
+ *   UIDComponent.uidOf     : entity → uid              for `UIDComponent.get` + path walking
+ *   BelongsTo (index: true): child  → parent           for `BelongsTo.get` + cache invalidation
  *
- * The caches live ON the definitions, as typed extension properties. They index
- * one component or one relation, and mean nothing apart from it, so they belong
- * there. `setUID` maintains all three. `removeEntity` clears them inline.
+ * Each index lives ON the definition it describes, and means nothing apart from
+ * it. `BelongsTo` declares `index: true` and `defineRelation` supplies the
+ * accessors; the two UID indexes are shaped differently, so they stay typed
+ * extension properties. `setUID` maintains all three. `removeEntity` clears
+ * them inline.
  *
  * For a wire-addressable entity with an owner and an authority, use
  * `spawnPrefab` from `network/prefab`. This module is the pure-ECS substrate.
@@ -29,7 +31,7 @@
 import * as bitecs from 'bitecs'
 import { Schema } from '../schema'
 import { defineComponent, getComponent, setComponent } from './component'
-import { addRelation, defineRelation } from './relation'
+import { captureRelationIndexes, clearRelationIndexes, defineRelation } from './relation'
 import type { Engine } from './engine'
 import type { Entity, Origin, World } from './world'
 
@@ -37,32 +39,21 @@ export type { Entity } from './world'
 
 // ── Built-in identity component + relation ───────────────────────────────────-
 //
-// nameCache, uidOf, and parentOf are typed extension properties on the relevant
-// definitions. They live there because they index UIDs and BelongsTo edges
-// only, and no other place holds them meaningfully. Component and relation
-// definitions are module-level singletons, so the *extension* is global. The
-// inner maps use the Engine as their WeakMap key, so two engines in the same
-// process keep their identity state isolated. Entity IDs are not unique across
-// bitECS worlds.
+// The identity indexes hang off the definitions they describe. A definition is
+// a module-level singleton, so the *extension* is global; each inner map uses
+// the Engine as its WeakMap key, so two engines in one process keep their
+// identity state apart. Entity ids are not unique across bitECS worlds.
 //
-// Read them through the `nameCacheFor`, `uidOfFor`, and `parentOfFor` helpers
-// below. Each helper initialises the per-engine map on first use.
-
-export const UIDComponent = defineComponent({
-  id: 'UID',
-  label: 'UID',
-  schema: Schema.Object({
-    value: Schema.String({ default: '' })
-  }),
-  nameCache: new WeakMap<Engine, Map<Entity, Map<string, Entity>>>(),
-  uidOf: new WeakMap<Engine, Map<Entity, string>>()
-})
-
-export const BelongsTo = defineRelation({
-  name: 'BelongsTo',
-  exclusive: true,
-  parentOf: new WeakMap<Engine, Map<Entity, Entity>>()
-})
+// `BelongsTo` declares `index: true`, so `defineRelation` gives it `get`, `set`
+// and `indexFor`. The two UID indexes are shaped differently — one maps an
+// entity to a string, the other nests two levels — so they stay as typed
+// extension properties on the definition, read through `UIDComponent.get` for
+// one entity, or `uidOfFor` and `nameCacheFor` for the whole map.
+//
+// `UIDComponent.get` and the accessors below name each other. Only their bodies
+// do, and a body runs long after this module evaluates, so the cycle resolves
+// itself. Ordinary `const` rules still apply: calling any of them at module
+// scope, above its declaration, throws a ReferenceError on import.
 
 const lazy = <V>(weak: WeakMap<Engine, V>, engine: Engine, factory: () => V): V => {
   let v = weak.get(engine)
@@ -73,36 +64,110 @@ const lazy = <V>(weak: WeakMap<Engine, V>, engine: Engine, factory: () => V): V 
   return v
 }
 
+export const UIDComponent = defineComponent({
+  id: 'UID',
+  label: 'UID',
+  schema: Schema.Object({
+    value: Schema.String({ default: '' })
+  }),
+  nameCache: new WeakMap<Engine, Map<Entity, Map<string, Entity>>>(),
+  uidOf: new WeakMap<Engine, Map<Entity, string>>(),
+  /**
+   * The UID of an entity, from the index. It falls back to component storage,
+   * so an entity whose UID arrived by a route that skipped `setUID` still
+   * answers.
+   *
+   * The body names `uidOfFor` and `readUIDValue`, both declared below. A body
+   * runs long after this module finishes evaluating, so the forward reference
+   * costs nothing.
+   */
+  get: (world: World, entity: Entity): string | undefined =>
+    uidOfFor(world.engine).get(entity) ?? readUIDValue(world, entity)
+})
+
 /** Get-or-create the per-engine UID → entity index, keyed by parent. */
 export const nameCacheFor = (engine: Engine): Map<Entity, Map<string, Entity>> =>
   lazy(UIDComponent.nameCache, engine, () => new Map())
 
-/** Get-or-create the per-engine entity → UID map. */
+/** Get-or-create the per-engine entity → UID map. Use it to iterate every named
+ *  entity; use `UIDComponent.get` for one. */
 export const uidOfFor = (engine: Engine): Map<Entity, string> => lazy(UIDComponent.uidOf, engine, () => new Map())
 
-/** Get-or-create the per-engine entity → BelongsTo parent map. */
-export const parentOfFor = (engine: Engine): Map<Entity, Entity> => lazy(BelongsTo.parentOf, engine, () => new Map())
+/**
+ * The UID held in component storage.
+ *
+ * It sits outside the definition so that `getComponent` sees a fully resolved
+ * `UIDComponent` and returns `{ value: string } | undefined`. Inlining this
+ * into the initialiser above compiles, but the self-reference degrades to
+ * `unknown` there and needs a cast to read `.value` — which would then hide a
+ * genuine mismatch if the schema ever changed.
+ */
+const readUIDValue = (world: World, entity: Entity): string | undefined =>
+  getComponent(world, entity, UIDComponent)?.value
+
+export const BelongsTo = defineRelation({
+  name: 'BelongsTo',
+  exclusive: true,
+  index: true
+})
 
 // ── Create / remove ──────────────────────────────────────────────────────────-
 
 export const createEntity = (world: World): Entity => bitecs.addEntity(world.engine.bitECS)
 
 /**
- * Remove an entity from this world. Plain ECS — this function knows nothing
- * about peers.
+ * Remove an entity from this world, and queue the removal for replication.
  *
- * Removal still replicates, but reactively: the network layer observes
- * `onRemove(UIDComponent)` and queues the `destroy` when the local user owns
- * the entity. There is no networked twin of this function to remember to call.
- * See `network/mutation.ts`.
+ * This function pairs with `setUID`, the same way `removeComponent` pairs with
+ * `setComponent` and `removeRelation` pairs with `addRelation`. Each of those
+ * verbs authors its own reverse inline, at the point of the mutation. Entity
+ * removal used to be the one exception: it authored nothing, and the network
+ * layer recovered the event from an observer on `onRemove(UIDComponent)`. That
+ * observer fired once per world sharing the engine, never detached, and
+ * vanished with the side-effect import that registered it. Queueing here
+ * instead makes the vocabulary symmetric and removes all three faults.
+ *
+ * Queueing is not sending. `flushAuthored` decides what travels, and it drops
+ * a destroy this peer does not own. Ownership does two jobs there: it stops a
+ * peer announcing the removal of something it does not own, and it suppresses
+ * the echo, because a received destroy names an entity owned by the *remote*
+ * user.
+ *
+ * An anonymous entity queues nothing. The wire addresses entities by path, so
+ * one without a path cannot be named.
+ *
+ * The queued event also carries the index entries of the departing entity, so
+ * that a later step can still attribute the removal. `network/mutation.ts`
+ * reads the `OwnedBy` entry to gate what travels; nothing here names ownership.
+ *
+ * `DESTROY_PREDICATE` names the predicate the queued event carries. The apply
+ * path branches on `op` before it resolves a predicate, so it never names a
+ * component or a relation, and the `@` prefix keeps it clear of user
+ * predicates. It lives here because this function is the only thing that
+ * produces it.
  */
+export const DESTROY_PREDICATE = '@destroy'
+
 export const removeEntity = (world: World, entity: Entity): void => {
-  // bitECS removal first. It cascades the component and relation cleanup, and
-  // through autoRemoveSubject it also removes the subjects of any relation
-  // targeting this entity. Removing `UIDComponent` fires the observers, and
-  // the identity caches are still intact at that moment, so an observer can
-  // still read the path of the entity going away. The network layer relies on
-  // that to replicate the removal.
+  // Capture before the removal. The bitECS cascade takes the relations, and
+  // `cleanupIdentity` takes the path, so neither survives to flush time. The
+  // capture stays generic: this function collects whatever indexes the defined
+  // relations declare, and names none of them.
+  const entityPath = getEntityPath(world, entity)
+  if (entityPath.length > 0) {
+    world.authoredQueue.push({
+      entity,
+      predicate: DESTROY_PREDICATE,
+      op: 'destroy',
+      value: null,
+      origin: 'local',
+      entityPath,
+      indexed: captureRelationIndexes(world.engine, entity)
+    })
+  }
+  // bitECS removal cascades the component and relation cleanup, and through
+  // autoRemoveSubject it also removes the subjects of any relation targeting
+  // this entity.
   bitecs.removeEntity(world.engine.bitECS, entity)
   cleanupIdentity(world.engine, entity)
 }
@@ -136,7 +201,7 @@ const unindexFromBucket = (engine: Engine, parent: Entity, uid: string): void =>
 /** Clear every identity-cache entry referencing this entity. Idempotent. */
 const cleanupIdentity = (engine: Engine, entity: Entity): void => {
   const uidMap = uidOfFor(engine)
-  const parentMap = parentOfFor(engine)
+  const parentMap = BelongsTo.indexFor(engine)
   const nameCache = nameCacheFor(engine)
   const uid = uidMap.get(entity)
   const parent = parentMap.get(entity)
@@ -144,7 +209,9 @@ const cleanupIdentity = (engine: Engine, entity: Entity): void => {
     unindexFromBucket(engine, parent, uid)
   }
   uidMap.delete(entity)
-  parentMap.delete(entity)
+  // `clearRelationIndexes` covers BelongsTo along with every other indexed
+  // relation, so the parent entry needs no separate delete.
+  clearRelationIndexes(engine, entity)
   // Drop the bucket of this entity too, if it was a parent. The BelongsTo edges
   // of its children then dangle.
   nameCache.delete(entity)
@@ -171,7 +238,7 @@ export const setUID = (world: World, entity: Entity, uid: string, options: SetUI
   const engine = world.engine
   const nameCache = nameCacheFor(engine)
   const uidMap = uidOfFor(engine)
-  const parentMap = parentOfFor(engine)
+  const parentMap = BelongsTo.indexFor(engine)
   const parent = options.parent ?? parentMap.get(entity) ?? world.worldRoot
 
   // Collision check
@@ -189,24 +256,18 @@ export const setUID = (world: World, entity: Entity, uid: string, options: SetUI
   uidMap.set(entity, uid)
 
   if (options.parent !== undefined) {
-    addRelation(world, entity, BelongsTo, options.parent, { origin: options.origin })
+    BelongsTo.set(world, entity, options.parent, { origin: options.origin })
   }
-  // Always populate parentOf. Default it to world.worldRoot when the caller
-  // gives no explicit parent, so that `cleanupIdentity` can find the correct
-  // bucket to unindex on remove. A top-level entity omits the BelongsTo edge,
-  // but it still lives under worldRoot in the identity cache.
+  // Then write the index directly, which is the one place that does. A
+  // top-level entity carries no BelongsTo edge — nothing replicates, because
+  // `worldRoot` is local to each peer — yet it still sits under `worldRoot` in
+  // the identity cache, so that `cleanupIdentity` finds the right bucket on
+  // remove. `BelongsTo.get` therefore answers for every named entity, whether
+  // or not an edge exists.
   parentMap.set(entity, parent)
 
   indexInBucket(engine, parent, uid, entity)
 }
-
-/** Get the UID of an entity. Reads the component when the cache holds no entry. */
-export const getUID = (world: World, entity: Entity): string | undefined =>
-  uidOfFor(world.engine).get(entity) ??
-  (getComponent(world, entity, UIDComponent) as { value: string } | undefined)?.value
-
-/** Get the BelongsTo parent of an entity, if it has one. */
-export const getParent = (world: World, entity: Entity): Entity | undefined => parentOfFor(world.engine).get(entity)
 
 /** O(1) lookup. Find an entity by its UID under a parent. Use `world.worldRoot`
  *  for a top-level entity. */
@@ -216,7 +277,7 @@ export const getEntityByUID = (world: World, parent: Entity, uid: string): Entit
 /** Walk the BelongsTo chain from root to leaf, and return the UID path. */
 export const getEntityPath = (world: World, entity: Entity): string[] => {
   const uidMap = uidOfFor(world.engine)
-  const parentMap = parentOfFor(world.engine)
+  const parentMap = BelongsTo.indexFor(world.engine)
   const path: string[] = []
   let cursor: Entity | undefined = entity
   while (cursor !== undefined) {

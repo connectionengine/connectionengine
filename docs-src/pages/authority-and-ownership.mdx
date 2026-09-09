@@ -18,7 +18,7 @@ A user can own many things across many sessions. A peer is one device, one engin
 Owner and authority are wire concerns. The network-layer factory therefore assigns them, and the base ECS primitive does not. `createEntity` is pure ECS, and only allocates a bitECS entity. `spawnPrefab` composes the four things that every networked entity needs:
 
 ```ts
-import { spawnPrefab, getOwner, getAuthority } from '@connectionengine/core'
+import { spawnPrefab, OwnedBy, AuthoritativeFor } from '@connectionengine/core'
 
 const e  = spawnPrefab(world, 'avatar:alice')                            // owner=localUser, authority=localPeer
 const e2 = spawnPrefab(world, 'avatar:bob', { owner: bob })              // explicit owner; authority still defaults
@@ -46,7 +46,7 @@ Use `createEntity` directly for entities that never travel, such as system cache
 `OwnedBy` records provenance, and does not move:
 
 ```ts
-import { createUser, getOwner } from '@connectionengine/core'
+import { createUser, OwnedBy } from '@connectionengine/core'
 
 const alice = createUser(world, { did: 'did:key:z6Mk...', asLocal: true })
 // `asLocal: true` sets world.localUser; subsequent spawnPrefab() calls default
@@ -94,7 +94,7 @@ defineSystem(world, {
   phase: 'Simulation',
   execute: (world, dt) => {
     for (const e of physicsQuery(world)) {
-      if (getAuthority(world, e) !== world.localPeer) continue
+      if (AuthoritativeFor.get(world, e) !== world.localPeer) continue
       // ...integrate physics, write to Transform...
     }
   }
@@ -130,7 +130,7 @@ The short window in which no peer writes is usually acceptable, because receiver
 
 ## Recovery on disconnect — automatic
 
-When a peer drops, its `ConnectedTo` component goes away, and an observer on that removal runs `recoverAuthority` for every entity whose `AuthoritativeFor` targets the leaving peer. `recoverAuthority` selects the remaining peer of the owner-user with the lowest id. If it knows no local peer of the owner, it falls back to `world.localPeer` as a last-resort host-migration successor.
+When a peer drops, `disconnectPeer` runs `recoverAuthority` for every entity whose `AuthoritativeFor` targets the leaving peer. `attachConnection` registered that teardown on `connection.onClose` when it wired the connection up. `recoverAuthority` selects the remaining peer of the owner-user with the lowest id. If it knows no local peer of the owner, it falls back to `world.localPeer` as a last-resort host-migration successor.
 
 ```ts
 // You do not call this yourself — it runs on disconnect automatically.
