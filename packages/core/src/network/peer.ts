@@ -5,6 +5,12 @@
  * split lets `authority.ts` read user DIDs without an import of the factory
  * functions here, which prevents an `authority → peer → authority` cycle. This
  * module holds only the bootstrap helpers for wire identity.
+ *
+ * Import the components and the lookups from `agents.ts`, which defines them.
+ * This module carried a hand-listed mirror of them for a while, and the list
+ * went stale: `ConnectedTo` and its queries never reached the public API. The
+ * package barrel exports both modules, so a caller outside core still has one
+ * import path.
  */
 
 import { setComponent } from '../ecs/component'
@@ -13,10 +19,6 @@ import { addRelation } from '../ecs/relation'
 import { AuthoritativeFor, OwnedBy } from './authority'
 import { PeerComponent, UserComponent, findUserByDID, type DID } from './agents'
 import type { Entity, World } from '../ecs/world'
-
-// Re-export the agent primitives, for a caller that wants one import path.
-export { UserComponent, PeerComponent, findUserByDID, findPeerByIdForUser, getPeersForUser, getUserDID } from './agents'
-export type { DID } from './agents'
 
 // ── createUser ────────────────────────────────────────────────────────────────
 

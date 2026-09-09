@@ -36,11 +36,20 @@ import { getEntityByUID, getEntityPath, setUID } from '../ecs/entity'
 import { addRelation } from '../ecs/relation'
 import { AuthoritativeFor, OwnedBy } from '../network/authority'
 import { ConnectedTo, PeerComponent, UserComponent } from '../network/agents'
-import type { Connection } from '../network/network'
-import { createMemoryTransport, type RuntimeTransportConfig, type TransportEndpoint } from '../network/transport'
+import {
+  createMemoryTransport,
+  type Connection,
+  type RuntimeTransportConfig,
+  type TransportEndpoint
+} from '../network/transport'
 import { ensureDefaultNetwork, type AddNetworkOptions, type Network } from '../network/network'
-import { isBindControl, type BindControlMessage } from '../network/lifecycle/binary-channel'
-import { attachRuntimeChannel, disconnected, rebroadcastAuthored } from '../network/lifecycle/session'
+import {
+  attachRuntimeChannel,
+  disconnected,
+  isBindControl,
+  rebroadcastAuthored,
+  type BindControlMessage
+} from '../network/lifecycle'
 
 export interface MemoryConnectionPair {
   a: Connection

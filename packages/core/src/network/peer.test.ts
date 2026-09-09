@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { createEngine } from '../ecs/engine'
-import { createPeer, createUser, findUserByDID, getPeersForUser, PeerComponent, UserComponent } from './peer'
+import { createPeer, createUser } from './peer'
+import { findUserByDID, getPeersForUser, PeerComponent, UserComponent } from './agents'
 import { getComponent, hasComponent } from '../ecs/component'
 import { getParent } from '../ecs/entity'
 

@@ -23,11 +23,10 @@
 import type { Entity, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
 import { hasComponent } from '../../ecs/component'
-import type { Connection } from '../network'
 import type { BinaryEntry, BinaryPipeline } from '../binary'
 import { createBinaryPipeline } from '../binary'
 import type { CompressionConfig } from '../compression'
-import type { RuntimeTransportConfig } from '../transport'
+import type { Connection, RuntimeTransportConfig } from '../transport'
 import { resolveRuntimeConfig } from '../transport'
 import {
   createRemoteBindingTable,

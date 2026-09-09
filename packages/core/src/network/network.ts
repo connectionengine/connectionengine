@@ -26,8 +26,6 @@ import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/worl
 import { onWorldDestroy } from '../ecs/world'
 import type { Connection } from './transport'
 
-export type { Connection } from './transport'
-
 // ── Behaviours ───────────────────────────────────────────────────────────────-
 
 /** Send an authored envelope out over this network. */

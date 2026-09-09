@@ -59,9 +59,8 @@ import { Kind, type Static, type TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { resizableArray, type ResizableArray, type TypedArrayConstructor } from '../maths/common'
 import type { ArrayBufferKind, SoAStoreKind } from '../schema/kinds'
-import type { World, Entity } from './world'
+import type { Entity, Origin, World } from './world'
 import type { Engine } from './engine'
-import type { Origin } from './world'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

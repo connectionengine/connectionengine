@@ -9,10 +9,10 @@
  *              replication, peers, or governance.
  *
  *   network/ — Mutation pipeline (authored queue + event log + flush + apply),
- *              Transport, Lifecycle (handshake / replay / sweep / fanout),
- *              Binary delta codec, Snapshot, User / Peer, Authority,
- *              Governance, Peers registry. Everything here exists *because*
- *              state is distributed across peers.
+ *              Transport, Network, Lifecycle (handshake / replay / relay),
+ *              Binary delta codec, Snapshot, Agents (User / Peer / presence)
+ *              and their factories, Authority, Governance, Prefab. Everything
+ *              here exists *because* state is distributed across peers.
  *
  *   schema/  — TypeBox + SoA tag kinds (Vec3, Quat, ArrayBuffer, SoAStore, …)
  *   maths/   — Vec/Quat SoA classes
@@ -65,11 +65,12 @@ export * from './ecs/system'
 export * from './network/transport'
 export * from './network/network'
 export * from './network/mutation'
-export * from './network/lifecycle/index'
+export * from './network/lifecycle'
 export * from './network/cursor'
 export * from './network/binary'
 export * from './network/compression'
 export * from './network/snapshot'
+export * from './network/agents'
 export * from './network/peer'
 export * from './network/authority'
 export * from './network/governance'
