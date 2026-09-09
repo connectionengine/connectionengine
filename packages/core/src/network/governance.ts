@@ -1,71 +1,38 @@
 /**
- * Governance — the engine-native rules that every peer enforces. This file
- * holds the core subset.
+ * Governance — the mechanism for refusing an inbound event, with no policy of
+ * its own.
  *
- * Constraints are ECS entities, and they replicate as data. `addConstraint`
- * creates an entity, attaches the correct ConstraintComponent, and links it to
- * a scope with `HasConstraint`. Every peer receives the constraint through the
- * authored pipeline, and enforces it locally.
+ * A constraint is an ECS entity: it carries a component holding the
+ * configuration, and a `HasConstraint` relation pointing at the scope it
+ * guards. Constraints therefore replicate like any other data, and every peer
+ * enforces them locally. There is no config channel, and no privileged peer.
  *
- * A registry holds the constraint kinds, and `registerConstraintKind` adds a
- * new one. Core includes three kinds: `credential`, `temporal`, and `content`.
- * Another package composes with core by registering its own kinds at module
- * load. The ZCAP capability constraint in `@connectionengine/local` does
- * exactly that. `validateEvent` walks the registry instead of a hardcoded
- * switch, so a new kind needs no edit to `validateEvent`.
+ * Core defines no constraint kinds. Which writes a world admits is an
+ * application question, so a kind is registered by whoever needs it —
+ * `@connectionengine/local` registers ZCAP capabilities this way — and the
+ * engine only walks the registry.
+ *
+ * Treat `validate` as a pure function. It receives the event, the constraint
+ * configuration, and the guarded scope, and nothing else. Two peers holding the
+ * same replicated state must reach the same verdict, so a validator that reads
+ * a local clock or asks a local oracle would let peers diverge silently. Use
+ * `event.timestamp` when a rule needs a notion of "now": the author stamps it,
+ * so it reads the same on every peer.
  */
 
-import { Schema } from '../schema'
-import { defineComponent, getComponent, setComponent, type ComponentDefinition } from '../ecs/component'
+import { getComponent, setComponent, type ComponentDefinition } from '../ecs/component'
 import { defineRelation, addRelation, getRelationTargets } from '../ecs/relation'
-import { parentOfFor, resolveEntityPath } from '../ecs/entity'
-import { createEntity, entityExists } from '../ecs/entity'
+import { createEntity, entityExists, parentOfFor, resolveEntityPath } from '../ecs/entity'
 import { query } from '../ecs/query'
 import type { AuthoredEvent, Entity, World } from '../ecs/world'
 
-// ── Constraint components ─────────────────────────────────────────────────────
-
-export const CredentialConstraintComponent = defineComponent({
-  id: 'CredentialConstraint',
-  schema: Schema.Object({
-    requiredCredential: Schema.String({ default: '' }),
-    /** A comma-separated list of ops, such as 'spawn,modify,delete'. */
-    operations: Schema.String({ default: 'spawn,modify,delete' })
-  })
-})
-
-export const TemporalConstraintComponent = defineComponent({
-  id: 'TemporalConstraint',
-  schema: Schema.Object({
-    minIntervalMs: Schema.Number({ default: 0 }),
-    maxCountPerWindow: Schema.Number({ default: Number.POSITIVE_INFINITY }),
-    windowMs: Schema.Number({ default: 60_000 }),
-    /** A comma-separated list of the predicate ids that this rule rate-limits. */
-    appliesTo: Schema.String({ default: '' })
-  })
-})
-
-export const ContentConstraintComponent = defineComponent({
-  id: 'ContentConstraint',
-  schema: Schema.Object({
-    componentType: Schema.String({ default: '' }),
-    /** A JSON-encoded map: { fieldName: { min?, max?, pattern?, blocklist? } }. */
-    fieldConstraints: Schema.String({ default: '{}' })
-  })
-})
-
+/** Links a constraint entity to the scope it guards. */
 export const HasConstraint = defineRelation({
   name: 'HasConstraint',
   exclusive: false
 })
 
 // ── Constraint kind registry ─────────────────────────────────────────────────-
-
-export interface ValidationContext {
-  /** External oracle. It answers one question: does the author DID hold the
-   *  named credential? */
-  hasCredential?: (did: string, credential: string) => boolean
-}
 
 export interface ConstraintViolation {
   kind: string
@@ -75,188 +42,43 @@ export interface ConstraintViolation {
 export interface ConstraintKindEntry {
   /** Stable name, as it appears on the wire. */
   kind: string
-  /** The component that carries the data of this kind. */
+  /** The component that carries the configuration of this kind. */
   component: ComponentDefinition
-  /**
-   * Validate one event against one resolved instance of this constraint kind.
-   * Push every violation that you find. Read `world.eventLog` and
-   * `world.engine.clock` for a stateful rule, such as a temporal rule or a rate
-   * limit. The caller supplies the constraint scope, in case the kind needs it,
-   * as an ownership-scoped rule does.
-   */
+  /** Decide whether one event satisfies one instance of this constraint, and
+   *  push every violation found. */
   validate(args: {
-    world: World
     event: AuthoredEvent
     data: Record<string, unknown>
     scope: Entity
-    context: ValidationContext
     violations: ConstraintViolation[]
   }): void
 }
 
 const kindRegistry = new Map<string, ConstraintKindEntry>()
-const kindByComponentId = new Map<string, ConstraintKindEntry>()
 
 export const registerConstraintKind = (entry: ConstraintKindEntry): void => {
-  if (kindRegistry.has(entry.kind)) {
-    throw new Error(`registerConstraintKind: kind '${entry.kind}' already registered`)
-  }
   kindRegistry.set(entry.kind, entry)
-  kindByComponentId.set(entry.component.$id, entry)
 }
 
 export const getConstraintKind = (kind: string): ConstraintKindEntry | undefined => kindRegistry.get(kind)
 
 export const listConstraintKinds = (): ConstraintKindEntry[] => Array.from(kindRegistry.values())
 
-// ── Built-in kinds: credential, temporal, and content ────────────────────────-
-
-registerConstraintKind({
-  kind: 'credential',
-  component: CredentialConstraintComponent,
-  validate({ event, data, context, violations }) {
-    const required = data.requiredCredential as string
-    const ops = (data.operations as string).split(',')
-    const opForEvent = event.op === 'set' ? 'modify' : event.op === 'remove' ? 'delete' : event.op
-    if (!ops.includes(opForEvent)) return
-    if (context.hasCredential && !context.hasCredential(event.author, required)) {
-      violations.push({ kind: 'credential', reason: `missing credential '${required}'` })
-    }
-  }
-})
-
-registerConstraintKind({
-  kind: 'temporal',
-  component: TemporalConstraintComponent,
-  validate({ world, event, data, violations }) {
-    const cfg = data as { minIntervalMs: number; maxCountPerWindow: number; windowMs: number; appliesTo: string }
-    const predicates = cfg.appliesTo.split(',').filter(Boolean)
-    if (predicates.length > 0 && !predicates.includes(event.predicate)) return
-    const cutoff = world.engine.clock.now() - cfg.windowMs
-    let count = 0
-    let lastTs: number | undefined
-    for (const entry of world.eventLog) {
-      if (entry.author !== event.author) continue
-      if (predicates.length > 0 && !predicates.includes(entry.predicate)) continue
-      if (entry.timestamp < cutoff) continue
-      count++
-      if (lastTs === undefined || entry.timestamp > lastTs) lastTs = entry.timestamp
-    }
-    if (count >= cfg.maxCountPerWindow) {
-      violations.push({
-        kind: 'temporal',
-        reason: `rate limit exceeded (${count}/${cfg.maxCountPerWindow} per ${cfg.windowMs}ms)`
-      })
-    }
-    if (lastTs !== undefined && event.timestamp - lastTs < cfg.minIntervalMs) {
-      violations.push({ kind: 'temporal', reason: `min interval ${cfg.minIntervalMs}ms not met` })
-    }
-  }
-})
-
-registerConstraintKind({
-  kind: 'content',
-  component: ContentConstraintComponent,
-  validate({ event, data, violations }) {
-    const cfg = data as { componentType: string; fieldConstraints: string }
-    if (cfg.componentType !== event.predicate) return
-    let fields: Record<string, { min?: number; max?: number; pattern?: string; blocklist?: string[] }> = {}
-    try {
-      fields = JSON.parse(cfg.fieldConstraints)
-    } catch {
-      violations.push({ kind: 'content', reason: 'malformed field constraints' })
-      return
-    }
-    const value = (event.value ?? {}) as Record<string, unknown>
-    for (const [field, rule] of Object.entries(fields)) {
-      const v = value[field]
-      if (typeof v === 'number') {
-        if (rule.min !== undefined && v < rule.min)
-          violations.push({ kind: 'content', reason: `${field} < ${rule.min}` })
-        if (rule.max !== undefined && v > rule.max)
-          violations.push({ kind: 'content', reason: `${field} > ${rule.max}` })
-      }
-      if (typeof v === 'string') {
-        if (rule.pattern && !new RegExp(rule.pattern).test(v))
-          violations.push({ kind: 'content', reason: `${field} fails pattern` })
-        if (rule.blocklist?.some((b) => v.includes(b)))
-          violations.push({ kind: 'content', reason: `${field} contains blocked content` })
-      }
-    }
-  }
-})
-
 // ── addConstraint ─────────────────────────────────────────────────────────────
 
-export type ConstraintKindName = 'credential' | 'temporal' | 'content' | (string & {})
-
-export interface CredentialConfig {
-  requiredCredential: string
-  operations?: Array<'spawn' | 'modify' | 'delete'>
-}
-export interface TemporalConfig {
-  minIntervalMs?: number
-  maxCountPerWindow?: number
-  windowMs?: number
-  appliesTo: string[]
-}
-export interface ContentConfig {
-  componentType: string
-  fieldConstraints: Record<
-    string,
-    {
-      min?: number
-      max?: number
-      pattern?: string
-      blocklist?: string[]
-    }
-  >
-}
-
-export type ConstraintConfig = CredentialConfig | TemporalConfig | ContentConfig | Record<string, unknown>
-
-export const addConstraint = (
-  world: World,
-  scope: Entity,
-  kind: ConstraintKindName,
-  config: ConstraintConfig
-): Entity => {
+/**
+ * Attach a constraint of `kind` to `scope`, configured by `config`.
+ *
+ * `config` is written straight onto the component of the kind, so its shape is
+ * whatever that component declares.
+ */
+export const addConstraint = (world: World, scope: Entity, kind: string, config: Record<string, unknown>): Entity => {
   const entry = kindRegistry.get(kind)
   if (!entry) throw new Error(`addConstraint: unknown constraint kind '${kind}'`)
   const entity = createEntity(world)
-  setComponent(world, entity, entry.component, normaliseConfig(kind, config) as Record<string, unknown>)
+  setComponent(world, entity, entry.component, config)
   addRelation(world, entity, HasConstraint, scope)
   return entity
-}
-
-const normaliseConfig = (kind: string, config: ConstraintConfig): Record<string, unknown> => {
-  switch (kind) {
-    case 'credential': {
-      const c = config as CredentialConfig
-      return {
-        requiredCredential: c.requiredCredential,
-        operations: (c.operations ?? ['spawn', 'modify', 'delete']).join(',')
-      }
-    }
-    case 'temporal': {
-      const c = config as TemporalConfig
-      return {
-        minIntervalMs: c.minIntervalMs ?? 0,
-        maxCountPerWindow: c.maxCountPerWindow ?? Number.POSITIVE_INFINITY,
-        windowMs: c.windowMs ?? 60_000,
-        appliesTo: c.appliesTo.join(',')
-      }
-    }
-    case 'content': {
-      const c = config as ContentConfig
-      return {
-        componentType: c.componentType,
-        fieldConstraints: JSON.stringify(c.fieldConstraints)
-      }
-    }
-    default:
-      return config as Record<string, unknown>
-  }
 }
 
 // ── resolveConstraints ────────────────────────────────────────────────────────
@@ -279,6 +101,18 @@ const constraintKindFor = (
   return undefined
 }
 
+/** Enumerate the entities on this world that carry a registered constraint
+ *  component. */
+const constraintEntities = (world: World): Entity[] => {
+  const set = new Set<Entity>()
+  for (const entry of kindRegistry.values()) {
+    for (const e of query(world, [entry.component])) {
+      if (entityExists(world, e)) set.add(e)
+    }
+  }
+  return Array.from(set)
+}
+
 /**
  * Walk the scope hierarchy, from the entity through each BelongsTo parent to
  * the world root. Collect every constraint that HasConstraint links to a scope
@@ -299,18 +133,6 @@ export const resolveConstraints = (world: World, entity: Entity): ResolvedConstr
   return out
 }
 
-/** Enumerate the entities on this world that carry a registered constraint
- *  component. */
-const constraintEntities = (world: World): Entity[] => {
-  const set = new Set<Entity>()
-  for (const entry of kindRegistry.values()) {
-    for (const e of query(world, [entry.component])) {
-      if (entityExists(world, e)) set.add(e)
-    }
-  }
-  return Array.from(set)
-}
-
 // ── validateEvent ─────────────────────────────────────────────────────────────
 
 export interface ValidationResult {
@@ -319,24 +141,15 @@ export interface ValidationResult {
 }
 
 /**
- * Validate an incoming authored event against every applicable constraint. The
- * function walks the scope chain of the entity, looks up the kind of each
- * constraint in the registry, and calls the `validate` function of that kind.
+ * Validate an incoming authored event against every constraint that guards it.
  * Use it as `network.validateAuthored`, or as the `validate` option of
  * `connectInMemory`.
  */
-export const validateEvent = (
-  world: World,
-  event: AuthoredEvent,
-  context: ValidationContext = {}
-): ValidationResult => {
+export const validateEvent = (world: World, event: AuthoredEvent): ValidationResult => {
   const entity = resolveEntityPath(world, event.entityPath) ?? world.worldRoot
-  const constraints = resolveConstraints(world, entity)
   const violations: ConstraintViolation[] = []
-  for (const c of constraints) {
-    const entry = kindRegistry.get(c.kind)
-    if (!entry) continue
-    entry.validate({ world, event, data: c.data, scope: c.scope, context, violations })
+  for (const c of resolveConstraints(world, entity)) {
+    kindRegistry.get(c.kind)?.validate({ event, data: c.data, scope: c.scope, violations })
   }
   return { allowed: violations.length === 0, violations }
 }

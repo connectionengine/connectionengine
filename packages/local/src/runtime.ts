@@ -24,7 +24,7 @@ import {
   type World
 } from '@connectionengine/core'
 import { createLocalAgent, type LocalAgent } from './agent'
-import { installCapabilityValidator, type CapabilityValidationContext } from './governance'
+import { installCapabilityValidator } from './governance'
 
 export interface CreateLocalRuntimeOptions {
   /** Seed for the Ed25519 keypair of the local agent. A seed makes the keypair
@@ -43,9 +43,9 @@ export interface CreateLocalRuntimeOptions {
   /** Clock for the engine. It applies only to a fresh engine, and it defaults
    *  to the wall clock. */
   clock?: Clock
-  /** Context for the capability validator, which holds `trustedIssuers` and the
-   *  `hasCredential` oracle. Omit it to attach no governance. */
-  governance?: CapabilityValidationContext | false
+  /** Attach the capability governance gate. Defaults to true. Set the trusted
+   *  issuers with `setTrustedIssuers` before opening a session. */
+  governance?: boolean
 }
 
 export interface LocalRuntime {
@@ -60,8 +60,6 @@ export const createLocalRuntime = (options: CreateLocalRuntimeOptions = {}): Loc
   // installCapabilityValidator targets the default network, so make sure that
   // network exists.
   ensureDefaultNetwork(world)
-  if (options.governance !== false) {
-    installCapabilityValidator(world, options.governance ?? {})
-  }
+  if (options.governance !== false) installCapabilityValidator(world)
   return { world, agent }
 }

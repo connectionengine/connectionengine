@@ -9,7 +9,7 @@
  *
  * Wire format:
  *
- *   [u32 fromPeerIndex][f64 timestamp][u32 entityCount]
+ *   [f64 timestamp][u32 entityCount]
  *   for each entity that wrote:
  *     [u32 networkId][u8/u16/u32 componentMask]
  *     for each set bit in componentMask:
@@ -31,8 +31,9 @@
  * order out of band, which the handshake takes responsibility for. The position
  * of a component in the array is its wire index.
  *
- * Authored events use a separate string-shaped codec, in `codec.ts`. That
- * channel runs at low frequency, and JSON values dominate its payload.
+ * Authored events do not come this way. They travel the reliable `events`
+ * channel of the transport as ordinary objects, because that channel runs at
+ * sub-tick frequency and its payload is dominated by strings.
  */
 
 import type { TypedArray } from '../maths/common'
@@ -302,7 +303,7 @@ const readComponent = (
 // ── Public types ─────────────────────────────────────────────────────────────-
 
 export interface BinaryPacketMetadata {
-  fromPeerIndex: number
+  /** Send time, from the engine clock of the sender. */
   timestamp: number
 }
 
@@ -373,7 +374,6 @@ export const createBinaryPipeline = (
     components,
 
     write(metadata, entries, forceFullSync = false) {
-      writeUint32(writerView, metadata.fromPeerIndex)
       writeFloat64(writerView, metadata.timestamp)
       const reserveCount = spaceUint32(writerView)
       let count = 0
@@ -387,7 +387,6 @@ export const createBinaryPipeline = (
     read(buffer, resolveEntity) {
       const view = createViewCursor(buffer)
       const header: BinaryPacketHeader = {
-        fromPeerIndex: readUint32(view),
         timestamp: readFloat64(view),
         entityCount: readUint32(view)
       }

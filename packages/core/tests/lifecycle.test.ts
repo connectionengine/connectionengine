@@ -33,7 +33,7 @@ import {
   joinWorld,
   leaveWorld,
   Schema,
-  setAuthority,
+  grantAuthority,
   setComponent,
   setUID,
   spawnPrefab
@@ -469,7 +469,7 @@ describe('Authority — auto-recovery on disconnect', () => {
     const scene = spawnPrefab(host, 'scene:rec')
     const e = spawnPrefab(host, 'shared', { parent: scene })
     // Transfer authority — hostPeer (local) has standing as the current holder.
-    setAuthority(host, e, hostJoinerPeer)
+    grantAuthority(host, e, hostJoinerPeer)
     expect(getAuthority(host, e)).toBe(hostJoinerPeer)
 
     // Joiner disconnects

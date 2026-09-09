@@ -93,7 +93,7 @@ console.log(joinerResult.replayedEventCount) // number of events caught up
 
 ## Late join: replay for history, snapshot for the present
 
-**Replay reconstructs history.** The joiner sends `knownEventCount: 0`, or whatever cursor it holds from a previous session, and the host streams the missing events. The joiner applies each event through the normal mutation pipeline. That works for three reasons:
+**Replay reconstructs history.** The joiner sends `knownEventCount: 0`, or whatever cursor it holds from a previous session, together with the signature of its last known event. The host only honours that cursor when its own event at that position carries the same signature, which proves the two logs share a prefix. On any mismatch the host replays from the start, because the cursor counts events in the log of the joiner and would otherwise skip host events the joiner never had. The host then streams the missing events. The joiner applies each event through the normal mutation pipeline. That works for three reasons:
 
 - The event log is **canonical** for causal change. The creation and the removal of every component pass through it, whatever the schema.
 - `appendEventLog` is **idempotent** on the event signature. Apply drops the events that the joiner already holds, and does so silently.
@@ -125,9 +125,11 @@ The rule is structural rather than opt-in. Ownership **is** session-bound. An en
 
 ## Mesh propagation
 
-The lifecycle layer also handles re-broadcast for multi-peer meshes. When an authored envelope arrives from connection X, `rebroadcastAuthored` forwards it to every other connection. It first removes the events that `hasEventBeenSeen` reports as already seen. In a mesh of three or more peers, an event therefore reaches every peer at most once, even over redundant paths.
+The lifecycle layer also relays envelopes, so that a peer reachable only through another one still receives them. When an authored envelope arrives from connection X, the receiver applies it, then forwards **the events the apply accepted** to every other connection on the same network.
 
-This is the simplest possible gossip: forward what you have not seen. It works because the event log signature is the dedup key, and because a second apply of the same event does nothing.
+Two details make that work. Forwarding the accepted list, rather than filtering the incoming envelope against the event log, matters because applying has already logged those events — a not-seen filter at that point would discard every one of them and forward only what the peer refused. And a duplicate arriving by a second path costs nothing, because `appendEventLog` drops it at the receiver.
+
+A peer therefore relays what it took, and never relays what its own gates refused. Relaying stays inside one network: an event arriving on `voice` does not cross into `gameplay`, because the members of one network did not agree to receive the traffic of another.
 
 ## connectInMemory
 

@@ -33,6 +33,9 @@ export interface NetworkIdTable {
   entityOf(networkId: number): Entity | undefined
   /** Snapshot every existing (networkId → entityPath) binding. */
   bindings(): NetworkIdBinding[]
+  /** The binding for one id. It returns undefined when the id is unallocated,
+   *  or when its entity no longer holds an addressable path. */
+  bindingFor(networkId: number): NetworkIdBinding | undefined
 }
 
 const tables = new WeakMap<World, NetworkIdTable>()
@@ -68,6 +71,12 @@ export const getNetworkIdTable = (world: World): NetworkIdTable => {
         if (path.length > 0) out.push({ networkId: id, entityPath: path })
       }
       return out
+    },
+    bindingFor(networkId) {
+      const entity = idToEntity.get(networkId)
+      if (entity === undefined) return undefined
+      const path = getEntityPath(world, entity)
+      return path.length > 0 ? { networkId, entityPath: path } : undefined
     }
   }
   tables.set(world, table)

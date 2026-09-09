@@ -114,7 +114,7 @@ packages/
 │       │                    (UID + BelongsTo) · System scheduler · Prefab · Clock
 │       └── network/         Everything distribution-related — Mutation pipeline
 │                            (queue + log + flush + apply) · Transport ·
-│                            Lifecycle (handshake / replay / sweep / fanout) ·
+│                            Lifecycle (handshake / replay / publish / disconnect) ·
 │                            Binary delta codec · Snapshot · User / Peer ·
 │                            Authority · Governance · Peers registry
 │
@@ -133,7 +133,7 @@ For day-to-day developer context, see [`AGENTS.md`](./AGENTS.md). For the broade
 
 ## Status
 
-Three runtime modes work end to end: core solo, local two-peer with Ed25519 signing and ZCAP capability governance, and the AD4M bridge against mocks. The vitest suites pass — 197 tests in core, plus local, ad4m-bridge, and server. The code type-checks and passes lint. oxlint enforces the layering, so `ecs/` cannot depend on `network/`. Cycle detection is on.
+Three runtime modes work end to end: core solo, local two-peer with Ed25519 signing and ZCAP capability governance, and the AD4M bridge against mocks. The vitest suites pass — 205 tests in core, plus local, ad4m-bridge, and server. The code type-checks and passes lint. oxlint enforces the layering, so `ecs/` cannot depend on `network/`. Cycle detection is on.
 
 One known problem: CI does not check out submodules or build `@coasys/ad4m`, so the `Build` step fails before the tests get a chance to run.
 

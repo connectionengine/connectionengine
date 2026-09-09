@@ -55,6 +55,16 @@ export interface Network {
   publishRuntime?: (dirty: Map<string, Set<Entity>>) => void
   /** Inbound governance gate. A return of false drops the event. */
   validateAuthored?: (event: AuthoredEvent) => boolean
+  /**
+   * Diagnostic for a dropped inbound event. `applyAuthoredEnvelope` calls it
+   * with the reason whenever a gate refuses an event.
+   *
+   * Without it a rejection is invisible: the event does not apply, nothing
+   * throws, and the two peers quietly hold different state. A duplicate does
+   * not report here, because a mesh delivers the same event by several paths
+   * and dropping the repeats is ordinary.
+   */
+  onReject?: (event: AuthoredEvent, reason: string) => void
   /** Close every connection, and release the per-network state. */
   close(): void
 }

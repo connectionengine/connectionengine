@@ -19,7 +19,6 @@ import { createEngine } from '../ecs/engine'
 import { createEntity, getEntityByUID, setUID } from '../ecs/entity'
 import { defineComponent, getComponent, hasComponent, removeComponent, setComponent } from '../ecs/component'
 import { createBinaryPipeline } from './binary'
-import { deserializeAuthoredEnvelope, serializeAuthoredEnvelope } from './codec'
 import { applyAuthoredEnvelope, flushAuthored } from './mutation'
 import { ensureDefaultNetwork } from './network'
 import { applySnapshot, createSnapshot } from './snapshot'
@@ -66,7 +65,7 @@ describe('mixed-channel — the authored half carries the whole component', () =
     destroyWorld(target)
   })
 
-  it('the whole-component value survives the authored codec round-trip', () => {
+  it('the whole-component value survives a serialisation round-trip', () => {
     const source = mkWorld('mx-codec-src')
     const target = mkWorld('mx-codec-tgt')
 
@@ -75,9 +74,10 @@ describe('mixed-channel — the authored half carries the whole component', () =
     setComponent(source, e, Body, { position: [1.5, -2, 3], label: 'rock' })
     const envelope = flushAuthored(source)!
 
-    // The authored value now carries SoA fields as arrays — they have to
-    // survive the string-shaped authored codec, not just the in-process path.
-    const decoded = deserializeAuthoredEnvelope(serializeAuthoredEnvelope(envelope))
+    // The authored value carries SoA fields as plain arrays. A real transport
+    // serialises the envelope, so the value has to survive that and not only
+    // the in-process path where both sides share one object.
+    const decoded = JSON.parse(JSON.stringify(envelope)) as typeof envelope
     applyAuthoredEnvelope(target, decoded)
 
     const body = getComponent(target, named(target, 'rock'), Body)
@@ -120,7 +120,7 @@ describe('mixed-channel — a delta may not create a governed component', () => 
 
     const e = createEntity(source)
     setComponent(source, e, Body, { position: [7, 8, 9], label: 'rock' })
-    const buf = sourcePipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }])
+    const buf = sourcePipe.write({ timestamp: 1 }, [{ networkId: 1, entity: e }])
 
     // Target entity exists but was never granted the component by an authored
     // event — the delta must not conjure it into existence.
@@ -145,7 +145,7 @@ describe('mixed-channel — a delta may not create a governed component', () => 
     const e = createEntity(source)
     setComponent(source, e, Body, { position: [7, 8, 9], label: 'rock' })
     setComponent(source, e, Velocity, { linear: [0.5, 0.25, 0.125] })
-    const buf = sourcePipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }])
+    const buf = sourcePipe.write({ timestamp: 1 }, [{ networkId: 1, entity: e }])
 
     const te = createEntity(target)
     setComponent(target, te, Velocity, {}, { origin: 'network' })
@@ -174,7 +174,7 @@ describe('mixed-channel — a delta may not create a governed component', () => 
     const sourcePipe = createBinaryPipeline(source, [Body])
     const targetPipe = createBinaryPipeline(target, [Body])
     setComponent(source, e, Body, { position: [4, 5, 6] })
-    const buf = sourcePipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }])
+    const buf = sourcePipe.write({ timestamp: 2 }, [{ networkId: 1, entity: e }])
     targetPipe.read(buf, () => te)
 
     expect(getComponent(target, te, Body)?.position.x).toBeCloseTo(4)
@@ -196,7 +196,7 @@ describe('mixed-channel — a delta may not create a governed component', () => 
     const e = createEntity(source)
     setUID(source, e, 'mover')
     setComponent(source, e, Velocity, { linear: [1, 2, 3] })
-    const buf = sourcePipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }])
+    const buf = sourcePipe.write({ timestamp: 1 }, [{ networkId: 1, entity: e }])
 
     const te = createEntity(target)
     targetPipe.read(buf, () => te)
@@ -233,7 +233,7 @@ describe('mixed-channel — governance holds', () => {
     // The ungoverned fast path must not be able to smuggle it back in.
     const sourcePipe = createBinaryPipeline(source, [Body])
     const targetPipe = createBinaryPipeline(target, [Body])
-    const buf = sourcePipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }])
+    const buf = sourcePipe.write({ timestamp: 2 }, [{ networkId: 1, entity: e }])
     targetPipe.read(buf, () => te)
 
     expect(hasComponent(target, te, Body)).toBe(false)

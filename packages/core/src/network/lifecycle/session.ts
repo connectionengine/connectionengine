@@ -13,9 +13,10 @@
  *                 joiner.
  *   3. SNAPSHOT — the current state, with all components on every channel. The
  *                 receiver applies it over the replayed history.
- *   4. LIVE     — authored envelopes and bind controls. Each authored envelope
- *                 goes out again, as a mesh flood, to every other connection on
- *                 every network.
+ *   4. LIVE     — authored envelopes and bind controls. Whatever an incoming
+ *                 envelope leaves accepted goes out again to every other
+ *                 connection on this network, which reaches peers that only
+ *                 this one can see.
  *
  * Wire protocol over `stream`: binary packets from the per-connection
  * `BinaryChannel`, sent point to point.
@@ -26,24 +27,25 @@
  * concern.
  */
 
-import type { AuthoredEnvelope, Entity, World } from '../../ecs/world'
+import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
-import { getComponent, setComponent } from '../../ecs/component'
+import { allComponents, getComponent, hasSyncedSoA, setComponent } from '../../ecs/component'
 import { applyAuthoredEnvelope, flushAuthored } from '../mutation'
-import { createEntity } from '../../ecs/entity'
+import * as bitecs from 'bitecs'
+import { createEntity, removeEntity } from '../../ecs/entity'
 import { getEntityByUID, getEntityPath, setUID } from '../../ecs/entity'
 import { addRelation } from '../../ecs/relation'
-import { AuthoritativeFor, OwnedBy } from '../authority'
-import { PeerComponent, UserComponent } from '../agents'
+import { AuthoritativeFor, OwnedBy, getAuthority, recoverAuthority } from '../authority'
+import { PeerComponent, UserComponent, findUserByDID } from '../agents'
 import type { RuntimeTransportConfig, TransportEndpoint } from '../transport'
 import type { Connection, Network } from '../network'
-import { ensureDefaultNetwork } from '../network'
-import { createBinaryChannel, isBindControl } from './binary-channel'
-import { getConnectionChannel, installFanout, rebroadcastAuthored, setConnectionChannel } from './fanout'
+import { ensureDefaultNetwork, getNetworks } from '../network'
+import { createBinaryChannel, isBindControl, type BinaryChannel } from './binary-channel'
 import { getNetworkIdTable, type NetworkIdBinding } from './network-id'
 import {
   applyReplayChunk,
   applyStateSnapshot,
+  cursorFingerprint,
   endReplay,
   streamEventLog,
   streamStateSnapshot,
@@ -51,7 +53,6 @@ import {
   type ReplayEndMessage,
   type SnapshotMessage
 } from './replay'
-import { sweepDisconnectedPeer } from './sweep'
 
 // ── Control messages ─────────────────────────────────────────────────────────-
 
@@ -69,6 +70,10 @@ interface HelloMessage {
   userPath: string[]
   peerPath: string[]
   knownEventCount: number
+  /** Signature of the last event the sender holds. The receiver uses it to
+   *  confirm that `knownEventCount` names a shared prefix before it skips
+   *  events during replay. */
+  cursorFingerprint?: string
   bindings: NetworkIdBinding[]
 }
 
@@ -181,7 +186,7 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
           // History first, then the present. `replay.ts` explains why the order
           // matters.
           if (wantReplay && payload.knownEventCount < world.eventLog.length) {
-            streamEventLog(world, endpoint, payload.knownEventCount, chunkSize)
+            streamEventLog(world, endpoint, payload.knownEventCount, chunkSize, payload.cursorFingerprint)
           }
           if (wantSnapshot) streamStateSnapshot(world, endpoint)
           if (wantReplay) endReplay(world, endpoint)
@@ -209,8 +214,11 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
     }
     if (isAuthoredEnvelope(payload)) {
       const envelope = payload
-      applyAuthoredEnvelope(world, envelope, network)
-      rebroadcastAuthored(world, connection, envelope)
+      // Apply first, then relay what the apply accepted. Relaying the raw
+      // envelope instead would forward the events this peer rejected and drop
+      // the ones it took.
+      const accepted = applyAuthoredEnvelope(world, envelope, network)
+      rebroadcastAuthored(network, connection, envelope.fromPeer, accepted)
       return
     }
   })
@@ -235,6 +243,7 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
     userPath: world.localUser !== undefined ? getEntityPath(world, world.localUser) : [],
     peerPath: world.localPeer !== undefined ? getEntityPath(world, world.localPeer) : [],
     knownEventCount: myKnownCount,
+    cursorFingerprint: myKnownCount > 0 ? cursorFingerprint(world) : undefined,
     bindings: localBindings
   } satisfies HelloMessage)
 
@@ -328,4 +337,145 @@ const ensureAgentPath = (world: World, path: string[], decorate: (entity: Entity
   }
   if (freshLeaf) decorate(cursor)
   return cursor
+}
+
+// ── Outbound publish + relay ─────────────────────────────────────────────────-
+//
+// A Network needs someone to turn its publish hooks into actual sends. That is
+// this: `installFanout` fans an envelope across the connections of one network,
+// and `rebroadcastAuthored` relays onward what an inbound envelope left
+// accepted.
+
+const channels = new WeakMap<Connection, BinaryChannel>()
+
+export const setConnectionChannel = (connection: Connection, channel: BinaryChannel): void => {
+  channels.set(connection, channel)
+}
+
+export const getConnectionChannel = (connection: Connection): BinaryChannel | undefined => channels.get(connection)
+
+/**
+ * Get the binary channel of a connection, or create it. The lazy build draws
+ * from every continuous-channel ComponentDefinition on the engine of the world,
+ * sorted by id for a deterministic, peer-agnostic order. The engine registry
+ * then guarantees that both sides reach the same list, for as long as both
+ * packages have imported the same component modules.
+ */
+export const ensureChannel = (world: World, connection: Connection): BinaryChannel | undefined => {
+  let channel = channels.get(connection)
+  if (channel) return channel
+  const components = allComponents()
+    .filter(hasSyncedSoA)
+    .sort((a, b) => (a.$id < b.$id ? -1 : a.$id > b.$id ? 1 : 0))
+  if (components.length === 0) return undefined
+  channel = createBinaryChannel(world, connection, { components })
+  channels.set(connection, channel)
+  return channel
+}
+
+/**
+ * Install the fanout on a network. The function is idempotent. It attaches
+ * `publishAuthored` and `publishRuntime`, so that each hook fans across the
+ * connections of this network. The runtime binary path uses the `BinaryChannel`
+ * of each connection.
+ */
+export const installFanout = (world: World, network: Network): void => {
+  if (network.publishAuthored && network.publishRuntime) return
+  if (!network.publishAuthored) {
+    network.publishAuthored = (envelope: AuthoredEnvelope) => {
+      for (const conn of network.connections) conn.events.send(envelope)
+    }
+  }
+  if (!network.publishRuntime) {
+    network.publishRuntime = (dirty: Map<string, Set<Entity>>) => {
+      for (const conn of network.connections) {
+        const channel = ensureChannel(world, conn)
+        if (!channel) continue
+        channel.publish(dirty)
+      }
+    }
+  }
+}
+
+/**
+ * Relay an authored envelope onward, so that a peer reachable only through this
+ * one still receives it. `events` must be the list that `applyAuthoredEnvelope`
+ * accepted, in arrival order.
+ *
+ * Pass the accepted list rather than the whole envelope. `appendEventLog` has
+ * already recorded those events, so a `hasEventBeenSeen` filter applied here
+ * would discard every one of them and forward only what this peer refused.
+ * Feeding the accepted list forward means a peer relays what it took, and a
+ * duplicate arriving by a second path stops at the receiver's own log check.
+ *
+ * The relay stays inside `network`. An event that arrives on one network does
+ * not cross into another, because a network is a sync scope and its members did
+ * not necessarily agree to receive the traffic of any other.
+ */
+export const rebroadcastAuthored = (
+  network: Network,
+  source: Connection,
+  fromPeer: string,
+  events: readonly AuthoredEvent[]
+): void => {
+  if (events.length === 0) return
+  let targets = 0
+  for (const conn of network.connections) if (conn !== source) targets++
+  if (targets === 0) return
+  const out: AuthoredEnvelope = { fromPeer, events: events.slice() }
+  for (const conn of network.connections) {
+    if (conn === source) continue
+    conn.events.send(out)
+  }
+}
+
+// ── Disconnect cleanup ───────────────────────────────────────────────────────-
+//
+// Two things follow from a connection closing, and both are consequences of
+// the ownership model rather than choices a caller makes.
+
+/**
+ * Disconnect cleanup. Authority recovery always runs, because every disconnect
+ * can cost an authority. The sweep of user-owned entities runs only when this
+ * connection was the last connection of that user on the world.
+ */
+export const sweepDisconnectedPeer = (world: World, connection: Connection): void => {
+  recoverAuthorityForLeavingPeer(world, connection)
+
+  const did = connection.remoteDID
+  if (!did || did.startsWith('did:unknown')) return
+  const userEntity = findUserByDID(world, did)
+  if (userEntity === undefined) return
+  for (const network of getNetworks(world).values()) {
+    for (const other of network.connections) {
+      if (other === connection) continue
+      if (other.remoteDID && findUserByDID(world, other.remoteDID) === userEntity) return
+    }
+  }
+  // This was the last connection of the user, so remove every entity that the
+  // user owns. Snapshot the set first, because removeEntity mutates the
+  // AuthoritativeFor query.
+  const owned = bitecs.query(world.engine.bitECS, [OwnedBy.$relation(userEntity)]) as Entity[]
+  for (const e of [...owned]) {
+    if (e === userEntity) continue
+    removeEntity(world, e)
+  }
+}
+
+/**
+ * Walk every entity in the world whose authority targets `connection.peer`, and
+ * reassign each one through `recoverAuthority`. The function does nothing when
+ * the connection carries no peer entity, which happens when its HELLO never
+ * arrived.
+ */
+const recoverAuthorityForLeavingPeer = (world: World, connection: Connection): void => {
+  const leavingPeer = connection.peer
+  if (!leavingPeer) return
+  // Walk every entity in the engine that targets the leaving peer through
+  // AuthoritativeFor. The walk reads the targets index of the relation directly.
+  const owingEntities: Entity[] = []
+  for (const candidate of bitecs.query(world.engine.bitECS, [AuthoritativeFor.$relation(leavingPeer)]) as Entity[]) {
+    if (getAuthority(world, candidate) === leavingPeer) owingEntities.push(candidate)
+  }
+  for (const e of owingEntities) recoverAuthority(world, e, leavingPeer)
 }

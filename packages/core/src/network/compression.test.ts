@@ -93,8 +93,8 @@ describe('createBinaryPipeline — compression integration', () => {
       }
     })
 
-    const rawBuf = raw.write({ fromPeerIndex: 0, timestamp: 0 }, [{ networkId: 1, entity: e }])
-    const cmpBuf = compressed.write({ fromPeerIndex: 0, timestamp: 0 }, [{ networkId: 1, entity: e }])
+    const rawBuf = raw.write({ timestamp: 0 }, [{ networkId: 1, entity: e }])
+    const cmpBuf = compressed.write({ timestamp: 0 }, [{ networkId: 1, entity: e }])
 
     // Raw: 3+4 floats = 28 bytes. Compressed: 6 + 4 = 10 bytes. Both have same overhead.
     expect(cmpBuf.byteLength).toBeLessThan(rawBuf.byteLength)
@@ -124,7 +124,7 @@ describe('createBinaryPipeline — compression integration', () => {
     const t = createEntity(target)
     setComponent(target, t, Transform, {})
 
-    const buf = sourcePipe.write({ fromPeerIndex: 0, timestamp: 0 }, [{ networkId: 1, entity: e }])
+    const buf = sourcePipe.write({ timestamp: 0 }, [{ networkId: 1, entity: e }])
     targetPipe.read(buf, () => t)
 
     const got = getComponent(target, t, Transform)

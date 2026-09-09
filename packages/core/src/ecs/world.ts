@@ -47,13 +47,24 @@ export interface Agent {
 export interface AuthoredEvent {
   entityPath: string[]
   predicate: string
-  op: 'set' | 'remove' | 'spawn' | 'destroy'
+  op: 'set' | 'remove' | 'destroy'
   value: unknown
   /** Author DID, as a string. `flushAuthored` attaches it to a local event. A
    *  received event carries it unchanged. */
   author: string
   /** Milliseconds since epoch. `flushAuthored` attaches it from the engine clock. */
   timestamp: number
+  /**
+   * Per-author ordinal, assigned by `flushAuthored`. It disambiguates two
+   * events that an author emits in the same clock tick.
+   *
+   * The clock has millisecond resolution, so a whole frame of writes usually
+   * carries one timestamp. Without this field, writing a value, changing it,
+   * and restoring it inside one frame produces two identical signatures, and
+   * `appendEventLog` drops the third write as a duplicate. Local and remote
+   * state then diverge permanently.
+   */
+  seq: number
 }
 
 /** Wire-shape envelope that carries the authored events of one peer. */
@@ -67,9 +78,15 @@ export interface AuthoredEnvelope {
 export interface QueuedAuthored {
   entity: Entity
   predicate: string
-  op: 'set' | 'remove' | 'spawn' | 'destroy'
+  op: 'set' | 'remove' | 'destroy'
   value: unknown
   origin: 'local' | 'network'
+  /**
+   * Entity path captured at queue time. `flushAuthored` normally resolves the
+   * path itself, but `removeEntity` clears the identity caches before the
+   * flush runs, so a destroy has to carry its own path.
+   */
+  entityPath?: string[]
 }
 
 export interface DirtyKey {
@@ -101,6 +118,8 @@ export interface World {
   /** Composite-signature index of the events in `eventLog`. Every push
    *  deduplicates against it. */
   eventLogSeen: Set<string>
+  /** Ordinal of the next locally authored event. See `AuthoredEvent.seq`. */
+  authoredSeq: number
   /** Runtime dirty set. `setComponent` writes to it for continuous-channel
    *  components. */
   runtimeDirty: Map<string, Set<Entity>>
@@ -114,18 +133,27 @@ export interface World {
 
 export const Worlds = new Set<World>()
 
-// ── Destroy hooks ─────────────────────────────────────────────────────────────
+// ── World hooks ───────────────────────────────────────────────────────────────
 //
-// A higher layer, such as `network/` or a plugin, registers a cleanup callback
-// that runs when the engine destroys a world. This keeps `destroyWorld`
-// ignorant of every layer above it.
+// A higher layer, such as `network/` or a plugin, attaches to the life of a
+// world without `ecs/` naming it. `network/` uses the create hook to observe
+// removals for replication, and the destroy hook to close its connections.
 
-type DestroyHook = (world: World) => void
-const destroyHooks = new Set<DestroyHook>()
+type WorldHook = (world: World) => void
+const createHooks = new Set<WorldHook>()
+const destroyHooks = new Set<WorldHook>()
+
+/** Register a callback. `createWorld` runs it on every new world. `network/`
+ *  uses it to attach the replication observers without `ecs/` naming them.
+ *  This function returns an unregister function. */
+export const onWorldCreate = (hook: WorldHook): (() => void) => {
+  createHooks.add(hook)
+  return () => createHooks.delete(hook)
+}
 
 /** Register a callback. `destroyWorld` runs it before it removes the world from
  *  `Worlds`. This function returns an unregister function. */
-export const onWorldDestroy = (hook: DestroyHook): (() => void) => {
+export const onWorldDestroy = (hook: WorldHook): (() => void) => {
   destroyHooks.add(hook)
   return () => destroyHooks.delete(hook)
 }
@@ -150,9 +178,11 @@ export const createWorld = (options: CreateWorldOptions): World => {
     authoredQueue: [],
     eventLog: [],
     eventLogSeen: new Set(),
+    authoredSeq: 0,
     runtimeDirty: new Map()
   }
   Worlds.add(world)
+  for (const hook of createHooks) hook(world)
   return world
 }
 

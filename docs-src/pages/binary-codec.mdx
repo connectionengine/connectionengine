@@ -14,7 +14,7 @@ The `continuous` channel exists because per-event JSON envelopes cost too much a
 
 ```
 Packet:
-  [u32 fromPeerIndex][f64 timestamp][u32 entityCount]
+  [f64 timestamp][u32 entityCount]
   for each entity that wrote:
     [u32 networkId][u8/u16/u32 componentMask]
     for each set bit in componentMask:
@@ -32,7 +32,7 @@ import { createBinaryPipeline } from '@connectionengine/core'
 const pipe = createBinaryPipeline(world, [Transform, Velocity])
 
 const buffer = pipe.write(
-  { fromPeerIndex: 7, timestamp: world.engine.clock.now() },
+  { timestamp: world.engine.clock.now() },
   [{ networkId: 100, entity: alicePlayer }]
 )
 
@@ -130,6 +130,10 @@ joinWorld(world, {
 })
 ```
 
-`rate` sets a target in Hz, scaled against the simulation tick rate. On a 60 Hz simulation, `rate: 30` publishes every second tick. On a 120 Hz simulation, `rate: 30` skips three ticks out of four. An unset `rate` publishes every tick. `fullSyncInterval` sets the number of ticks between forced full snapshots. `interpolation` is advisory metadata for receivers.
+`rate` sets a target in Hz, scaled against the simulation tick rate. On a 60 Hz simulation, `rate: 30` publishes every second tick. On a 120 Hz simulation, `rate: 30` skips three ticks out of four. An unset `rate` publishes every tick. `fullSyncInterval` sets the number of ticks between forced full snapshots.
 
-The defaults suit most applications: publish every tick, full sync every 300 ticks, and interpolation on. Use the configuration when you have many components with very different cadence requirements.
+Throttling never loses a movement. An entity held back by the rate cap moves into a per-channel pending set and goes out on the next tick the throttle allows, because `flushRuntime` has already cleared the dirty set of the world by then.
+
+A forced full sync covers every entity this connection has addressed that still carries the component, not only the entities dirty on that tick. An entity that stopped moving while a packet carrying it was lost is exactly the case that needs repairing, and it is not dirty.
+
+The defaults suit most applications: publish every tick, full sync every 300 ticks. Use the configuration when you have many components with very different cadence requirements.

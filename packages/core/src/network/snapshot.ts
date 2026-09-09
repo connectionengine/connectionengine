@@ -163,13 +163,16 @@ const admitter = (
   if (!from) return () => true
   const gate = from.network?.validateAuthored
   return (entityPath, predicate, value) => {
+    // `seq` disambiguates events in the log. This one is a probe for the gates
+    // and never reaches the log, so any value works.
     const event: AuthoredEvent = {
       entityPath,
       predicate,
       op: 'set',
       value,
       author: from.author,
-      timestamp: snapshot.metadata.timestamp
+      timestamp: snapshot.metadata.timestamp,
+      seq: 0
     }
     if (gate && !gate(event)) return false
     return checkAuthorityChangeStanding(world, event) === undefined

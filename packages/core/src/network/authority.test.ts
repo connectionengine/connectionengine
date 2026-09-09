@@ -5,12 +5,11 @@ import { createPeer, createUser } from './peer'
 import {
   AuthoritativeFor,
   OwnedBy,
-  canChangeAuthority,
+  canRequestAuthority,
   getAuthority,
   getOwner,
   recoverAuthority,
   requestAuthority,
-  setAuthority,
   transferAuthority
 } from './authority'
 import { spawnPrefab } from './prefab'
@@ -81,7 +80,7 @@ describe('Authority', () => {
   it('canChangeAuthority is true when local peer is current authority', () => {
     const { world } = mkWorld()
     const e = spawnPrefab(world, 'thing-6')
-    expect(canChangeAuthority(world, e)).toBe(true)
+    expect(canRequestAuthority(world, e)).toBe(true)
     destroyWorld(world)
   })
 
@@ -90,38 +89,44 @@ describe('Authority', () => {
     const e = spawnPrefab(world, 'thing-7')
     transferAuthority(world, e, peerB)
     // localPeer is peerA, peerB now holds authority. peerA is still owner's peer.
-    expect(canChangeAuthority(world, e)).toBe(true)
+    expect(canRequestAuthority(world, e)).toBe(true)
     destroyWorld(world)
   })
 
-  it('setAuthority without standing throws', () => {
+  it('a request without standing is refused, and changes nothing', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent('alice') })
     const aliceUser = createUser(world, { did: 'did:test:alice', uid: 'user:alice', asLocal: true })
     const alicePeer = createPeer(world, { user: aliceUser, peerId: 'a', uid: 'peer:alice', asLocal: true })
     const bobUser = createUser(world, { did: 'did:test:bob', uid: 'user:bob' })
     const bobPeer = createPeer(world, { user: bobUser, peerId: 'b', uid: 'peer:bob' })
     const e = spawnPrefab(world, 'bob-thing', { owner: bobUser, authority: bobPeer })
-    expect(() => setAuthority(world, e, alicePeer)).toThrow(/lacks standing/)
+    const before = getAuthority(world, e)
+    const result = requestAuthority(world, e, alicePeer)
+    expect(result.granted).toBe(false)
+    expect(result.reason).toMatch(/neither the current authority nor a peer/)
+    expect(getAuthority(world, e)).toBe(before)
     expect(getAuthority(world, e)).toBe(bobPeer)
     destroyWorld(world)
   })
 
-  it("requestAuthority grants when owner-user matches requester's user", async () => {
-    const { world, peerA } = mkWorld()
+  it('a peer of the owner-user has standing to transfer', () => {
+    const { world, peerB } = mkWorld()
     const e = spawnPrefab(world, 'thing-8')
-    const result = await requestAuthority(world, e, peerA)
-    expect(result.status).toBe('granted')
-    expect(getAuthority(world, e)).toBe(peerA)
+    expect(canRequestAuthority(world, e)).toBe(true)
+    transferAuthority(world, e, peerB)
+    expect(getAuthority(world, e)).toBe(peerB)
     destroyWorld(world)
   })
 
-  it('requestAuthority denies when requester belongs to a different user', async () => {
-    const { world } = mkWorld()
+  it('a peer of another user has no standing, so the transfer throws', () => {
+    const { world, peerA } = mkWorld()
     const otherUser = createUser(world, { did: 'did:test:rogue', uid: 'user:rogue' })
     const roguePeer = createPeer(world, { user: otherUser, peerId: 'rogue-p', uid: 'peer:rogue' })
-    const e = spawnPrefab(world, 'thing-9')
-    const result = await requestAuthority(world, e, roguePeer)
-    expect(result.status).toBe('denied')
+    // Owned by the rogue user, so the local peer is neither its authority nor
+    // one of its owner's peers.
+    const e = spawnPrefab(world, 'thing-9', { owner: otherUser, authority: roguePeer })
+    expect(canRequestAuthority(world, e)).toBe(false)
+    expect(transferAuthority(world, e, peerA).granted).toBe(false)
     destroyWorld(world)
   })
 

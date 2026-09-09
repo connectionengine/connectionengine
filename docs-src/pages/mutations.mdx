@@ -16,7 +16,22 @@ has SoA fields   →  mark world.runtimeDirty[componentId].add(entity)
 create / remove /
 write value field →  push into world.authoredQueue (entity, predicate, op, value, origin)
 sync: false      →  no-op (never replicated)
+
+removeEntity(world, e)
+        │
+        ▼
+owned by localUser →  push a `destroy` into world.authoredQueue, with the path
+owned by anyone else →  no-op
+no UID path        →  no-op (the wire cannot address it)
 ```
+
+Removal replicates **reactively**. `removeEntity` is plain ECS and knows nothing about peers; the network layer observes `onRemove(UIDComponent)` and queues the `destroy` itself. There is no networked twin of `removeEntity` to remember to call.
+
+**Ownership is the only gate, and it does two jobs.** A peer cannot announce the removal of something it does not own. And the echo suppresses itself: when a received destroy is applied, the entity belongs to the *remote* user, so the observer declines to queue and the destroy stops rather than bouncing between peers.
+
+That also covers local cleanup with no special case. The disconnect sweep removes entities owned by the departing user, which are never the local user's, so the sweep stays local — as it must, since every peer runs its own.
+
+`removeEntity` runs the bitECS removal before it clears the identity caches, so the path of the departing entity is still resolvable when the observer fires. `flushAuthored` runs later and could not resolve one, which is why the event carries the path.
 
 One write can land in both queues. The authored event carries the **whole** component, including the SoA fields as plain arrays, so governance can inspect the creating write in full. A write that only moves SoA fields on an existing component marks the entity dirty and never reaches the event log. That is the per-tick case. See [Components](/components).
 
@@ -66,7 +81,7 @@ applyAuthoredEnvelope(world, envelope, network?)
         │        applyEvent — setComponent / addRelation / etc. with origin: 'network'
 ```
 
-Two gates run before the engine applies an event. The optional per-network `validateAuthored` is the governance hook, and different networks can hold different rules — credential, temporal, content, or capability. The authority-transfer standing check is unconditional. `network/mutation.ts` calls `checkAuthorityChangeStanding` in `network/authority.ts` directly. Both modules live in `network/`, so this is an ordinary named import rather than a runtime hook.
+Two gates run before the engine applies an event. The optional per-network `validateAuthored` is the governance hook, and different networks can enforce different rules. The authority-transfer standing check is unconditional. `network/mutation.ts` calls `checkAuthorityChangeStanding` in `network/authority.ts` directly. Both modules live in `network/`, so this is an ordinary named import rather than a runtime hook.
 
 For `continuous` state, **no separate "apply runtime envelope" function exists**. The binary pipeline (`network/binary.ts`) is the receive path. It reads packets and writes straight into SoA storage, and never calls `setComponent`.
 
@@ -87,13 +102,18 @@ Watch out for one subtlety. `origin` does not record where a write came from. It
 The world holds two parallel structures:
 
 ```ts
-eventLog: AuthoredEvent[]      // ordered append-only canonical log
-eventLogSeen: Set<string>      // composite signature index
+eventLog: AuthoredEvent[]  // ordered append-only canonical log
+eventLogSeen: Set<string>  // composite signature index
 ```
 
-Every push goes through `appendEventLog(world, event)`. That function computes the signature `${author}|${timestamp}|${op}|${predicate}|${entityPath}|${JSON(value)}` and skips any signature it has already seen. Late-join replay is safe as a result. A peer that reconnects with `knownEventCount: 0` receives events it already holds, and append drops each one.
+Every push goes through `appendEventLog(world, event)`. That function computes the signature `${author}|${timestamp}|${seq}|${op}|${predicate}|${entityPath}|${JSON(value)}` and skips any signature it has already seen. Late-join replay is safe as a result. A peer that reconnects with `knownEventCount: 0` receives events it already holds, and append drops each one.
 
-The same property makes mesh re-broadcast safe with three or more peers. Peer B receives a fresh event from peer A and applies it, then forwards it to peer C. Peer C already received that event from peer A independently, so peer C skips it.
+`seq` is a per-author ordinal that `flushAuthored` stamps. The clock has millisecond resolution, so a whole frame of writes usually shares one timestamp. Without the ordinal, writing a value, changing it, and restoring it inside one frame gives the first and third writes identical signatures, and the third is dropped as a duplicate — leaving the author and its peers permanently disagreeing.
+
+
+The same dedup property makes relaying safe with three or more peers. Peer B receives a fresh event from peer A, applies it, and forwards it to peer C. If C already received that event from A directly, C drops it on append.
+
+Push through `appendEventLog` rather than writing to `eventLog` directly, or the signature index falls out of step with the log.
 
 You can read the log directly if you need to:
 

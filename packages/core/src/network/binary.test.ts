@@ -51,7 +51,7 @@ describe('createBinaryPipeline — paired write + read', () => {
     setComponent(source, e1, Velocity, { linear: [0.1, 0.2, 0.3] })
     setComponent(source, e2, Transform, { position: [10, 20, 30], rotation: [0, 0, 0, 1] })
 
-    const buf = sourcePipe.write({ fromPeerIndex: 7, timestamp: 1700000000 }, [
+    const buf = sourcePipe.write({ timestamp: 1700000000 }, [
       { networkId: 100, entity: e1 },
       { networkId: 200, entity: e2 }
     ])
@@ -68,7 +68,6 @@ describe('createBinaryPipeline — paired write + read', () => {
       [200, t2]
     ])
     const header = targetPipe.read(buf, (nid) => idMap.get(nid))
-    expect(header.fromPeerIndex).toBe(7)
     expect(header.timestamp).toBeCloseTo(1700000000)
     expect(header.entityCount).toBe(2)
 
@@ -86,15 +85,15 @@ describe('createBinaryPipeline — paired write + read', () => {
     const e = createEntity(world)
     setComponent(world, e, Velocity, { linear: [1, 2, 3] })
 
-    const HEADER = 4 + 8 + 4 // fromPeerIndex + timestamp + entityCount
-    const buf1 = pipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }])
+    const HEADER = 8 + 4 // timestamp + entityCount
+    const buf1 = pipe.write({ timestamp: 1 }, [{ networkId: 1, entity: e }])
     expect(buf1.byteLength).toBeGreaterThan(HEADER)
 
-    const buf2 = pipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }])
+    const buf2 = pipe.write({ timestamp: 2 }, [{ networkId: 1, entity: e }])
     expect(buf2.byteLength).toBe(HEADER) // no entity payload — nothing changed
 
     soaSet(Velocity, e, 'linear', 'x', 99)
-    const buf3 = pipe.write({ fromPeerIndex: 0, timestamp: 3 }, [{ networkId: 1, entity: e }])
+    const buf3 = pipe.write({ timestamp: 3 }, [{ networkId: 1, entity: e }])
     expect(buf3.byteLength).toBeGreaterThan(buf2.byteLength)
     expect(buf3.byteLength).toBeLessThan(buf1.byteLength) // delta, not full
     destroyWorld(world)
@@ -106,9 +105,9 @@ describe('createBinaryPipeline — paired write + read', () => {
     const e = createEntity(world)
     setComponent(world, e, Velocity, { linear: [1, 2, 3] })
 
-    const full1 = pipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }])
-    const empty = pipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }])
-    const full2 = pipe.write({ fromPeerIndex: 0, timestamp: 3 }, [{ networkId: 1, entity: e }], true)
+    const full1 = pipe.write({ timestamp: 1 }, [{ networkId: 1, entity: e }])
+    const empty = pipe.write({ timestamp: 2 }, [{ networkId: 1, entity: e }])
+    const full2 = pipe.write({ timestamp: 3 }, [{ networkId: 1, entity: e }], true)
     expect(empty.byteLength).toBeLessThan(full1.byteLength)
     expect(full2.byteLength).toBe(full1.byteLength)
     destroyWorld(world)
@@ -120,10 +119,10 @@ describe('createBinaryPipeline — paired write + read', () => {
     const e = createEntity(world)
     setComponent(world, e, Velocity, { linear: [1, 2, 3] })
 
-    const full = pipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }])
-    pipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }]) // shadow up to date
+    const full = pipe.write({ timestamp: 1 }, [{ networkId: 1, entity: e }])
+    pipe.write({ timestamp: 2 }, [{ networkId: 1, entity: e }]) // shadow up to date
     pipe.resetShadow()
-    const afterReset = pipe.write({ fromPeerIndex: 0, timestamp: 3 }, [{ networkId: 1, entity: e }])
+    const afterReset = pipe.write({ timestamp: 3 }, [{ networkId: 1, entity: e }])
     expect(afterReset.byteLength).toBe(full.byteLength)
     destroyWorld(world)
   })
@@ -141,7 +140,7 @@ describe('createBinaryPipeline — paired write + read', () => {
     setComponent(source, e1, Velocity, { linear: [1, 1, 1] })
     setComponent(source, e2, Velocity, { linear: [9, 9, 9] })
 
-    const buf = sourcePipe.write({ fromPeerIndex: 0, timestamp: 1 }, [
+    const buf = sourcePipe.write({ timestamp: 1 }, [
       { networkId: 100, entity: e1 },
       { networkId: 200, entity: e2 }
     ])
@@ -159,13 +158,13 @@ describe('createBinaryPipeline — paired write + read', () => {
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 1, 1], rotation: [0, 0, 0, 1] })
 
-    pipe.write({ fromPeerIndex: 0, timestamp: 1 }, [{ networkId: 1, entity: e }]) // populate shadow
+    pipe.write({ timestamp: 1 }, [{ networkId: 1, entity: e }]) // populate shadow
     soaSet(Transform, e, 'position', 'x', 99)
 
-    const HEADER = 4 + 8 + 4
+    const HEADER = 8 + 4 // timestamp + entityCount
     const ENTITY_PREFIX = 4 + 1 // networkId + entityMask
     const COMPONENT_BLOCK = 1 + 4 // componentMask + 1 Float32
-    const buf = pipe.write({ fromPeerIndex: 0, timestamp: 2 }, [{ networkId: 1, entity: e }])
+    const buf = pipe.write({ timestamp: 2 }, [{ networkId: 1, entity: e }])
     expect(buf.byteLength).toBe(HEADER + ENTITY_PREFIX + COMPONENT_BLOCK)
     destroyWorld(world)
   })

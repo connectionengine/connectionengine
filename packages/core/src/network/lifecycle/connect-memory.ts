@@ -2,7 +2,7 @@
  * Link two worlds over a pair of in-memory `TransportEndpoint` objects, without
  * the formal `joinNetwork` handshake.
  *
- * Authored envelopes fan out through `installFanout`. When the caller supplies
+ * Authored envelopes fan out through `installFanout` in `session.ts`. When the caller supplies
  * `runtimeComponents`, the function attaches a `BinaryChannel` to each
  * Connection, so that the runtime SoA deltas flow over a per-peer binary
  * pipeline.
@@ -28,8 +28,13 @@ import type { Connection } from '../network'
 import { createMemoryTransport, type RuntimeTransportConfig, type TransportEndpoint } from '../transport'
 import { ensureDefaultNetwork, type Network } from '../network'
 import { createBinaryChannel, isBindControl, type BindControlMessage } from './binary-channel'
-import { ensureChannel, installFanout, rebroadcastAuthored, setConnectionChannel } from './fanout'
-import { sweepDisconnectedPeer } from './sweep'
+import {
+  ensureChannel,
+  installFanout,
+  rebroadcastAuthored,
+  setConnectionChannel,
+  sweepDisconnectedPeer
+} from './session'
 
 export interface MemoryConnectionPair {
   a: Connection
@@ -87,8 +92,9 @@ const wireSide = (
       return
     }
     if (isAuthoredEnvelope(payload)) {
-      applyAuthoredEnvelope(world, payload, network)
-      rebroadcastAuthored(world, connection, payload)
+      // Apply first, then relay what the apply accepted. See `rebroadcastAuthored`.
+      const accepted = applyAuthoredEnvelope(world, payload, network)
+      rebroadcastAuthored(network, connection, payload.fromPeer, accepted)
       return
     }
   })

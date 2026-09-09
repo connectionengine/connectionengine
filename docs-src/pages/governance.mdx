@@ -1,5 +1,5 @@
 ---
-description: Constraints are ECS entities. Validation is data-driven. New kinds plug into a registry, not into the engine.
+description: Constraints are ECS entities. Core supplies the mechanism and no policy — you register the kinds.
 ---
 
 # Governance
@@ -12,92 +12,76 @@ A "rule" in Connection Engine is not engine code. A rule is an entity that carri
 import { addConstraint } from '@connectionengine/core'
 
 const scene = spawnPrefab(world, 'scene:guarded')
-
-addConstraint(world, scene, 'credential', {
-  requiredCredential: 'builder',
-  operations: ['modify']
-})
+addConstraint(world, scene, 'max-health', { max: 100 })
 ```
 
 Constraints are entities with authored components, so they replicate exactly like any other data. Every peer receives them through the normal mutation pipeline, and enforces them locally. There is no separate "config sync" channel. The rules **are** the data.
 
-This design move makes governance composable. You can govern a scene, an inventory, or a single object. Constraints walk the `BelongsTo` chain, so anything inside a constrained scope inherits the rule.
+This makes governance composable. You can govern a scene, an inventory, or a single object. Constraints walk the `BelongsTo` chain, so anything inside a constrained scope inherits the rule.
 
-## Built-in constraint kinds
+## Core defines no constraint kinds
 
-Core includes three kinds. None of them needs a specific identity provider beyond an opaque DID string:
-
-| Kind         | What it does                                                            |
-|--------------|-------------------------------------------------------------------------|
-| `credential` | Requires the event author to hold a named credential (oracle-supplied).  |
-| `temporal`   | Rate-limits writes per author (min interval, max count per window).      |
-| `content`    | Validates field shape — number ranges, string patterns, blocklists.      |
-
-Install `@connectionengine/local` for ZCAP capability-based authorisation. That package registers a `capability` kind. `@connectionengine/ad4m-bridge` adds its own kind for AD4M-perspective-based rules.
-
-## The validator gate
-
-Set `network.validateAuthored` to attach a validator to a network. Each network on a world holds its own gate, so different networks can hold different rules:
+Which writes a world admits is an application question, so the engine takes no position on it. Core supplies the registry, the scope walk, and the gate. You supply the kinds.
 
 ```ts
-import { ensureDefaultNetwork, validateEvent } from '@connectionengine/core'
+import { defineComponent, registerConstraintKind, Schema } from '@connectionengine/core'
 
-const network = ensureDefaultNetwork(world)
-network.validateAuthored = (event) =>
-  validateEvent(world, event, {
-    hasCredential: (did, cred) => myOracle.holds(did, cred)
-  }).allowed
-```
-
-`validateEvent` walks the scope hierarchy from the entity of the event. It collects every applicable constraint, runs the `validate` function of each one, and returns `{ allowed, violations }`. Inbound `applyAuthoredEnvelope` consults the gate before it applies an event. It drops a failed event, and neither applies it nor appends it to the event log.
-
-The gate runs on **received** events. Local writes pass through the authored queue, and the engine emits them optimistically. Call `validateEvent` yourself before `setComponent` if you want pre-commit validation of local writes. Letting the network enforce convergence is almost always cheaper. Peers reject bad writes on apply, and your own bad writes fail on the next round-trip review.
-
-## The registry
-
-The `credential`, `temporal`, and `content` kinds are not a hardcoded switch inside `validateEvent`. A registry holds them:
-
-```ts
-import { registerConstraintKind } from '@connectionengine/core'
+const MaxHealthConstraint = defineComponent({
+  id: 'MaxHealthConstraint',
+  schema: Schema.Object({ max: Schema.Number({ default: 0 }) })
+})
 
 registerConstraintKind({
-  kind: 'my-custom-rule',
-  component: MyCustomConstraintComponent,
-  validate({ world, event, data, scope, context, violations }) {
-    if (somethingIsWrong(event, data)) {
-      violations.push({ kind: 'my-custom-rule', reason: '...' })
+  kind: 'max-health',
+  component: MaxHealthConstraint,
+  validate({ event, data, violations }) {
+    if (event.predicate !== 'Health') return
+    const current = (event.value as { current?: number } | null)?.current
+    if (typeof current === 'number' && current > (data.max as number)) {
+      violations.push({ kind: 'max-health', reason: `${current} exceeds ${data.max}` })
     }
   }
 })
 ```
 
-`addConstraint(world, scope, 'my-custom-rule', { ... })` now works. `resolveConstraints` collects the new kind, and `validateEvent` runs it. The engine needs no change.
+`addConstraint(world, scope, 'max-health', { max: 100 })` now works. `resolveConstraints` collects the kind, and `validateEvent` runs it.
 
-`@connectionengine/local` adds the `capability` kind the same way, without a fork of core:
+`@connectionengine/local` registers a `capability` kind the same way, for ZCAP-LD authorisation. It needs no fork of core, and neither does yours.
+
+## Write `validate` as a pure function
+
+A validator receives the event, the constraint configuration, and the guarded scope. Nothing else — no world handle, no clock, no callback into your application.
+
+That signature is the point. Every peer holds the same constraint data and runs the same code, so every peer must reach the same verdict. A validator that read a local clock would let two peers judge the same event differently, a fraction of a second apart, and diverge with nothing to detect it. A validator that asked a local oracle would do the same.
+
+When a rule needs a notion of "now", use `event.timestamp`. The author stamps it, so it reads the same on every peer.
+
+## The gate
+
+Set `network.validateAuthored` to attach the check to a network. Each network on a world holds its own gate, so different networks can enforce different rules:
 
 ```ts
-// in @connectionengine/local/src/governance.ts
-registerConstraintKind({
-  kind: 'capability',
-  component: CapabilityConstraintComponent,
-  validate({ world, event, data, context, violations }) {
-    // ZCAP verification ...
-  }
-})
+import { ensureDefaultNetwork, validateEvent } from '@connectionengine/core'
+
+const network = ensureDefaultNetwork(world)
+network.validateAuthored = (event) => validateEvent(world, event).allowed
+network.onReject = (event, reason) => console.warn('refused', event.predicate, reason)
 ```
+
+`validateEvent` walks the scope hierarchy from the entity of the event, collects every applicable constraint, runs each kind, and returns `{ allowed, violations }`. Inbound `applyAuthoredEnvelope` consults the gate before it applies an event. A refused event neither applies nor enters the event log, and `onReject` reports why.
+
+The gate runs on **received** events. Local writes pass through the authored queue and go out optimistically. Call `validateEvent` yourself before `setComponent` if you want to check a local write first.
 
 ## Resolving constraints
 
-`resolveConstraints(world, entity)` walks `entity → BelongsTo parent → ... → root`, and collects every constraint attached with `HasConstraint`. It returns the most specific constraint first, which is the one closest to the entity. Use it to debug the question "what governs this entity?":
+`resolveConstraints(world, entity)` walks `entity → BelongsTo parent → ... → root` and collects every constraint attached with `HasConstraint`. It returns the most specific first:
 
 ```ts
-import { resolveConstraints } from '@connectionengine/core'
-
 resolveConstraints(world, avatar)
-// → [{ entity: 17, kind: 'credential', data: { ... }, scope: scene }]
+// → [{ entity: 17, kind: 'max-health', data: { max: 100 }, scope: scene }]
 ```
 
-App code rarely calls this function. It serves engine-level governance, and it shows users why the engine rejected a write.
+Use it to answer "what governs this entity?" while debugging, or to show a user why a write was refused.
 
 ## What governance is NOT
 

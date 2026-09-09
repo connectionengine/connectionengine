@@ -104,12 +104,14 @@ describe('expression encoding', () => {
       op: 'set',
       value: { current: 50, max: 100 },
       author: 'did:ad4m:alice',
-      timestamp: 1234567890
+      timestamp: 1234567890,
+      seq: 0
     }
     const link = eventToLink(event)
     expect(link).toBeInstanceOf(Link)
     expect(link.source).toContain('cengine:event:')
-    expect(link.predicate).toBe('set:B.Health')
+    // op : seq : predicate — seq keeps two same-value writes in one tick distinct
+    expect(link.predicate).toBe('set:0:B.Health')
     expect(JSON.parse(link.target)).toEqual({ current: 50, max: 100 })
 
     const decoded = linkExpressionToEvent(mkLinkExpression(event))
@@ -142,7 +144,8 @@ describe('connectAd4m — outbound', () => {
           op: 'set',
           value: { current: 50, max: 100 },
           author: 'did:ad4m:alice',
-          timestamp: 0
+          timestamp: 0,
+          seq: 0
         }
       ]
     })
@@ -151,7 +154,7 @@ describe('connectAd4m — outbound', () => {
     expect(added).toHaveBeenCalledTimes(1)
     const links = added.mock.calls[0][0] as Link[]
     expect(links[0]).toBeInstanceOf(Link)
-    expect(links[0].predicate).toBe('set:B.Health')
+    expect(links[0].predicate).toMatch(/^set:\d+:B\.Health$/)
 
     destroyWorld(world)
   })
@@ -169,7 +172,8 @@ describe('connectAd4m — inbound', () => {
       op: 'set',
       value: { current: 60, max: 100 },
       author: 'did:ad4m:alice',
-      timestamp: 0
+      timestamp: 0,
+      seq: 0
     }
 
     expect(listeners.size).toBe(1)
@@ -195,7 +199,8 @@ describe('connectAd4m — inbound', () => {
       op: 'set',
       value: { current: 1, max: 1 },
       author: 'did:ad4m:bob',
-      timestamp: 0
+      timestamp: 0,
+      seq: 0
     }
     for (const cb of listeners) cb(mkLinkExpression(ownEvent))
     expect(world.eventLog).toEqual([])
@@ -231,7 +236,8 @@ describe('Sanity: applyAuthoredEnvelope still works alongside the bridge', () =>
           op: 'set',
           value: { current: 7, max: 10 },
           author: 'did:test:other',
-          timestamp: 0
+          timestamp: 0,
+          seq: 0
         }
       ]
     })

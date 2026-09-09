@@ -16,9 +16,9 @@ import { defineComponent, getComponent, setComponent } from '../src/ecs/componen
 import { createEntity } from '../src/ecs/entity'
 import { getEntityByUID, setUID } from '../src/ecs/entity'
 import { createPeer, createUser } from '../src/network/peer'
-import { getAuthority, setAuthority, setOwner, transferAuthority } from '../src/network/authority'
+import { getAuthority, grantAuthority, setOwner, transferAuthority } from '../src/network/authority'
 import { spawnPrefab } from '../src/network/prefab'
-import { addConstraint, validateEvent } from '../src/network/governance'
+import { addConstraint, registerConstraintKind, validateEvent } from '../src/network/governance'
 import { applySnapshot, createSnapshot } from '../src/network/snapshot'
 import { connectInMemory } from '../src/network/lifecycle/connect-memory'
 import { flushAsync } from '../src/network/transport'
@@ -46,6 +46,24 @@ const Transform = defineComponent({
 const Label = defineComponent({
   id: 'Int.Label',
   schema: Schema.Object({ text: Schema.String({ default: '' }) })
+})
+
+// Core defines no constraint kinds, so a governance scenario brings its own.
+const MaxHealthConstraint = defineComponent({
+  id: 'Int.MaxHealthConstraint',
+  schema: Schema.Object({ max: Schema.Number({ default: 0 }) })
+})
+
+registerConstraintKind({
+  kind: 'max-health',
+  component: MaxHealthConstraint,
+  validate({ event, data, violations }) {
+    if (event.predicate !== Health.$id) return
+    const current = (event.value as { current?: number } | null)?.current
+    if (typeof current === 'number' && current > (data.max as number)) {
+      violations.push({ kind: 'max-health', reason: 'over max' })
+    }
+  }
 })
 
 describe('Scenario: spawn → replicate → mutate → converge', () => {
@@ -92,61 +110,24 @@ describe('Scenario: spawn → replicate → mutate → converge', () => {
 })
 
 describe('Scenario: governance rejects unauthorised mutations', () => {
-  it('credential constraint blocks a peer without credential', async () => {
-    const aliceDID = 'did:test:alice'
+  it('a write the gate refuses never lands on the other peer', async () => {
     const peers = createPeerPair({
-      transport: {
-        validate: (world, event) => validateEvent(world, event, { hasCredential: (did) => did === aliceDID }).allowed
-      },
-      names: ['alice', 'bob']
+      transport: { validate: (world, event) => validateEvent(world, event).allowed }
     })
     const { a, b } = peers
-    // Force the local agents to match the credential oracle's accepted DID
-    ;(a.world.localAgent as { did: string }).did = aliceDID
-    ;(b.world.localAgent as { did: string }).did = 'did:test:bob'
-
     const scene = spawnPrefab(a.world, 'scene:guarded')
-    addConstraint(a.world, scene, 'credential', { requiredCredential: 'builder', operations: ['modify'] })
-    await peers.tick()
-
-    const ava = createEntity(a.world)
-    setUID(a.world, ava, 'ava', { parent: scene })
-    setComponent(a.world, ava, Health, { current: 80 })
-    await peers.tick()
-
-    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:guarded')!
-    const bAva = getEntityByUID(b.world, bScene, 'ava')
-    expect(bAva).toBeDefined()
-    expect(getComponent(b.world, bAva!, Health)?.current).toBe(80)
-
-    // Bob (no credential) tries to modify Health — should be rejected by Alice's governance gate
-    setComponent(b.world, bAva!, Health, { current: 9999 })
-    await peers.tick()
-
-    expect(getComponent(a.world, ava, Health)?.current).toBe(80)
-
-    peers.dispose()
-  })
-
-  it('content constraint blocks out-of-range numeric writes', async () => {
-    const peers = createPeerPair({
-      transport: {
-        validate: (world, event) => validateEvent(world, event).allowed
-      }
-    })
-    const { a, b } = peers
-    const scene = spawnPrefab(a.world, 'scene:contented')
-    addConstraint(a.world, scene, 'content', {
-      componentType: 'Int.Health',
-      fieldConstraints: { current: { min: 0, max: 100 } }
-    })
+    addConstraint(a.world, scene, 'max-health', { max: 100 })
     const ava = createEntity(a.world)
     setUID(a.world, ava, 'ava', { parent: scene })
     setComponent(a.world, ava, Health, { current: 50 })
     await peers.tick()
 
-    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:contented')!
+    // The constraint replicated with the scene, so Bob's peer holds it too and
+    // refuses the write locally as well as on arrival at Alice.
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:guarded')!
     const bAva = getEntityByUID(b.world, bScene, 'ava')!
+    expect(getComponent(b.world, bAva, Health)?.current).toBe(50)
+
     setComponent(b.world, bAva, Health, { current: 9999 })
     await peers.tick()
     expect(getComponent(a.world, ava, Health)?.current).toBe(50)
@@ -164,7 +145,7 @@ describe('Scenario: authority transfer between peers', () => {
     const vehicle = createEntity(world)
     setUID(world, vehicle, 'vehicle:1', { parent: spawnPrefab(world, 'scene:roads') })
     setOwner(world, vehicle, user)
-    setAuthority(world, vehicle, desktopPeer)
+    grantAuthority(world, vehicle, desktopPeer)
 
     transferAuthority(world, vehicle, phonePeer)
     expect(getAuthority(world, vehicle)).toBe(phonePeer)

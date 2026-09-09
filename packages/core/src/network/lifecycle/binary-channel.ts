@@ -22,9 +22,11 @@
 
 import type { Entity, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
+import { hasComponent } from '../../ecs/component'
 import type { Connection } from '../network'
 import type { BinaryEntry, BinaryPipeline } from '../binary'
 import { createBinaryPipeline } from '../binary'
+import type { CompressionConfig } from '../compression'
 import type { RuntimeTransportConfig } from '../transport'
 import { resolveRuntimeConfig } from '../transport'
 import {
@@ -50,6 +52,9 @@ export interface ChannelOptions {
   components: readonly ComponentDefinition[]
   /** Optional per-component throttle, and the full-sync schedule. */
   configs?: RuntimeTransportConfig[]
+  /** Optional per-field compression. Both peers must pass the same config,
+   *  because it changes the wire layout. */
+  compression?: CompressionConfig
 }
 
 export interface BinaryChannel {
@@ -76,6 +81,15 @@ interface ChannelState {
   fullSyncCountdown: Map<string, number>
   publishCountdown: Map<string, number>
   resolvedConfig: Map<string, Required<RuntimeTransportConfig>>
+  /**
+   * Entities held back by the publish throttle, per component.
+   *
+   * `flushRuntime` clears the dirty set of the world as it drains it, so an
+   * entry deferred here is the only remaining record that the entity moved.
+   * Dropping it would leave that entity stale on this peer until it happened to
+   * move again on a tick the throttle allowed.
+   */
+  pending: Map<string, Set<Entity>>
 }
 
 export const createBinaryChannel = (world: World, connection: Connection, options: ChannelOptions): BinaryChannel => {
@@ -83,12 +97,17 @@ export const createBinaryChannel = (world: World, connection: Connection, option
   const localTable = getNetworkIdTable(world)
   const remoteTable = createRemoteBindingTable()
 
+  // Lookup for the full-sync widening below, which resolves a component id back
+  // to its definition.
+  const componentsById = new Map(components.map((c) => [c.$id, c]))
+
   const state: ChannelState = {
-    pipeline: createBinaryPipeline(world, components),
+    pipeline: createBinaryPipeline(world, components, { compression: options.compression }),
     notified: new Set(),
     fullSyncCountdown: new Map(),
     publishCountdown: new Map(),
-    resolvedConfig: new Map()
+    resolvedConfig: new Map(),
+    pending: new Map()
   }
 
   const simRate = world.engine.fixedTimeStep > 0 ? 1 / world.engine.fixedTimeStep : 60
@@ -100,23 +119,39 @@ export const createBinaryChannel = (world: World, connection: Connection, option
   }
 
   /**
-   * Choose which dirty entries may go out on this tick, after the per-component
-   * publish rate applies. The channel defers every component that sits above
-   * its rate cap. The caller has already drained the dirty map, and
-   * flushRuntime clears it, so the countdown alone holds the deferral. This is
-   * therefore advisory throttling, applied per tick.
+   * Choose which entities go out on this tick.
+   *
+   * The input is the dirty set that `flushRuntime` drained, merged with
+   * anything an earlier tick deferred. A component above its publish rate has
+   * its entities moved into `state.pending` rather than dropped, so no movement
+   * is lost when the throttle skips a tick.
+   *
+   * When the full-sync countdown for a component expires, the entity set widens
+   * to every entity this peer has ever addressed that still carries the
+   * component. Resending only the dirty entities would never repair an entity
+   * that stopped moving while a packet carrying it was lost.
    */
   const eligibleEntries = (dirty: Map<string, Set<Entity>>): { entries: BinaryEntry[]; forceFull: boolean } => {
-    const entries: BinaryEntry[] = []
+    const selected = new Set<Entity>()
     let forceFull = false
+
+    const merged = new Map<string, Set<Entity>>()
+    for (const [componentId, entities] of state.pending) merged.set(componentId, new Set(entities))
     for (const [componentId, entities] of dirty) {
+      const existing = merged.get(componentId)
+      if (existing) for (const e of entities) existing.add(e)
+      else merged.set(componentId, new Set(entities))
+    }
+    state.pending.clear()
+
+    for (const [componentId, entities] of merged) {
       const cfg = state.resolvedConfig.get(componentId)
       if (!cfg) continue
-      // Decrement the publish countdown. Defer the entries of this component
-      // while it stays above its rate.
+      // Above the rate cap: hold these entities for a later tick.
       const countdown = state.publishCountdown.get(componentId) ?? 0
       if (countdown > 0) {
         state.publishCountdown.set(componentId, countdown - 1)
+        if (entities.size > 0) state.pending.set(componentId, new Set(entities))
         continue
       }
       // Reset the publish countdown from the rate. A rate at or above the
@@ -129,14 +164,24 @@ export const createBinaryChannel = (world: World, connection: Connection, option
       if (fsLeft <= 0) {
         forceFull = true
         state.fullSyncCountdown.set(componentId, cfg.fullSyncInterval)
+        const definition = componentsById.get(componentId)
+        if (definition) {
+          for (const networkId of state.notified) {
+            const known = localTable.entityOf(networkId)
+            if (known !== undefined && hasComponent(world, known, definition)) selected.add(known)
+          }
+        }
       } else {
         state.fullSyncCountdown.set(componentId, fsLeft)
       }
-      for (const entity of entities) {
-        const networkId = localTable.ensureFor(entity)
-        if (networkId === undefined) continue
-        entries.push({ networkId, entity })
-      }
+      for (const entity of entities) selected.add(entity)
+    }
+
+    const entries: BinaryEntry[] = []
+    for (const entity of selected) {
+      const networkId = localTable.ensureFor(entity)
+      if (networkId === undefined) continue
+      entries.push({ networkId, entity })
     }
     return { entries, forceFull }
   }
@@ -146,7 +191,7 @@ export const createBinaryChannel = (world: World, connection: Connection, option
     for (const entry of entries) {
       if (state.notified.has(entry.networkId)) continue
       state.notified.add(entry.networkId)
-      const binding = localTable.bindings().find((b) => b.networkId === entry.networkId)
+      const binding = localTable.bindingFor(entry.networkId)
       if (binding) newBindings.push(binding)
     }
     if (newBindings.length === 0) return
@@ -157,10 +202,12 @@ export const createBinaryChannel = (world: World, connection: Connection, option
   return {
     publish(dirty) {
       if (components.length === 0) return
+      // Runs even for an empty dirty map, so that entries deferred by the
+      // throttle on an earlier tick still get their chance to go out.
       const { entries, forceFull } = eligibleEntries(dirty)
       if (entries.length === 0) return
       sendBindingsControl(entries)
-      const buffer = state.pipeline.write({ fromPeerIndex: 0, timestamp: world.engine.clock.now() }, entries, forceFull)
+      const buffer = state.pipeline.write({ timestamp: world.engine.clock.now() }, entries, forceFull)
       // Skip a header-only packet. It carries nothing to deliver.
       if (buffer.byteLength <= HEADER_BYTES) return
       connection.stream.send(buffer)
@@ -193,4 +240,4 @@ export const createBinaryChannel = (world: World, connection: Connection, option
   }
 }
 
-const HEADER_BYTES = 4 + 8 + 4 // fromPeerIndex + timestamp + entityCount
+const HEADER_BYTES = 8 + 4 // timestamp + entityCount

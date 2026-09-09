@@ -17,21 +17,26 @@
  *                                  peer that writes the state of this entity
  *                                  now.
  *
- * A gate guards each transfer end to end:
- *   - **Sender-side**: `setAuthority` and `transferAuthority` throw unless the
- *     local peer holds standing. Standing means the current authority, or a
- *     peer of the owner-user.
- *   - **Receive-side**: `applyAuthoredEnvelope`, in `network/mutation.ts`, runs
- *     the equivalent check on every incoming `AuthoritativeFor` mutation. The
- *     author DID of the event must match the DID of the owner-user, or the user
- *     DID of the current authority. A failed event is rejected, and never
- *     applied.
+ * Taking authority is always a **request**. `requestAuthority` asks, and
+ * `transferAuthority` asks on behalf of another peer. Neither assigns: every
+ * peer judges the resulting event for itself, so a request the network would
+ * refuse is refused locally too, and the world never diverges.
+ *
+ * The same standing rule applies on both sides:
+ *   - **Requester**: the local peer must already hold the authority, or belong
+ *     to the same user as the owner. `requestAuthority` returns the refusal
+ *     rather than throwing, because being refused is an ordinary outcome.
+ *   - **Receiver**: `applyAuthoredEnvelope`, in `network/mutation.ts`, runs the
+ *     equivalent check on every incoming `AuthoritativeFor` mutation. The author
+ *     DID must match the owner-user, or the user of the current authority. A
+ *     failed event is rejected and never applied.
  */
 
-import { defineRelation, getRelationTargets, addRelation, removeRelation } from '../ecs/relation'
+import { defineRelation, getRelationTargets, addRelation } from '../ecs/relation'
+import { hasComponent } from '../ecs/component'
 import { parentOfFor, resolveEntityPath } from '../ecs/entity'
-import { getUserDID } from './agents'
-import type { Entity, World, AuthoredEvent } from '../ecs/world'
+import { getUserDID, PeerComponent } from './agents'
+import type { Entity, Origin, World, AuthoredEvent } from '../ecs/world'
 
 export const OwnedBy = defineRelation({
   name: 'OwnedBy',
@@ -60,87 +65,88 @@ export const getOwner = (world: World, entity: Entity): Entity | undefined =>
 
 // ── Authority ─────────────────────────────────────────────────────────────────
 
-export interface AuthorityRequestResult {
-  status: 'granted' | 'denied' | 'pending'
-  reason?: string
-}
-
 /**
- * Does the local peer hold standing to change the authority of `entity`? The
- * function returns true if and only if one of two conditions holds. The local
- * peer is the current authority holder. Or the local peer belongs to the same
- * user as the owner of the entity, because any peer of the owner can authorise
- * a transfer.
+ * Would a transfer of `entity` to a new peer be granted?
+ *
+ * The same question `requestAuthority` answers, without acting on it. Use it to
+ * grey out a control, or to skip an attempt you know will be refused.
+ *
+ * Standing means one of two things: the local peer already holds the authority,
+ * or it belongs to the same user as the owner. Any peer of the owner may move
+ * authority between that user's devices, and the current holder may pass it on,
+ * which is what host migration needs.
  */
-export const canChangeAuthority = (world: World, entity: Entity): boolean => {
+export const canRequestAuthority = (world: World, entity: Entity): boolean => {
   const localPeer = world.localPeer
   if (localPeer === undefined) return false
-  const current = getAuthority(world, entity)
-  if (current === localPeer) return true
+  if (getAuthority(world, entity) === localPeer) return true
   const owner = getOwner(world, entity)
   if (owner === undefined) return false
   return parentOfFor(world.engine).get(localPeer) === owner
 }
 
-/**
- * Set the authority. `canChangeAuthority` gates the sender side. Pass
- * `{ unchecked: true }` only from a bootstrap helper. Three of them use it:
- * the self-authority step of `createPeer`, the remote-peer materialisation on
- * the receive path, and `recoverAuthority`.
- */
-export const setAuthority = (
-  world: World,
-  entity: Entity,
-  peer: Entity,
-  options: { unchecked?: boolean } = {}
-): void => {
-  const current = getRelationTargets(world, entity, AuthoritativeFor)[0]
-  if (current === peer) return
-  if (!options.unchecked && !canChangeAuthority(world, entity)) {
-    throw new Error(
-      `setAuthority: local peer (${world.localPeer ?? 'unset'}) lacks standing to change authority on entity ${entity}`
-    )
-  }
-  if (current !== undefined) removeRelation(world, entity, AuthoritativeFor, current)
-  addRelation(world, entity, AuthoritativeFor, peer)
-}
-
 export const getAuthority = (world: World, entity: Entity): Entity | undefined =>
   getRelationTargets(world, entity, AuthoritativeFor)[0]
 
-/**
- * Transfer the authority of `entity` to `newPeer`. A sender-side gate applies,
- * so the function throws when the local peer lacks standing. The two relation
- * writes — remove the old target, add the new one — replicate through the
- * authored pipeline. The receive-side gate in `network/mutation.ts` then runs
- * the same check on every peer that receives those events.
- */
-export const transferAuthority = (world: World, entity: Entity, newPeer: Entity): void => {
-  setAuthority(world, entity, newPeer)
+export interface AuthorityRequestResult {
+  granted: boolean
+  /** Why the request failed. Absent on a grant. */
+  reason?: string
 }
 
 /**
- * Request the authority. The default policy has three rules. A peer of the
- * owner-user receives an automatic grant. Every other requester receives a
- * denial. An entity without an owner counts as an invariant violation, because
- * every `spawnPrefab` sets one, so the policy denies the request instead of
- * granting it to the first writer.
+ * Ask to become the authority for `entity`.
+ *
+ * Taking authority is always a request, never an assignment. Every peer decides
+ * for itself whether to honour the resulting event, and a peer without standing
+ * gets refused everywhere. This returns the same verdict locally that the other
+ * peers will reach, so a refusal costs nothing and never diverges the world.
+ *
+ * A granted request emits exactly **one** authored event, the `set`.
+ * `AuthoritativeFor` is exclusive, so bitECS drops the previous holder when the
+ * new one lands, on the requester and on every peer alike.
+ *
+ * Emitting an explicit `remove` first would break host migration. A receiver
+ * judges each event against current state, so it would accept the remove from
+ * the outgoing holder, leaving the entity with no authority, and then refuse
+ * the follow-up `set` because its author no longer matches the current
+ * authority. The peers would disagree permanently.
  */
-export const requestAuthority = async (
-  world: World,
-  entity: Entity,
-  requester: Entity
-): Promise<AuthorityRequestResult> => {
-  const owner = getOwner(world, entity)
-  if (owner === undefined) {
-    return { status: 'denied', reason: 'entity has no owner — invariant violation' }
+export const requestAuthority = (world: World, entity: Entity, peer: Entity): AuthorityRequestResult => {
+  if (getAuthority(world, entity) === peer) return { granted: true }
+  if (world.localPeer === undefined) {
+    return { granted: false, reason: 'world has no local peer' }
   }
-  const requesterUser = parentOfFor(world.engine).get(requester)
-  if (requesterUser === owner) {
-    setAuthority(world, entity, requester, { unchecked: true })
-    return { status: 'granted' }
+  if (getOwner(world, entity) === undefined) {
+    return { granted: false, reason: 'entity has no owner — invariant violation' }
   }
-  return { status: 'denied', reason: "requester is not the owner-user's peer" }
+  if (!canRequestAuthority(world, entity)) {
+    return {
+      granted: false,
+      reason: `local peer is neither the current authority nor a peer of the owner-user`
+    }
+  }
+  grantAuthority(world, entity, peer)
+  return { granted: true }
+}
+
+/** Ask to hand the authority for `entity` to `newPeer`. An alias for
+ *  `requestAuthority`, for the case where the local peer is passing it on
+ *  rather than taking it. */
+export const transferAuthority = (world: World, entity: Entity, newPeer: Entity): AuthorityRequestResult =>
+  requestAuthority(world, entity, newPeer)
+
+/**
+ * Write the authority relation with no standing check.
+ *
+ * Only the bootstrap paths use it, where no authority exists yet to ask: the
+ * self-authority of `createPeer`, the remote-peer materialisation on the
+ * receive path, and `recoverAuthority` after a disconnect. Application code
+ * calls `requestAuthority` instead.
+ */
+export const grantAuthority = (world: World, entity: Entity, peer: Entity, options: { origin?: Origin } = {}): void => {
+  if (getRelationTargets(world, entity, AuthoritativeFor)[0] === peer) return
+  addRelation(world, entity, AuthoritativeFor, peer, { origin: options.origin ?? 'local' })
 }
 
 // ── Receive-side standing check ───────────────────────────────────────────────-
@@ -189,6 +195,12 @@ export const checkAuthorityChangeStanding = (world: World, event: AuthoredEvent)
  * which gives a last-resort host migration.
  *
  * `sweepDisconnectedPeer` calls it, so it runs automatically on disconnect.
+ *
+ * The reassignment does not author. Every peer that sees the disconnect runs
+ * this same deterministic choice and reaches the same successor, so an event
+ * would be redundant. It would also usually be refused: the peer doing the
+ * recovery is rarely the owner-user or the outgoing authority, which is exactly
+ * what the receive-side standing check rejects.
  */
 export const recoverAuthority = (world: World, entity: Entity, disconnectedPeer: Entity): void => {
   const current = getAuthority(world, entity)
@@ -196,12 +208,15 @@ export const recoverAuthority = (world: World, entity: Entity, disconnectedPeer:
   const owner = getOwner(world, entity)
   if (owner === undefined) return
   let lowest: Entity | undefined
-  for (const [peerEntity, parent] of parentOfFor(world.engine)) {
+  for (const [child, parent] of parentOfFor(world.engine)) {
     if (parent !== owner) continue
-    if (peerEntity === disconnectedPeer) continue
-    if (lowest === undefined || peerEntity < lowest) lowest = peerEntity
+    if (child === disconnectedPeer) continue
+    // Every child of the owner-user shares this index, including ordinary
+    // entities spawned with `{ parent: user }`. Only a Peer can hold authority.
+    if (!hasComponent(world, child, PeerComponent)) continue
+    if (lowest === undefined || child < lowest) lowest = child
   }
   const successor = lowest ?? world.localPeer
   if (successor === undefined || successor === disconnectedPeer) return
-  setAuthority(world, entity, successor, { unchecked: true })
+  grantAuthority(world, entity, successor, { origin: 'network' })
 }

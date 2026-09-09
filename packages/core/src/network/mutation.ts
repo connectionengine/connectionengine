@@ -33,12 +33,22 @@
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
+import { onWorldCreate } from '../ecs/world'
 import type { ComponentDefinition } from '../ecs/component'
 import { allComponents, getComponentById, hasSyncedSoA, removeComponent, setComponent } from '../ecs/component'
 import type { RelationDefinition } from '../ecs/relation'
 import { addRelation, allRelations, getRelationByName, removeRelation } from '../ecs/relation'
-import { createEntity, getEntityByUID, getEntityPath, removeEntity, resolveEntityPath, setUID } from '../ecs/entity'
-import { checkAuthorityChangeStanding } from './authority'
+import {
+  UIDComponent,
+  createEntity,
+  getEntityByUID,
+  getEntityPath,
+  removeEntity,
+  resolveEntityPath,
+  setUID
+} from '../ecs/entity'
+import { observe, onRemove } from '../ecs/observer'
+import { checkAuthorityChangeStanding, getOwner } from './authority'
 import type { Network } from './network'
 import { getNetwork, getNetworks } from './network'
 
@@ -46,11 +56,60 @@ import { getNetwork, getNetworks } from './network'
  * Routing strategy. It answers one question: which networks receive a mutation
  * for the given entity? Today it broadcasts to all of them. A higher layer will
  * replace it with spatial segmentation.
+ *
+ * Both flush paths call this per entity, so the single-network case — every
+ * app that has not asked for segmentation — takes the fast path in
+ * `flushAuthored` and `flushRuntime` and never builds the grouping maps.
  */
 const routeNetworks = (world: World, _entity: Entity): Network[] => {
   void _entity
   return Array.from(getNetworks(world).values())
 }
+
+// ── Reactive replication of entity removal ───────────────────────────────────-
+
+/**
+ * Predicate carried by a `destroy` event. The apply path branches on `op`
+ * before it resolves a predicate, so this never names a component or a
+ * relation. The `@` prefix keeps it clear of user predicates.
+ */
+export const DESTROY_PREDICATE = '@destroy'
+
+/**
+ * Replicate the removal of any entity this world's user owns.
+ *
+ * `removeEntity` is plain ECS and knows nothing about peers. The network layer
+ * watches instead: losing `UIDComponent` means a wire-addressable entity went
+ * away, and this queues the matching `destroy`. Nothing to remember, no
+ * networked twin of `removeEntity` to call.
+ *
+ * Ownership is the whole gate, and it does two jobs at once. It keeps a peer
+ * from announcing the removal of something it does not own. And it suppresses
+ * the echo for free: when a received destroy is applied, the entity belongs to
+ * the *remote* user, so the observer declines to queue and the destroy stops
+ * there instead of bouncing between peers.
+ *
+ * `removeEntity` runs the bitECS removal before it clears the identity caches,
+ * so the path of the departing entity is still resolvable here. `flushAuthored`
+ * runs later and could not resolve one, which is why the event carries the path
+ * rather than the entity.
+ */
+onWorldCreate((world) => {
+  observe(world, onRemove(UIDComponent), (entity: Entity) => {
+    if (world.localUser === undefined) return
+    if (getOwner(world, entity) !== world.localUser) return
+    const entityPath = getEntityPath(world, entity)
+    if (entityPath.length === 0) return
+    world.authoredQueue.push({
+      entity,
+      predicate: DESTROY_PREDICATE,
+      op: 'destroy',
+      value: null,
+      origin: 'local',
+      entityPath
+    })
+  })
+})
 
 // ── Predicate resolution ─────────────────────────────────────────────────────-
 //
@@ -69,8 +128,16 @@ export const worldRelations = (): RelationDefinition<unknown>[] => allRelations(
 
 // ── Event log append. It is idempotent on the event signature. ───────────────-
 
+/**
+ * Identity of an event, for deduplication.
+ *
+ * `seq` is what makes two writes of the same value in the same millisecond
+ * distinct. Author plus seq alone would suffice for events this peer produced,
+ * but the rest of the tuple keeps the signature meaningful for events built by
+ * hand in tests and for anything a runtime mode synthesises.
+ */
 export const eventSignature = (e: AuthoredEvent): string =>
-  `${e.author}|${e.timestamp}|${e.op}|${e.predicate}|${e.entityPath.join('/')}|${JSON.stringify(e.value ?? null)}`
+  `${e.author}|${e.timestamp}|${e.seq}|${e.op}|${e.predicate}|${e.entityPath.join('/')}|${JSON.stringify(e.value ?? null)}`
 
 export const appendEventLog = (world: World, event: AuthoredEvent): boolean => {
   const sig = eventSignature(event)
@@ -105,7 +172,9 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
   const author = world.localAgent.did
   for (const queued of world.authoredQueue) {
     if (queued.origin !== 'local') continue
-    const path = getEntityPath(world, queued.entity)
+    // A destroy carries the path captured before `removeEntity` cleared the
+    // identity caches. Everything else resolves its path now.
+    const path = queued.entityPath ?? getEntityPath(world, queued.entity)
     if (path.length === 0) continue // anonymous entity. The wire cannot address it.
     let value: unknown = queued.value
     if (value && typeof value === 'object' && 'target' in value) {
@@ -119,7 +188,8 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
       op: queued.op,
       value,
       author,
-      timestamp: now
+      timestamp: now,
+      seq: world.authoredSeq++
     }
     if (!appendEventLog(world, event)) continue
     events.push(event)
@@ -127,8 +197,17 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
   }
   world.authoredQueue.length = 0
   if (events.length === 0) return undefined
-  // Dispatch per entity through `routeNetworks`. It broadcasts to all networks
-  // today, so collapse the result to one envelope per network for efficiency.
+
+  const networks = Array.from(getNetworks(world).values())
+  if (networks.length === 0) return { events, fromPeer: author }
+
+  const envelope: AuthoredEnvelope = { events, fromPeer: author }
+  if (networks.length === 1) {
+    // One network: every event routes to it, so skip the grouping map.
+    networks[0].publishAuthored?.(envelope)
+    return envelope
+  }
+
   const perNetwork = new Map<string, AuthoredEvent[]>()
   for (const { entity, event } of eventsByEntity) {
     for (const network of routeNetworks(world, entity)) {
@@ -140,10 +219,9 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
   for (const [networkId, networkEvents] of perNetwork) {
     const network = getNetwork(world, networkId)
     if (!network) continue
-    const envelope: AuthoredEnvelope = { events: networkEvents, fromPeer: author }
-    network.publishAuthored?.(envelope)
+    network.publishAuthored?.({ events: networkEvents, fromPeer: author })
   }
-  return { events, fromPeer: author }
+  return envelope
 }
 
 /**
@@ -154,6 +232,10 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
 export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined => {
   if (world.runtimeDirty.size === 0) return undefined
   const snapshot = new Map<string, Set<Entity>>()
+  // A binary channel can be holding entries that its publish throttle deferred
+  // on an earlier tick. Those entries are no longer in `runtimeDirty`, because
+  // the drain below clears it, so the channel has to be given a turn even when
+  // this tick produced nothing.
   for (const [componentId, entities] of world.runtimeDirty) {
     if (entities.size === 0) continue
     const def = findComponent(componentId)
@@ -164,7 +246,18 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
     snapshot.set(componentId, new Set(entities))
     entities.clear()
   }
-  if (snapshot.size === 0) return undefined
+  const networks = Array.from(getNetworks(world).values())
+  if (networks.length === 0) return snapshot.size === 0 ? undefined : snapshot
+  if (networks.length === 1) {
+    // One network: every entity routes to it, so publish the snapshot as-is.
+    networks[0].publishRuntime?.(snapshot)
+    return snapshot.size === 0 ? undefined : snapshot
+  }
+  if (snapshot.size === 0) {
+    for (const network of networks) network.publishRuntime?.(snapshot)
+    return undefined
+  }
+
   // Group the dirty entries per network with routeNetworks. It broadcasts today.
   const perNetwork = new Map<string, Map<string, Set<Entity>>>()
   for (const [componentId, entities] of snapshot) {
@@ -199,19 +292,38 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
  * verify the signatures and unwrap the envelope before it calls this function.
  * When the caller supplies `network`, the `validateAuthored` gate of that
  * network runs for each event.
+ *
+ * The return value lists the events this peer accepted and logged, in arrival
+ * order. `rebroadcastAuthored` relays exactly that list. A peer therefore
+ * forwards what it accepted, and never forwards what its own gates refused.
+ *
+ * Each drop reports through `network.onReject`, so a caller can see why an
+ * event failed to land instead of watching it disappear.
  */
-export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope, network?: Network): void => {
+export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope, network?: Network): AuthoredEvent[] => {
   const gate = network?.validateAuthored
+  const accepted: AuthoredEvent[] = []
   for (const event of envelope.events) {
-    if (gate && !gate(event)) continue
+    if (gate && !gate(event)) {
+      network?.onReject?.(event, 'governance')
+      continue
+    }
     // An authority transfer must come from a peer that holds standing. That
     // means a peer of the owner-user, or the current authority holder. This is
     // a direct call into the authority module. Both modules live in network/,
     // so it needs no cross-layer plumbing.
-    if (checkAuthorityChangeStanding(world, event) !== undefined) continue
+    const standing = checkAuthorityChangeStanding(world, event)
+    if (standing !== undefined) {
+      network?.onReject?.(event, `authority: ${standing}`)
+      continue
+    }
+    // Already in the log. Not an error — a mesh delivers the same event by
+    // several paths — so it reports nothing.
     if (!appendEventLog(world, event)) continue
     applyEvent(world, event)
+    accepted.push(event)
   }
+  return accepted
 }
 
 const applyEvent = (world: World, event: AuthoredEvent): void => {

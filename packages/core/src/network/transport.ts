@@ -148,8 +148,6 @@ export interface RuntimeTransportConfig {
   /** Ticks between two full state syncs, as opposed to deltas alone. A full
    *  sync restores convergence after packet loss. It defaults to 300. */
   fullSyncInterval?: number
-  /** Whether a receiver should interpolate between updates. It defaults to true. */
-  interpolation?: boolean
 }
 
 /**
@@ -166,8 +164,7 @@ export const resolveRuntimeConfig = (
   return {
     componentIds: [component.$id],
     rate: match?.rate ?? simRate,
-    fullSyncInterval: match?.fullSyncInterval ?? 300,
-    interpolation: match?.interpolation ?? true
+    fullSyncInterval: match?.fullSyncInterval ?? 300
   }
 }
 

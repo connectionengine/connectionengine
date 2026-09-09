@@ -66,16 +66,19 @@ Do not change `OwnedBy`. The engine sets it at creation, and it stays. Transfer 
 `AuthoritativeFor` records authority, and does move:
 
 ```ts
-import { createPeer, spawnPrefab, transferAuthority } from '@connectionengine/core'
+import { createPeer, spawnPrefab, requestAuthority, transferAuthority } from '@connectionengine/core'
 
 const aliceDesktop = createPeer(world, { user: alice, peerId: 'desktop', asLocal: true })
 const alicePhone   = createPeer(world, { user: alice, peerId: 'phone' })
 
 const vehicle = spawnPrefab(world, 'vehicle:1', { authority: aliceDesktop })
 
-// User picks up their phone, drops their laptop:
-transferAuthority(world, vehicle, alicePhone)
+// Hand it on. Both calls are the same request, named for their direction.
+transferAuthority(world, vehicle, alicePhone)   // pass it to another peer
+requestAuthority(world, vehicle, aliceDesktop)  // take it back
 ```
+
+**Taking authority is always a request.** Nothing assigns it. `requestAuthority` returns `{ granted, reason? }` rather than throwing, because refusal is an ordinary outcome and every peer reaches the same verdict independently. `canRequestAuthority(world, entity)` asks the same question without acting, which suits greying out a control.
 
 Authority is exclusive. At most one peer holds it for an entity at any time. The relation sets `exclusive: true`, so the addition of a new authoritative peer removes the previous one atomically.
 
@@ -106,7 +109,9 @@ This is also why **the engine does not sign runtime binary packets**. Authority 
 
 Transfers pass a gate on **both sides**. The local check stops you from authoring a transfer that the receivers would refuse. The receive-side check stops the local state of any peer from diverging when a forged or stale transfer arrives.
 
-**Sender-side** (`transferAuthority` and `setAuthority`) throws when `canChangeAuthority(world, entity)` returns false. The local peer has standing if and only if it holds the current authority, or it is a peer of the owner-user of the entity.
+A granted request emits exactly one authored event, the `set`. `AuthoritativeFor` is exclusive, so bitECS drops the previous holder when the new one lands, on the sender and on every receiver alike. Emitting an explicit `remove` first would break host migration: a receiver evaluates each event against current state, so it would accept the remove from the outgoing holder, leaving no authority at all, and then refuse the follow-up `set` because its author no longer matches the current authority.
+
+**Requester-side** (`requestAuthority` and `transferAuthority`) returns `{ granted: false, reason }` when the local peer lacks standing. Standing means it holds the current authority, or it belongs to the same user as the owner. A refused request changes nothing locally, so the requester never diverges from the peers that would have refused it.
 
 **Receive-side** (`applyAuthoredEnvelope` in `network/mutation.ts`) calls the standing check in `network/authority.ts` inline, for every incoming `AuthoritativeFor` mutation. The `author` DID of the event must match one of two DIDs:
 
@@ -132,24 +137,13 @@ When a peer drops, `sweepDisconnectedPeer` in the lifecycle layer runs `recoverA
 // What it does, conceptually:
 recoverAuthority(world, entity, disconnectedPeer)
 //   → find lowest-id peer where parentOf[peer] === ownerUser, skipping the leaver
-//   → setAuthority(world, entity, successor, { unchecked: true })
+//   → grantAuthority(world, entity, successor, { origin: 'network' })
 ```
 
 The disconnect side must know which peer entity to recover from. That knowledge comes from the HELLO handshake. Every connection carries the DID and the peerId of the remote engine, and the receiver materialises a local `User` entity and `Peer` entity. It uses the path that the sender encoded, so a later authored-event replay for those same identities deduplicates. The engine stores the materialised peer entity on `connection.peer`, and the sweep walks that value.
 
-## Request / grant
+## Bootstrap writes
 
-A peer that does not own an entity sometimes needs authority over it — a moderator who recovers a stuck NPC, or a co-op partner who drives the vehicle of the host. `requestAuthority(world, entity, requester)` returns a result shaped for your governance hook:
+`grantAuthority` writes the relation with no standing check. Only the bootstrap paths use it, where no authority exists yet to ask: the self-authority of `createPeer`, the remote-peer materialisation on the receive path, and `recoverAuthority` after a disconnect. Application code calls `requestAuthority`.
 
-```ts
-const result = await requestAuthority(world, vehicle, modPeer)
-// → { status: 'granted' | 'denied' | 'pending', reason?: string }
-```
-
-The default policy has three rules:
-
-- A peer of the owner-user receives an automatic grant.
-- Every other requester receives a denial.
-- An entity without an owner counts as an invariant violation, and receives a denial. This case must never occur, because every entity gets an owner at creation.
-
-Higher layers, such as governance constraints and app-specific rules, can interpose. They gate the request before it reaches this default.
+A peer that wants authority held by *another user* has no standing, so its request is refused. Asking that user to hand it over is an application conversation, over your own channel, ending in their peer calling `transferAuthority`. Who deserves that is policy, and the engine takes no position on it.

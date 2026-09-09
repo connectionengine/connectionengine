@@ -37,6 +37,7 @@ import {
   createRootCapability,
   fromHex,
   installCapabilityValidator,
+  setTrustedIssuers,
   sign,
   stableStringify,
   toHex,
@@ -112,7 +113,8 @@ describe('Local runtime — signed two-peer replication', () => {
       op: 'set' as const,
       value: { current: 10 },
       author: malicious.did,
-      timestamp: 1000
+      timestamp: 1000,
+      seq: 0
     }
     const canonical = (value: typeof realEvent): Uint8Array =>
       new TextEncoder().encode(
@@ -165,9 +167,11 @@ describe('Local runtime — capability governance', () => {
       issuer: aliceAgent.keyPair
     })
 
-    // Install governance on both peers — they trust Alice's DID as issuer.
-    installCapabilityValidator(worldA, { trustedIssuers: [aliceAgent.keyPair.did] })
-    installCapabilityValidator(worldB, { trustedIssuers: [aliceAgent.keyPair.did] })
+    // Both peers trust Alice as an issuer. This is process-wide deployment
+    // config: peers holding different lists would disagree on the same event.
+    setTrustedIssuers([aliceAgent.keyPair.did])
+    installCapabilityValidator(worldA)
+    installCapabilityValidator(worldB)
 
     connectLocalInMemory(worldA, worldB)
 
@@ -220,7 +224,8 @@ describe('Local runtime — direct envelope apply', () => {
             op: 'set',
             value: { current: 1 },
             author: 'did:test:other',
-            timestamp: 0
+            timestamp: 0,
+            seq: 0
           }
         ]
       },

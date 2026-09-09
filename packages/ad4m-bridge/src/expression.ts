@@ -18,7 +18,7 @@ const PREFIX = 'cengine:event:'
 export const eventToLink = (event: AuthoredEvent): Link =>
   new Link({
     source: `${PREFIX}${JSON.stringify(event.entityPath)}`,
-    predicate: `${event.op}:${event.predicate}`,
+    predicate: `${event.op}:${event.seq}:${event.predicate}`,
     target: JSON.stringify(event.value)
   })
 
@@ -29,7 +29,13 @@ export const linkExpressionToEvent = (le: LinkExpression): AuthoredEvent | null 
   const colon = link.predicate.indexOf(':')
   if (colon === -1) return null
   const op = link.predicate.slice(0, colon) as AuthoredEvent['op']
-  if (op !== 'set' && op !== 'remove' && op !== 'spawn' && op !== 'destroy') return null
+  if (op !== 'set' && op !== 'remove' && op !== 'destroy') return null
+  // `seq` sits between the op and the predicate, so two writes of the same
+  // value in one tick stay distinct Links rather than collapsing into one.
+  const secondColon = link.predicate.indexOf(':', colon + 1)
+  if (secondColon === -1) return null
+  const seq = Number(link.predicate.slice(colon + 1, secondColon))
+  if (!Number.isFinite(seq)) return null
   let entityPath: string[]
   let value: unknown
   try {
@@ -40,10 +46,11 @@ export const linkExpressionToEvent = (le: LinkExpression): AuthoredEvent | null 
   }
   return {
     entityPath,
-    predicate: link.predicate.slice(colon + 1),
+    predicate: link.predicate.slice(secondColon + 1),
     op,
     value,
     author: le.author,
-    timestamp: Number(le.timestamp) || 0
+    timestamp: Number(le.timestamp) || 0,
+    seq
   }
 }

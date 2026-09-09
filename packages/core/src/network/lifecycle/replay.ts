@@ -25,7 +25,7 @@
 import type { AuthoredEvent, World } from '../../ecs/world'
 import type { TransportEndpoint } from '../transport'
 import type { Network } from '../network'
-import { applyAuthoredEnvelope } from '../mutation'
+import { applyAuthoredEnvelope, eventSignature } from '../mutation'
 import { applySnapshot, createSnapshot, type Snapshot } from '../snapshot'
 
 export interface ReplayChunkMessage {
@@ -44,6 +44,28 @@ export interface SnapshotMessage {
 }
 
 export const DEFAULT_REPLAY_CHUNK = 256
+
+/**
+ * Signature of the last event in the local log, or `undefined` for an empty
+ * log. A joiner sends this with its cursor so the host can tell whether the two
+ * logs share a prefix.
+ */
+export const cursorFingerprint = (world: World): string | undefined => {
+  const last = world.eventLog[world.eventLog.length - 1]
+  return last === undefined ? undefined : eventSignature(last)
+}
+
+/**
+ * Does `fromIndex` name a real prefix of the local log? True when the joiner
+ * reported an empty log, and otherwise only when the host holds at least that
+ * many events and its event at `fromIndex - 1` matches the reported signature.
+ */
+const cursorIsPrefix = (world: World, fromIndex: number, fingerprint: string | undefined): boolean => {
+  if (fromIndex <= 0) return true
+  if (fingerprint === undefined) return false
+  if (world.eventLog.length < fromIndex) return false
+  return eventSignature(world.eventLog[fromIndex - 1]) === fingerprint
+}
 
 /**
  * Send the local world state to a peer that has just joined. The function
@@ -78,14 +100,24 @@ export const applyStateSnapshot = (world: World, snapshot: Snapshot, fromPeer: s
  * as ordered chunks. The function does **not** send `replay-end`. The caller
  * owns that marker, because the state snapshot must land between the last chunk
  * and the end of the catch-up phase.
+ *
+ * `fromIndex` counts events in the log of the **joiner**, and this function
+ * slices the log of the **host**. That is only sound when the log of the joiner
+ * is a prefix of the host's. `cursorFingerprint` lets the host confirm it: the
+ * joiner sends the signature of its last known event, and the host compares it
+ * against its own event at that position. On any mismatch the cursor is
+ * meaningless, and the host replays from 0 rather than skipping events the
+ * joiner never had. `appendEventLog` deduplicates the overlap.
  */
 export const streamEventLog = (
   world: World,
   endpoint: TransportEndpoint,
   fromIndex: number,
-  chunkSize = DEFAULT_REPLAY_CHUNK
+  chunkSize = DEFAULT_REPLAY_CHUNK,
+  cursorFingerprint?: string
 ): void => {
-  const events = world.eventLog.slice(fromIndex)
+  const start = cursorIsPrefix(world, fromIndex, cursorFingerprint) ? fromIndex : 0
+  const events = world.eventLog.slice(start)
   for (let i = 0; i < events.length; i += chunkSize) {
     endpoint.events.send({
       type: 'replay-chunk',
