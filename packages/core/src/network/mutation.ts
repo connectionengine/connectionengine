@@ -33,10 +33,8 @@
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
-import type { ComponentDefinition } from '../ecs/component'
-import { allComponents, getComponentById, hasSyncedSoA, removeComponent, setComponent } from '../ecs/component'
-import type { RelationDefinition } from '../ecs/relation'
-import { addRelation, allRelations, getRelationByName, removeRelation } from '../ecs/relation'
+import { getComponentById, hasSyncedSoA, removeComponent, setComponent } from '../ecs/component'
+import { addRelation, getRelationByName, removeRelation } from '../ecs/relation'
 import { getEntityPath, removeEntity, resolveEntityPath, ensureEntityPath } from '../ecs/entity'
 import { checkAuthorityChangeStanding, OwnedBy } from './authority'
 import type { Network } from './network'
@@ -56,20 +54,11 @@ const routeNetworks = (world: World, _entity: Entity): Network[] => {
   return Array.from(getNetworks(world).values())
 }
 
-// ── Predicate resolution ─────────────────────────────────────────────────────-
-//
-// Components and relations are module-level global singletons. Resolution of a
-// predicate id from an incoming event is therefore only a registry lookup.
+// ── Type guard ──────────────────────────────────────────────────────────────-
 
-const findComponent = (id: string): ComponentDefinition | undefined => getComponentById(id)
-
-const findRelation = (name: string): RelationDefinition<unknown> | undefined => getRelationByName(name)
-
-/** Iterate every component ever defined. Snapshots and tree walks use it. */
-export const worldComponents = (): ComponentDefinition[] => allComponents()
-
-/** Iterate every relation ever defined. */
-export const worldRelations = (): RelationDefinition<unknown>[] => allRelations()
+/** Type guard for an authored envelope arriving over a transport channel. */
+export const isAuthoredEnvelope = (payload: unknown): payload is AuthoredEnvelope =>
+  !!payload && typeof payload === 'object' && Array.isArray((payload as { events?: unknown }).events)
 
 // ── Event log append. It is idempotent on the event signature. ───────────────-
 
@@ -197,7 +186,7 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
   // this tick produced nothing.
   for (const [componentId, entities] of world.runtimeDirty) {
     if (entities.size === 0) continue
-    const def = findComponent(componentId)
+    const def = getComponentById(componentId)
     if (!def || !hasSyncedSoA(def)) {
       entities.clear()
       continue
@@ -297,7 +286,7 @@ const applyEvent = (world: World, event: AuthoredEvent): void => {
     entity = ensureEntityPath(world, event.entityPath)
   }
 
-  const component = findComponent(event.predicate)
+  const component = getComponentById(event.predicate)
   if (component) {
     if (event.op === 'set') {
       setComponent(world, entity, component, (event.value ?? {}) as Record<string, unknown>, { origin: 'network' })
@@ -307,7 +296,7 @@ const applyEvent = (world: World, event: AuthoredEvent): void => {
     return
   }
 
-  const relation = findRelation(event.predicate)
+  const relation = getRelationByName(event.predicate)
   if (relation) {
     const targetPath = (event.value as { targetPath?: string[] } | null)?.targetPath
     if (!targetPath) return

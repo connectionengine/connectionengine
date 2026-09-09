@@ -27,15 +27,14 @@
  * concern.
  */
 
-import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../../ecs/world'
+import type { AuthoredEnvelope, AuthoredEvent, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
 import { allComponents, getComponent, hasSyncedSoA, setComponent } from '../../ecs/component'
-import { applyAuthoredEnvelope, flushAuthored } from '../mutation'
-import { ensureEntityPath, getEntityPath } from '../../ecs/entity'
-import { addRelation } from '../../ecs/relation'
-import { AuthoritativeFor, OwnedBy } from '../authority'
-import { ConnectedTo, PeerComponent, UserComponent } from '../agents'
+import { applyAuthoredEnvelope, flushAuthored, isAuthoredEnvelope } from '../mutation'
+import { getEntityPath } from '../../ecs/entity'
+import { ConnectedTo, PeerComponent } from '../agents'
 import { disconnectPeer } from '../presence'
+import { ensureRemotePeerEntity } from '../peer'
 import type { Connection, RuntimeTransportConfig, TransportEndpoint } from '../transport'
 import type { Network } from '../network'
 import { ensureDefaultNetwork } from '../network'
@@ -85,9 +84,6 @@ type ControlMessage = HelloMessage | LeaveMessage | ReplayChunkMessage | ReplayE
 
 const isControl = (payload: unknown): payload is ControlMessage =>
   !!payload && typeof payload === 'object' && typeof (payload as { type?: unknown }).type === 'string'
-
-const isAuthoredEnvelope = (payload: unknown): payload is AuthoredEnvelope =>
-  !!payload && typeof payload === 'object' && Array.isArray((payload as { events?: unknown }).events)
 
 // ── joinNetwork / joinWorld ─────────────────────────────────────────────────-
 
@@ -174,7 +170,12 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
       switch (payload.type) {
         case 'hello': {
           connection.remoteDID = payload.agentDID
-          connection.peer = ensureRemotePeerEntity(world, payload)
+          connection.peer = ensureRemotePeerEntity(world, {
+            did: payload.agentDID,
+            peerId: payload.peerId,
+            userPath: payload.userPath,
+            peerPath: payload.peerPath
+          })
           // Presence is a fact about the peer, so record it as one. Its removal
           // is what drives disconnect cleanup — see `network/presence.ts`.
           setComponent(world, connection.peer, ConnectedTo, { networkId: network.id })
@@ -273,30 +274,6 @@ const localPeerId = (world: World): string => {
     if (value?.peerId) return value.peerId
   }
   return world.localAgent.did
-}
-
-/**
- * Find the local representation of the remote peer, or create it. The function
- * uses the paths that the sender encoded in its HELLO. It walks by path, with
- * the same scheme that `ensureEntityPath` uses for replay. An entity
- * materialised here is therefore the same entity that replay reuses later, so
- * no duplicate user or peer rows appear.
- *
- * The function falls back to the UIDs `user:<did>` and `peer:<peerId>` when the
- * sender has set up no local identity, as in a test flow or a solo flow.
- */
-const ensureRemotePeerEntity = (world: World, hello: HelloMessage): Entity => {
-  const userPath = hello.userPath.length > 0 ? hello.userPath : [`user:${hello.agentDID}`]
-  const peerPath = hello.peerPath.length > 0 ? hello.peerPath : [...userPath, `peer:${hello.peerId}`]
-  const user = ensureEntityPath(world, userPath, (cursor) => {
-    setComponent(world, cursor, UserComponent, { did: hello.agentDID, displayName: '' }, { origin: 'network' })
-    OwnedBy.set(world, cursor, cursor, { origin: 'network' })
-  })
-  return ensureEntityPath(world, peerPath, (cursor) => {
-    setComponent(world, cursor, PeerComponent, { peerId: hello.peerId, latency: 0 }, { origin: 'network' })
-    OwnedBy.set(world, cursor, user, { origin: 'network' })
-    addRelation(world, cursor, AuthoritativeFor, cursor, { origin: 'network' })
-  })
 }
 
 // ── Runtime channel + relay ──────────────────────────────────────────────────-

@@ -28,14 +28,13 @@
  * network fixes its behaviour at construction.
  */
 
-import type { AuthoredEvent, Entity, World } from '../ecs/world'
+import type { World } from '../ecs/world'
 import type { ComponentDefinition } from '../ecs/component'
 import { getComponent, setComponent } from '../ecs/component'
-import { applyAuthoredEnvelope } from '../network/mutation'
-import { ensureEntityPath, getEntityPath } from '../ecs/entity'
-import { addRelation } from '../ecs/relation'
-import { AuthoritativeFor, OwnedBy } from '../network/authority'
-import { ConnectedTo, PeerComponent, UserComponent } from '../network/agents'
+import { applyAuthoredEnvelope, isAuthoredEnvelope } from '../network/mutation'
+import { getEntityPath } from '../ecs/entity'
+import { ConnectedTo, PeerComponent } from '../network/agents'
+import { ensureRemotePeerEntity, type RemotePeerIdentity } from '../network/peer'
 import {
   createMemoryTransport,
   type Connection,
@@ -68,20 +67,10 @@ export interface ConnectInMemoryOptions extends Omit<AddNetworkOptions, 'id'> {
   runtimeConfigs?: RuntimeTransportConfig[]
 }
 
-const isAuthoredEnvelope = (payload: unknown): payload is { fromPeer: string; events: AuthoredEvent[] } =>
-  !!payload && typeof payload === 'object' && Array.isArray((payload as { events?: unknown }).events)
-
-interface RemoteIdentity {
-  did: string
-  peerId: string
-  userPath: string[]
-  peerPath: string[]
-}
-
 const wireSide = (
   world: World,
   network: Network,
-  remote: RemoteIdentity,
+  remote: RemotePeerIdentity,
   endpoint: TransportEndpoint,
   options: ConnectInMemoryOptions
 ): Connection => {
@@ -142,7 +131,7 @@ export const connectInMemory = (
   }
 }
 
-const identityOf = (world: World): RemoteIdentity => {
+const identityOf = (world: World): RemotePeerIdentity => {
   const peerId =
     world.localPeer !== undefined
       ? ((getComponent(world, world.localPeer, PeerComponent) as { peerId?: string } | undefined)?.peerId ??
@@ -154,18 +143,4 @@ const identityOf = (world: World): RemoteIdentity => {
     userPath: world.localUser !== undefined ? getEntityPath(world, world.localUser) : [],
     peerPath: world.localPeer !== undefined ? getEntityPath(world, world.localPeer) : []
   }
-}
-
-const ensureRemotePeerEntity = (world: World, remote: RemoteIdentity): Entity => {
-  const userPath = remote.userPath.length > 0 ? remote.userPath : [`user:${remote.did}`]
-  const peerPath = remote.peerPath.length > 0 ? remote.peerPath : [...userPath, `peer:${remote.peerId}`]
-  const user = ensureEntityPath(world, userPath, (cursor) => {
-    setComponent(world, cursor, UserComponent, { did: remote.did, displayName: '' }, { origin: 'network' })
-    OwnedBy.set(world, cursor, cursor, { origin: 'network' })
-  })
-  return ensureEntityPath(world, peerPath, (cursor) => {
-    setComponent(world, cursor, PeerComponent, { peerId: remote.peerId, latency: 0 }, { origin: 'network' })
-    OwnedBy.set(world, cursor, user, { origin: 'network' })
-    addRelation(world, cursor, AuthoritativeFor, cursor, { origin: 'network' })
-  })
 }

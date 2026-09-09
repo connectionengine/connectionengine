@@ -13,7 +13,7 @@
  */
 
 import { setComponent } from '../ecs/component'
-import { createEntity, setUID } from '../ecs/entity'
+import { createEntity, ensureEntityPath, setUID } from '../ecs/entity'
 import { addRelation } from '../ecs/relation'
 import { AuthoritativeFor, OwnedBy } from './authority'
 import { PeerComponent, UserComponent, findUserByDID, type DID } from './agents'
@@ -93,4 +93,41 @@ const randomPeerId = (): string => {
       .toString(16)
       .padStart(2, '0')
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`
+}
+
+// ── ensureRemotePeerEntity ───────────────────────────────────────────────────
+
+/**
+ * The identity fields of a remote peer, as a handshake or a test helper
+ * provides them. The session protocol extracts these from its `HelloMessage`.
+ * The in-memory test helper provides them directly.
+ */
+export interface RemotePeerIdentity {
+  did: string
+  peerId: string
+  userPath: string[]
+  peerPath: string[]
+}
+
+/**
+ * Find the local representation of a remote peer, or create it. The function
+ * walks by path, with the same scheme that `ensureEntityPath` uses for replay.
+ * An entity materialised here matches the entity that replay reuses later, so
+ * no duplicate user or peer rows appear.
+ *
+ * The function falls back to the UIDs `user:<did>` and `peer:<peerId>` when the
+ * remote side has set up no local identity, as in a test or solo flow.
+ */
+export const ensureRemotePeerEntity = (world: World, remote: RemotePeerIdentity): Entity => {
+  const userPath = remote.userPath.length > 0 ? remote.userPath : [`user:${remote.did}`]
+  const peerPath = remote.peerPath.length > 0 ? remote.peerPath : [...userPath, `peer:${remote.peerId}`]
+  const user = ensureEntityPath(world, userPath, (cursor) => {
+    setComponent(world, cursor, UserComponent, { did: remote.did, displayName: '' }, { origin: 'network' })
+    OwnedBy.set(world, cursor, cursor, { origin: 'network' })
+  })
+  return ensureEntityPath(world, peerPath, (cursor) => {
+    setComponent(world, cursor, PeerComponent, { peerId: remote.peerId, latency: 0 }, { origin: 'network' })
+    OwnedBy.set(world, cursor, user, { origin: 'network' })
+    addRelation(world, cursor, AuthoritativeFor, cursor, { origin: 'network' })
+  })
 }

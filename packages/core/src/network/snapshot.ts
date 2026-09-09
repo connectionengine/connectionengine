@@ -13,11 +13,10 @@
  * parameter.
  */
 
-import { getComponentById, hasComponent, serialiseComponentValue, setComponent } from '../ecs/component'
+import { allComponents, getComponentById, hasComponent, serialiseComponentValue, setComponent } from '../ecs/component'
 import { getEntityPath, uidOfFor, ensureEntityPath } from '../ecs/entity'
-import { addRelation, getRelationByName, getRelationTargets } from '../ecs/relation'
+import { addRelation, allRelations, getRelationByName, getRelationTargets } from '../ecs/relation'
 import { removeEntity } from '../ecs/entity'
-import { worldComponents, worldRelations } from './mutation'
 import { checkAuthorityChangeStanding } from './authority'
 import type { Network } from './network'
 import { validateAuthored } from './network'
@@ -51,8 +50,8 @@ export interface CreateSnapshotOptions {
 export const createSnapshot = (world: World, options: CreateSnapshotOptions = {}): Snapshot => {
   const entities: SnapshotEntity[] = []
   const includeIds = options.filter ? new Set(options.filter) : undefined
-  const componentDefs = worldComponents()
-  const relationDefs = worldRelations()
+  const componentDefs = allComponents()
+  const relationDefs = allRelations()
   const seenComponents = new Set<string>()
 
   for (const entity of uidOfFor(world.engine).keys()) {
@@ -179,6 +178,3 @@ const admitter = (
     return checkAuthorityChangeStanding(world, event) === undefined
   }
 }
-
-// The component and relation enumeration uses worldComponents and
-// worldRelations from mutation.ts.

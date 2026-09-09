@@ -201,32 +201,6 @@ export const destroyWorld = (world: World): void => {
   world.runtimeDirty.clear()
 }
 
-// ── Time loop ─────────────────────────────────────────────────────────────────
-
-/**
- * Advance the time of the engine, and run one frame of systems. The engine owns
- * time. Each tick advances `engine.frameTime`, `engine.simulationTime`, and the
- * other time fields. Every system registered on the engine runs for every world
- * rooted in it.
- */
-export const tickEngine = (
-  engine: Engine,
-  deltaSeconds: number,
-  systems: { fixed: () => void; variable: () => void }
-): void => {
-  engine.deltaSeconds = deltaSeconds
-  engine.frameTime += deltaSeconds * 1000
-  engine.accumulator += deltaSeconds
-
-  let safety = 0
-  while (engine.accumulator >= engine.fixedTimeStep && safety++ < 256) {
-    engine.simulationTime += engine.fixedTimeStep
-    engine.accumulator -= engine.fixedTimeStep
-    systems.fixed()
-  }
-  systems.variable()
-}
-
 // ── Stub agent. Use it for solo mode and for tests. ──────────────────────────
 
 export const createAnonAgent = (seed?: string): Agent => {

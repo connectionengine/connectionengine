@@ -27,7 +27,7 @@
 
 import { createRoot } from 'solid-js'
 import type { Engine } from './engine'
-import { tickEngine } from './world'
+import { tickEngine } from './engine'
 
 export type Phase = 'Input' | 'Simulation' | 'Animation' | 'Render'
 export const PHASES: readonly Phase[] = ['Input', 'Simulation', 'Animation', 'Render'] as const

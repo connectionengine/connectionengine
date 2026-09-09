@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { createAnonAgent, createWorld, destroyWorld, tickEngine } from './world'
-import { createEngine } from './engine'
+import { createAnonAgent, createWorld, destroyWorld } from './world'
+import { createEngine, tickEngine } from './engine'
 import { createManualClock } from './clock'
 
 describe('World', () => {
