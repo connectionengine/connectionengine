@@ -84,7 +84,7 @@ export const createPeerPair = (options: CreatePeerPairOptions = {}): PeerPair =>
       clockB.advance(deltaSeconds * 1000)
       runSystems(worldA, deltaSeconds)
       runSystems(worldB, deltaSeconds)
-      // runSystems is pure ECS; the harness drives the network flush after
+      // runSystems is pure ECS. The harness drives the network flush after
       // the frame settles. Authored first so receivers see new entities
       // before binary packets reference them.
       flushAuthored(worldA)

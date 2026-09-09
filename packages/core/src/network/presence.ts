@@ -8,14 +8,10 @@
  * the forward half. Setup and teardown therefore land together, and no call
  * site can perform one without the other.
  *
- * This replaces an observer on `onRemove(ConnectedTo)`. The observer registered
- * per world but fired per engine, so every world sharing an engine ran the
- * cleanup for every other world's disconnect, and it never detached. Pairing
- * the teardown with the setup fixes both, and keeps the answer to "what happens
- * when a peer drops?" in one function.
- *
- * `ConnectedTo` stays as state — `connectedPeers` and the last-peer-standing
- * query read it. It simply stops serving as an event source.
+ * `ConnectedTo` records presence for `connectedPeers` and the last-peer-standing
+ * query. It is not an event source: removing it starts nothing. Do not put this
+ * cleanup behind an observer on that removal, because `observe` registers per
+ * engine, so the callback would run for every world that shares one.
  *
  * Two consequences follow from one peer disconnecting:
  *

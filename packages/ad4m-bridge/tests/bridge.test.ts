@@ -37,7 +37,7 @@ const Health = defineComponent({
 })
 
 // ── Test doubles ──────────────────────────────────────────────────────────────
-// Structurally satisfy the methods we use; cast through `unknown` because the
+// Structurally satisfy the methods this test uses. Cast through `unknown`, because the
 // real classes carry private state we don't replicate.
 
 const mockClient = (did: string): Ad4mClient =>

@@ -11,13 +11,14 @@
  *   - a push of each relation add and remove onto `world.authoredQueue`, which
  *     the network-layer mutation pipeline drains at the end of the tick
  *
- * Extension properties: `defineRelation` spreads any field on the options
- * object that is not a reserved key straight onto the definition, and preserves
- * its type. Built-in relations use this to attach their own indexes, such as
- * `BelongsTo.parentOf`. User code can do the same.
- *
- * An exclusive relation may instead declare `index`, and let this module keep
- * it. See `RelationOptions.index`.
+ * Two ways to put extra state on a definition:
+ *   - `index: true` on an exclusive relation. This module then keeps a
+ *     subject → target map and adds `get`, `set`, and `indexFor`. `OwnedBy`,
+ *     `AuthoritativeFor`, and `BelongsTo` all use it. See
+ *     `RelationOptions.index`.
+ *   - Any other field on the options object. `defineRelation` spreads every
+ *     non-reserved key straight onto the definition, and preserves its type.
+ *     The caller then maintains that state.
  */
 
 import * as bitecs from 'bitecs'
@@ -51,7 +52,7 @@ export interface RelationOptions<T = void> {
    * at run time for a caller that reached it without types.
    *
    * `addRelation` and `removeRelation` maintain the map, so no caller touches
-   * it by hand. Omitting the option means no index; `false` would say the same
+   * it by hand. Omitting the option means no index. `false` would say the same
    * thing twice, so the type admits only `true`.
    *
    * The index answers one question the relation cannot: what the target *was*,
@@ -70,11 +71,9 @@ export interface RelationOptions<T = void> {
  * A relation index always maps one entity onto another, so the definition
  * carries the types rather than each declaration restating them.
  *
- * `get` and `set` are the reason the option exists. They replace the
- * `getX` / `setX` free functions each indexed relation used to need, so the
- * relation answers questions about itself. `OwnedBy.get(world, entity)` reads
- * better than a `getOwner` free function, and it cannot drift away from the
- * relation it describes.
+ * `get` and `set` are the reason the option exists. They keep the accessor on
+ * the relation it reads, so `OwnedBy.get(world, entity)` needs no separate
+ * `getOwner` function to find, and none to keep in step.
  */
 export interface IndexedRelation {
   /** The current target of `subject`, or undefined when it has none. O(1). */
@@ -84,7 +83,7 @@ export interface IndexedRelation {
    * whatever it named before, and the index follows.
    */
   set(world: World, subject: Entity, target: Entity, options?: RelationMutationOptions): void
-  /** The whole per-engine map. Use it to iterate; use `get` for one subject. */
+  /** The whole per-engine map. Use it to iterate. Use `get` for one subject. */
   indexFor(engine: Engine): Map<Entity, Entity>
 }
 
@@ -96,11 +95,13 @@ export type RelationIndexAccessors<O> = O extends { index: true } ? IndexedRelat
  * `exclusive: true` becomes mandatory once the options declare `index: true`,
  * and stays optional otherwise.
  *
- * An index holds one target per subject. A non-exclusive relation holds many,
- * so the two together produce a map that quietly disagrees with the relation:
- * the second `addRelation` overwrites the entry the first wrote, and removing
- * whichever target the entry names clears it while the others still stand —
- * so the index reports no target for a subject that has one.
+ * An index holds one target for each subject. A non-exclusive relation holds
+ * many, so the two together give a map that disagrees with the relation:
+ *
+ *   - The second `addRelation` overwrites the entry the first wrote.
+ *   - Removing whichever target the entry names clears it, while the other
+ *     targets still stand. The index then reports no target for a subject
+ *     that has one.
  */
 export type RequireExclusiveIndex<O> = O extends { index: true } ? { exclusive: true } : object
 

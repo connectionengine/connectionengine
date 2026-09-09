@@ -32,7 +32,7 @@ const Transform = defineComponent({
 /**
  * Mixed-channel component — a governed discrete half (`label`) alongside an
  * ungoverned continuous half (`position`). Existence and the discrete fields
- * ship as authored events; the SoA fields ship as binary deltas.
+ * travel as authored events. The SoA fields travel as binary deltas.
  */
 const Mixed = defineComponent({
   id: 'Mixed',
@@ -172,7 +172,7 @@ describe('setComponent / getComponent / removeComponent', () => {
 describe('mixed-channel components', () => {
   /**
    * The contract: existence is governed, values are governed only where they
-   * are discrete. Creation and discrete writes author events; continuous
+   * are discrete. Creation and discrete writes author events. Continuous
    * writes only mark dirty.
    */
   const mk = () => {

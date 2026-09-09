@@ -152,7 +152,7 @@ describe('Authority', () => {
   it('recoverAuthority is a noop when disconnected peer is not the current authority', () => {
     const { world, peerA, peerB } = mkWorld()
     const e = spawnPrefab(world, 'thing-11')
-    recoverAuthority(world, e, peerB) // peerB isn't the holder
+    recoverAuthority(world, e, peerB) // peerB does not hold authority
     expect(AuthoritativeFor.get(world, e)).toBe(peerA)
     destroyWorld(world)
   })

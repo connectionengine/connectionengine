@@ -8,14 +8,15 @@
  * together directly so a test can assert on envelope-level behaviour without
  * driving a protocol.
  *
- * It ships rather than living under `tests/` because `@connectionengine/local`
+ * It sits in `src/` rather than under `tests/`, because `@connectionengine/local`
  * builds `connectLocalInMemory` on top of it.
  *
  * Authored envelopes leave through the outbound path each network was built
  * with, which defaults to fanning across its connections. Each Connection also
  * gets a `BinaryChannel`, so that the runtime SoA deltas flow over a per-peer
- * binary pipeline. Pass `runtimeComponents` to fix the wire order explicitly;
- * otherwise both sides derive it from the registered continuous components.
+ * binary pipeline. Pass `runtimeComponents` to fix the wire order explicitly.
+ * Without it, both sides derive the order from the registered continuous
+ * components.
  *
  * Use this function for an envelope-level integration test. Use `joinNetwork`
  * for the production-shaped path, which includes late join and event-log

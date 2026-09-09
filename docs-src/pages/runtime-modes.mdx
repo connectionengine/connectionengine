@@ -40,7 +40,7 @@ const alice = createLocalAgent({ seed: 'alice' })
 const world = createWorld({ engine: createEngine(), agent: alice })
 ```
 
-A `LocalAgent` holds a real `sign` hook. Under `connectLocalInMemory(worldA, worldB)`, the local keypair signs every outbound authored event. The receiver verifies each inbound event against the `author` DID of that event before apply. A tampered event emits `mutation.reject` with the reason `'signature'`.
+A `LocalAgent` holds a real `sign` function. Under `connectLocalInMemory(worldA, worldB)`, the local keypair signs every outbound authored event. The receiver verifies each inbound event against the `author` DID of that event before it applies the event. A tampered event fails verification and drops. It never reaches the apply path, and it never enters the event log.
 
 Use Local mode in three cases:
 
@@ -79,7 +79,7 @@ The runtime binary channel does not pass through AD4M, because it runs at too hi
 
 ## Switching modes
 
-Core knows one thing about identity: the `Agent` interface, `{ did: string; sign?: ... }`. A mode change is therefore a one-line change at the call site that creates the world. Everything else stays the same.
+Core knows one thing about identity: the `Agent` interface, which holds a `did` and an optional `sign` function. A mode change is therefore a one-line change at the call site that creates the world. Everything else stays the same.
 
 ```ts
 // Solo:

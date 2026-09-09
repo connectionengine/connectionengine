@@ -70,7 +70,7 @@ describe('tickEngine', () => {
   it('accumulates leftover time without dropping substeps', () => {
     const engine = createEngine({ fixedTimeStep: 1 / 60 })
     let fixed = 0
-    // 1/120s — under fixed step; no substep yet
+    // 1/120s — under the fixed step, so no substep yet
     tickEngine(engine, 1 / 120, { fixed: () => fixed++, variable: () => {} })
     expect(fixed).toBe(0)
     // another 1/120s — now total is 1/60, one substep

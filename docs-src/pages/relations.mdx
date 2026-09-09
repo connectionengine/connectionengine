@@ -38,14 +38,36 @@ entity:42  ──  Health  ──  { current: 75, max: 100 }      // component t
 entity:42  ──  Likes   ──  entity:99                       // relation triple
 ```
 
-One write produces both views at once, which is what lets you read Connection Engine as an ECS and as an RDF-shaped graph.
+One write produces both views at once, so the same data reads as an ECS and as an RDF-shaped graph.
 
 ## Exclusive and non-exclusive
 
-- **Exclusive** (`exclusive: true`) — at most one target per source. A second target replaces the first. `ChildOf`, `OwnedBy`, and `AuthoritativeFor` are exclusive.
-- **Non-exclusive** (the default) — many targets per source. `Likes`, `Tagged`, and `HasConstraint` are non-exclusive.
+- **Exclusive** (`exclusive: true`) — one target for each source, at most. A second target replaces the first. `BelongsTo`, `OwnedBy`, and `AuthoritativeFor` are exclusive.
+- **Non-exclusive** (the default) — many targets for each source. `Likes`, `Tagged`, and `HasConstraint` are non-exclusive.
 
-The choice is structural rather than policy. Mark a relation exclusive when two parents would carry no meaning, and the engine enforces it. Leave it non-exclusive when two targets could legitimately mean something.
+The choice is structural, not policy. Make a relation exclusive when a second target would carry no meaning. The engine then enforces it. Leave it non-exclusive when two targets could mean something.
+
+## An exclusive relation can keep an index
+
+`index: true` adds a subject → target map per engine, plus `get`, `set`, and `indexFor` on the definition:
+
+```ts
+const ChildOf = defineRelation({
+  name: 'ChildOf',
+  exclusive: true,
+  index: true
+})
+
+ChildOf.set(world, child, parent)   // adds the relation, and updates the index
+ChildOf.get(world, child)           // → parent, in O(1)
+ChildOf.indexFor(world.engine)      // the whole map, to iterate
+```
+
+`addRelation` and `removeRelation` maintain the map. No caller writes to it.
+
+`index: true` needs `exclusive: true`. An index holds one target for each subject. A non-exclusive relation holds many, so the two together give a map that disagrees with its own relation. The compiler refuses the combination.
+
+The index answers one question that the relation cannot: what the target **was**, for a subject that the engine removed. `removeEntity` reads the index while it queues the removal. `OwnedBy`, `AuthoritativeFor`, and `BelongsTo` all declare an index.
 
 ## Relations replicate as authored events
 
@@ -67,23 +89,29 @@ Core defines a small set of relations, because the rest of the system depends on
 
 | Relation                | Where                    | Purpose                                            |
 |-------------------------|--------------------------|----------------------------------------------------|
-| `BelongsTo`             | `ecs/entity.ts`        | Identity chain — see [Entities & Identity](/entities-and-identity) |
+| `BelongsTo`             | `ecs/entity.ts`          | Identity chain — see [Entities & Identity](/entities-and-identity) |
 | `OwnedBy`               | `network/authority.ts`   | Provenance — who created this entity               |
-| `AuthoritativeFor`      | `network/authority.ts`   | Who controls runtime mutations for this entity     |
-| `HasConstraint`         | `network/governance.ts`  | Attaches governance constraints to a scope         |
+| `AuthoritativeFor`      | `network/authority.ts`   | Who writes this entity at run time                 |
+| `HasConstraint`         | `network/governance.ts`  | Attaches a governance constraint to a scope        |
+
+The first three are exclusive and declare an index. `HasConstraint` is non-exclusive, because one scope can carry many constraints.
 
 You can define any number of your own. By convention, name them as English-readable predicates, such as `Likes`, `MemberOf`, and `Targets`. Those names read well in event logs, and they match the RDF style.
 
 ## Observers
 
-The observer system in `ecs/observer.ts` lets you react to relation changes:
+`observe` reacts to a relation change. The hook constructor wraps the relation, and the callback receives the subject entity:
 
 ```ts
 import { observe, onAdd, onRemove } from '@connectionengine/core'
 
-observe(world, ChildOf, onAdd, (parent, child) => {
-  console.log(`new parent-child: ${parent} → ${child}`)
+const stop = observe(world, onAdd(ChildOf), (child) => {
+  console.log(`${child} gained a parent`)
 })
+
+stop() // unregister
 ```
 
-The identity system uses observers to stay consistent across `addRelation(BelongsTo)` calls. You can use them for anything else too — reactions to ownership transfers, to governance attachments, to social-graph edges, or to any other relation change.
+`observe` registers on the **engine**, not the world. Two worlds that share an engine both see the callback, and the callback must resolve the world itself. `observe` returns an unregister function. Call it, or the observer outlives the world that added it.
+
+Use observers for a derived effect, such as a cache or an index. Do not use one to replicate a mutation. Each mutation verb — `setComponent`, `addRelation`, `setUID`, and their reverses — authors its own event inline, so an observer that queued a second event would duplicate it. See [The Mutation Pipeline](/mutations).

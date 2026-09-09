@@ -6,7 +6,7 @@ description: Worlds are logical scopes inside an Engine. Systems are how time an
 
 ## A world is a virtual scope inside an Engine
 
-The ECS runs on the [Engine](/engine), which holds bitECS storage, per-component storage, time, and systems. The identity caches (`nameCache`, `uidOf`, `parentOf`) live as per-engine WeakMaps on the `UIDComponent` and `BelongsTo` definitions. Everything that counts as "ECS" is engine-wide. A `World` is a virtual scope on top of that. It holds its own `worldRoot` entity, which anchors a `BelongsTo` subtree. It holds its own network state — the `networks` map, the authored queue, the event log, and the runtime-dirty set. It also holds the local identity for that scope: `localAgent`, `localUser`, and `localPeer`.
+The ECS runs on the [Engine](/engine), which holds bitECS storage, per-component storage, time, and systems. The identity indexes live as per-engine WeakMaps on the `UIDComponent` and `BelongsTo` definitions. Everything that counts as "ECS" is engine-wide. A `World` is a virtual scope on top of that. It holds its own `worldRoot` entity, which anchors a `BelongsTo` subtree. It holds its own network state — the `networks` map, the authored queue, the event log, and the runtime-dirty set. It also holds the local identity for that scope: `localAgent`, `localUser`, and `localPeer`.
 
 ```ts
 import { createWorld, destroyWorld, createAnonAgent } from '@connectionengine/core'

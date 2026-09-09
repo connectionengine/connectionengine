@@ -20,7 +20,7 @@
  *
  * Each index lives ON the definition it describes, and means nothing apart from
  * it. `BelongsTo` declares `index: true` and `defineRelation` supplies the
- * accessors; the two UID indexes are shaped differently, so they stay typed
+ * accessors. The two UID indexes are shaped differently, so they stay typed
  * extension properties. `setUID` maintains all three. `removeEntity` clears
  * them inline.
  *
@@ -40,7 +40,7 @@ export type { Entity } from './world'
 // ── Built-in identity component + relation ───────────────────────────────────-
 //
 // The identity indexes hang off the definitions they describe. A definition is
-// a module-level singleton, so the *extension* is global; each inner map uses
+// a module-level singleton, so the *extension* is global. Each inner map uses
 // the Engine as its WeakMap key, so two engines in one process keep their
 // identity state apart. Entity ids are not unique across bitECS worlds.
 //
@@ -78,8 +78,8 @@ export const UIDComponent = defineComponent({
    * answers.
    *
    * The body names `uidOfFor` and `readUIDValue`, both declared below. A body
-   * runs long after this module finishes evaluating, so the forward reference
-   * costs nothing.
+   * runs after this module finishes evaluating, so the forward reference
+   * resolves.
    */
   get: (world: World, entity: Entity): string | undefined =>
     uidOfFor(world.engine).get(entity) ?? readUIDValue(world, entity)
@@ -90,7 +90,7 @@ export const nameCacheFor = (engine: Engine): Map<Entity, Map<string, Entity>> =
   lazy(UIDComponent.nameCache, engine, () => new Map())
 
 /** Get-or-create the per-engine entity → UID map. Use it to iterate every named
- *  entity; use `UIDComponent.get` for one. */
+ *  entity. Use `UIDComponent.get` for one. */
 export const uidOfFor = (engine: Engine): Map<Entity, string> => lazy(UIDComponent.uidOf, engine, () => new Map())
 
 /**
@@ -119,13 +119,10 @@ export const createEntity = (world: World): Entity => bitecs.addEntity(world.eng
  * Remove an entity from this world, and queue the removal for replication.
  *
  * This function pairs with `setUID`, the same way `removeComponent` pairs with
- * `setComponent` and `removeRelation` pairs with `addRelation`. Each of those
- * verbs authors its own reverse inline, at the point of the mutation. Entity
- * removal used to be the one exception: it authored nothing, and the network
- * layer recovered the event from an observer on `onRemove(UIDComponent)`. That
- * observer fired once per world sharing the engine, never detached, and
- * vanished with the side-effect import that registered it. Queueing here
- * instead makes the vocabulary symmetric and removes all three faults.
+ * `setComponent` and `removeRelation` pairs with `addRelation`. Every mutation
+ * verb authors its own reverse inline, at the point of the mutation. Do not
+ * recover this event from an observer instead: `observe` registers per engine,
+ * so the callback would run once for each world that shares one.
  *
  * Queueing is not sending. `flushAuthored` decides what travels, and it drops
  * a destroy this peer does not own. Ownership does two jobs there: it stops a
@@ -138,7 +135,7 @@ export const createEntity = (world: World): Entity => bitecs.addEntity(world.eng
  *
  * The queued event also carries the index entries of the departing entity, so
  * that a later step can still attribute the removal. `network/mutation.ts`
- * reads the `OwnedBy` entry to gate what travels; nothing here names ownership.
+ * reads the `OwnedBy` entry to gate what travels. Nothing here names ownership.
  *
  * `DESTROY_PREDICATE` names the predicate the queued event carries. The apply
  * path branches on `op` before it resolves a predicate, so it never names a

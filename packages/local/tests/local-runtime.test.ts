@@ -135,7 +135,7 @@ describe('Local runtime — signed two-peer replication', () => {
     const bScene = getEntityByUID(worldB, worldB.worldRoot, 'scene:local')!
     const bAva = getEntityByUID(worldB, bScene, 'avatar:alice')!
     expect(getComponent(worldB, bAva, Health)).toEqual({ current: 77, max: 100 })
-    // Both sides authored their own identity bootstrap (createUser + createPeer);
+    // Both sides authored their own identity bootstrap (createUser + createPeer).
     // assert that the avatar's events specifically came from A.
     expect(worldB.eventLog.length).toBeGreaterThan(0)
     const aliceAvatarEvents = worldB.eventLog.filter((e) =>

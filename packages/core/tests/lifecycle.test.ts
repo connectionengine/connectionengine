@@ -165,7 +165,7 @@ describe('joinWorld — handshake + event-log replay', () => {
     const link = createMemoryTransport()
     await Promise.all([joinWorld(host, { endpoint: link.a }), joinWorld(joiner, { endpoint: link.b })])
 
-    // After join, host updates state; joiner should pick it up via live stream
+    // After the join, the host writes state. The joiner must receive it live.
     setComponent(host, e, Health, { current: 99 })
     // Emulate a flush by publishing straight onto the network that joinWorld
     // built. The default outbound path fans across its connections.
@@ -285,7 +285,7 @@ describe('joinWorld — continuous-channel bootstrap via state snapshot', () => 
 
     // The snapshot applies with origin='network', so nothing echoes back to the
     // host. A replacing apply removes the previous entities, which queues a
-    // destroy for each; every one names an entity the host owns, so the
+    // destroy for each. Every one names an entity the host owns, so the
     // ownership gate in `flushAuthored` drops them all.
     expect(flushAuthored(joiner)).toBeUndefined()
     expect(joiner.runtimeDirty.get('LC.Position')?.size ?? 0).toBe(0)

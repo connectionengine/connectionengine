@@ -128,7 +128,7 @@ describe('applySnapshot — governance', () => {
    * A snapshot arriving over the wire carries the same authority as any other
    * write from that peer — no more. Supplying `from` runs each component and
    * relation through the gates an authored event would face, so the bootstrap
-   * path can't be used to smuggle in state the authored path would refuse.
+   * path cannot admit state that the authored path would refuse.
    */
   it('skips writes the network gate refuses, keeping the rest', () => {
     const source = createWorld({ engine: createEngine(), agent: createAnonAgent('gate-src') })

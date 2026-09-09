@@ -300,8 +300,8 @@ describe('entity destruction', () => {
     removeEntity(p.a.world, e)
     await p.tick()
     // B applied the destroy. Nothing may go back out, or the two peers would
-    // trade the same destroy forever. B queued one when it applied the removal;
-    // the ownership gate drops it, because the entity belongs to A.
+    // trade the same destroy forever. B queued one when it applied the removal.
+    // The ownership gate then drops it, because the entity belongs to A.
     expect(flushedDestroys(p.b.world)).toEqual([])
     p.dispose()
   })
@@ -553,7 +553,7 @@ describe('worlds with no continuous components', () => {
   it('connects without a binary channel rather than throwing', async () => {
     // Every component in this file is authored-only, so the default continuous
     // list is empty. Building a pipeline over zero components throws, so the
-    // connection must simply go without one.
+    // connection must go without one.
     const a = machine('nosoa-a')
     const b = machine('nosoa-b')
     bootstrap(a, 'nosoa-a')

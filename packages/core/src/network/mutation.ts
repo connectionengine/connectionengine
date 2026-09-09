@@ -77,9 +77,9 @@ export const worldRelations = (): RelationDefinition<unknown>[] => allRelations(
  * Identity of an event, for deduplication.
  *
  * `seq` is what makes two writes of the same value in the same millisecond
- * distinct. Author plus seq alone would suffice for events this peer produced,
- * but the rest of the tuple keeps the signature meaningful for events built by
- * hand in tests and for anything a runtime mode synthesises.
+ * distinct. Author plus seq is enough for an event this peer produced. The
+ * rest of the tuple keeps the signature meaningful for an event built by hand
+ * in a test, and for anything a runtime mode synthesises.
  */
 export const eventSignature = (e: AuthoredEvent): string =>
   `${e.author}|${e.timestamp}|${e.seq}|${e.op}|${e.predicate}|${e.entityPath.join('/')}|${JSON.stringify(e.value ?? null)}`

@@ -29,8 +29,8 @@ Internally, `spawnPrefab(world, uid, { parent?, owner?, authority? })` does four
 
 1. `createEntity(world)` — allocate the bitECS entity
 2. `setUID(world, e, uid, { parent })` — give it a wire-addressable path
-3. `addRelation(world, e, OwnedBy, owner ?? world.localUser)` — permanent provenance
-4. `addRelation(world, e, AuthoritativeFor, authority ?? world.localPeer)` — runtime authority
+3. `OwnedBy.set(world, e, owner ?? world.localUser)` — permanent provenance
+4. `AuthoritativeFor.set(world, e, authority ?? world.localPeer)` — runtime authority
 
 Every networked entity has an owner. `spawnPrefab` throws when it cannot determine one. Your runtime must therefore bootstrap `world.localUser` and `world.localPeer` first, with `createUser` and `createPeer({ asLocal: true })`. The defaults then work for everything after that.
 
@@ -39,7 +39,7 @@ User and Peer entities anchor the recursion:
 - `User` is **self-owned** — `OwnedBy(self)`.
 - `Peer` is owned by its user and **self-authoritative** — `OwnedBy(user) + AuthoritativeFor(self)`.
 
-Use `createEntity` directly for entities that never travel, such as system caches, derived state, and test scratch data.
+Use `createEntity` for an entity that never travels, such as a system cache, derived state, or test scratch data.
 
 ## OwnedBy
 
@@ -53,13 +53,14 @@ const alice = createUser(world, { did: 'did:key:z6Mk...', asLocal: true })
 // their owner to Alice.
 ```
 
-Three things use it:
+Four things use it:
 
-- Disconnect cleanup. When the last peer of a user disconnects, every entity that user owns is removed. That reads the owner-user, not the authority. An entity that must outlive the session of a user must not be owned by that user.
-- Permission inference. "Is this requester one of the peers of the owner?" Grants for that case are common.
-- Display. It supplies the "made by Alice" text in your UX.
+- **Disconnect cleanup.** When the last peer of a user disconnects, the engine removes every entity that user owns. This reads the owner-user, not the authority. An entity that must outlive the session of a user must not be owned by that user.
+- **Removal replication.** `flushAuthored` sends a removal only when the local user owns the entity. This stops a peer announcing a removal it has no claim to, and it stops a received removal echoing back.
+- **Permission inference.** "Is this requester one of the peers of the owner?" A grant for that case is common.
+- **Display.** It supplies the "made by Alice" text in your UX.
 
-Do not change `OwnedBy`. The engine sets it at creation, and it stays. Transfer of ownership is a different gesture — a delete and a recreate, or an explicit transfer-of-ownership event in the semantics of your app.
+Do not change `OwnedBy`. The engine sets it at creation, and it stays. Transfer of ownership is a different gesture: delete and recreate, or send an explicit transfer event in the semantics of your app.
 
 ## AuthoritativeFor
 
@@ -133,14 +134,16 @@ The short window in which no peer writes is usually acceptable, because receiver
 When a peer drops, `disconnectPeer` runs `recoverAuthority` for every entity whose `AuthoritativeFor` targets the leaving peer. `attachConnection` registered that teardown on `connection.onClose` when it wired the connection up. `recoverAuthority` selects the remaining peer of the owner-user with the lowest id. If it knows no local peer of the owner, it falls back to `world.localPeer` as a last-resort host-migration successor.
 
 ```ts
-// You do not call this yourself — it runs on disconnect automatically.
-// What it does, conceptually:
-recoverAuthority(world, entity, disconnectedPeer)
-//   → find lowest-id peer where parentOf[peer] === ownerUser, skipping the leaver
+// You never call this. It runs on disconnect. What it does:
+recoverAuthority(world, entity, departedPeer)
+//   → find the lowest-id peer where BelongsTo.get(world, peer) === ownerUser,
+//     and skip the peer that left
 //   → grantAuthority(world, entity, successor, { origin: 'network' })
 ```
 
-The disconnect side must know which peer entity to recover from. That knowledge comes from the HELLO handshake. Every connection carries the DID and the peerId of the remote engine, and the receiver materialises a local `User` entity and `Peer` entity. It uses the path that the sender encoded, so a later authored-event replay for those same identities deduplicates. The engine stores the materialised peer entity on `connection.peer`, and writes `ConnectedTo` onto it. Removing that component on close is what triggers the cleanup.
+The disconnect side must know which peer entity to recover from. That knowledge comes from the HELLO handshake. Every connection carries the DID and the peerId of the remote engine, and the receiver materialises a local `User` entity and `Peer` entity. It uses the path that the sender encoded, so a later authored-event replay for those same identities deduplicates. The engine stores the materialised peer entity on `connection.peer`.
+
+`disconnectPeer` reads `connection.peer` to know which peer left. It then removes `ConnectedTo` and runs the cleanup. The component records presence for `connectedPeers` to query. It does not trigger the cleanup.
 
 ## Bootstrap writes
 

@@ -60,7 +60,7 @@ describe('Relation', () => {
     addRelation(world, child, ChildOf, parent)
     removeEntity(world, parent)
     // bitECS commits removals lazily — query() forces commit; we rely on its
-    // hook firing here. The cascade is bitECS-native; we just verify the spec
+    // hook firing here. The cascade is bitECS-native, so this only verifies the spec
     // intent: child is no longer a subject of ChildOf with the dead parent.
     expect(hasRelation(world, child, ChildOf, parent)).toBe(false)
     destroyWorld(world)

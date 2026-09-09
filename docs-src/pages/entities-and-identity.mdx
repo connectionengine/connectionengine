@@ -6,7 +6,7 @@ description: Entities, UIDs, BelongsTo, and why paths — not IDs — are the un
 
 ## Two kinds of "id"
 
-An entity in Connection Engine has two identifiers. Confusion between them is the most common early mistake:
+An entity in Connection Engine has two identifiers. They are not interchangeable:
 
 - **The integer ID** (`Entity = number`) is a bitECS handle, valid only inside one world. The same integer means different entities on different worlds, and it does not stay stable across reconnects. Do not put it on the wire. Do not store it in user data.
 - **The UID path** is the identity of the entity. It is the list of UIDs walked from a root entity through `BelongsTo` relations. It stays stable, addressable, and comparable across worlds.
@@ -62,11 +62,14 @@ const boss  = spawnPrefab(world, 'boss:1', {
 ```ts
 export const BelongsTo = defineRelation({
   name: 'BelongsTo',
-  exclusive: true
+  exclusive: true,
+  index: true
 })
 ```
 
-Nothing about it is special. The identity caches — `UIDComponent.nameCache`, `UIDComponent.uidOf`, and `BelongsTo.parentOf`, all typed `WeakMap<Engine, …>` extensions on the relevant definitions — are bookkeeping that `setUID` writes inline, which keeps path lookups O(1) without a relation walk. Conceptually, *identity composes from existing primitives*: one component (UID) plus one relation (BelongsTo). The engine grows no separate "namespace system".
+`index: true` gives it a child → parent map, read with `BelongsTo.get(world, entity)`. `UIDComponent` carries two more indexes as typed extension properties. All three keep a path lookup O(1), so no operation walks the relation.
+
+Identity therefore composes from two existing primitives: one component and one relation. The engine adds no separate namespace system.
 
 ## Why paths, not IDs
 
@@ -76,25 +79,29 @@ Late join works the same way. When a fresh peer applies the event log of the hos
 
 The `continuous` channel needs something more compact than a full path on every packet at the simulation tick rate. Each connection therefore holds a `NetworkIdTable`. That table is an optimisation on top, not a second identity system. The path remains the truth, and the `NetworkId` is only a label for that path on one specific wire.
 
-## The caches behind it
+## The indexes behind it
 
-Three caches on the world keep path operations O(1):
+Three per-engine indexes keep every path operation O(1):
 
-| Cache          | Type                                 | Direction                  |
-|----------------|--------------------------------------|----------------------------|
-| `nameCache`    | `Map<parent, Map<uid, entity>>`      | `(parent, uid) → entity`   |
-| `parentOf`     | `Map<entity, parent>`                | child → parent              |
-| `uidOf`        | `Map<entity, uid>`                   | entity → uid                |
+| Index               | Direction                | Read it with                    |
+|---------------------|--------------------------|---------------------------------|
+| `UIDComponent.nameCache` | `(parent, uid) → entity` | `getEntityByUID(world, parent, uid)` |
+| `UIDComponent.uidOf`     | entity → uid             | `UIDComponent.get(world, entity)`    |
+| `BelongsTo` (`index: true`) | child → parent        | `BelongsTo.get(world, entity)`       |
 
-`setUID` maintains all three caches. `removeEntity` clears them inline, because the lifecycle and the identity caches live in the same module, which needs no runtime registration. You do not normally touch the caches directly. Use `getEntityByUID`, `getEntityPath`, and `resolveEntityPath` instead.
+`setUID` maintains all three. `removeEntity` clears all three. Both live in the same module as the indexes, so neither needs a registration step.
+
+Prefer `getEntityByUID`, `getEntityPath`, and `resolveEntityPath` for path work. Use `uidOfFor(engine)` and `nameCacheFor(engine)` only to iterate a whole map.
+
+One subtlety: a top-level entity carries no `BelongsTo` edge, because `worldRoot` is local to each peer and must not replicate. `setUID` still indexes that entity under `worldRoot`, so `BelongsTo.get` answers for every named entity, with or without an edge.
 
 ## Conventions for UIDs
 
-UIDs are opaque strings, and Connection Engine assigns no meaning to them. Three patterns have proven useful:
+UIDs are opaque strings, and Connection Engine assigns no meaning to them. Three conventions:
 
 - **Type prefix** — `scene:arena`, `user:did:key:z6Mk...`, `avatar:bob`, `item:sword-of-truth`. A prefix makes path debugging readable, and prevents accidental collisions between kinds.
 - **DID-as-UID for users** — store the DID of the user directly as the UID under a `users` root. `users/did:key:z6Mk...` is then both the path **and** the source of the identity proof.
-- **Random suffixes for spawned things** — `bullet:9f3a2c1` works well. Do not force every UID to carry meaning.
+- **Random suffixes for spawned things** — `bullet:9f3a2c1`. A UID does not have to carry meaning.
 
 The engine enforces one hard rule: **a UID must be unique under a given parent.** Two children of the same parent cannot share a UID, and `setUID` throws on a collision.
 
@@ -102,4 +109,4 @@ The engine enforces one hard rule: **a UID must be unique under a given parent.*
 
 You can call `createEntity` and never call `setUID`. The entity exists, holds bitECS storage, carries components, and answers queries. It cannot travel the authored wire, because `flushAuthored` checks `getEntityPath(world, entity)` and skips an entity with an empty path, which has no UID chain to a root.
 
-That behaviour is intentional. Bullets, particles, transient cursor state, and debug entities live for a tick or two, and need no identity. Give one a UID and it becomes addressable. Leave the UID off and it costs you nothing.
+Bullets, particles, transient cursor state, and debug entities live for a tick or two, and need no identity. Give one a UID to make it addressable. Leave the UID off to keep it local.

@@ -44,9 +44,9 @@ import type { Entity, Origin, World, AuthoredEvent } from '../ecs/world'
  * without a free function per relation.
  *
  * The index earns its place by answering after the entity has gone. The bitECS
- * cascade takes a relation with its subject, so a query cannot attribute the
- * removal of an entity that no longer exists — and attribution is exactly what
- * `flushAuthored` needs to decide whether a destroy may travel.
+ * cascade takes a relation with its subject, so a query cannot name the owner
+ * of an entity that no longer exists. That owner is what `flushAuthored` needs
+ * to decide whether a removal may travel.
  */
 export const OwnedBy = defineRelation({
   name: 'OwnedBy',
@@ -100,7 +100,7 @@ export interface AuthorityRequestResult {
  * Taking authority is always a request, never an assignment. Every peer decides
  * for itself whether to honour the resulting event, and a peer without standing
  * gets refused everywhere. This returns the same verdict locally that the other
- * peers will reach, so a refusal costs nothing and never diverges the world.
+ * peers reach, so a refusal leaves every world in step.
  *
  * A granted request emits exactly **one** authored event, the `set`.
  * `AuthoritativeFor` is exclusive, so bitECS drops the previous holder when the

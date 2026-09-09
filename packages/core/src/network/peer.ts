@@ -7,10 +7,9 @@
  * module holds only the bootstrap helpers for wire identity.
  *
  * Import the components and the lookups from `agents.ts`, which defines them.
- * This module carried a hand-listed mirror of them for a while, and the list
- * went stale: `ConnectedTo` and its queries never reached the public API. The
- * package barrel exports both modules, so a caller outside core still has one
- * import path.
+ * Do not mirror a list of their names here: the package barrel exports both
+ * modules, so a caller outside core already has one import path, and a
+ * hand-written list goes stale as `agents.ts` grows.
  */
 
 import { setComponent } from '../ecs/component'

@@ -1,16 +1,22 @@
 /**
  * Network — the sync topology of a world.
  *
- * A `Network` is a set of connections plus the four behaviours that decide what
- * happens on them: how authored envelopes go out, how binary deltas go out,
- * which inbound events are admitted, and what to do with the ones refused.
+ * A `Network` is a set of connections plus four behaviours. The behaviours
+ * decide what happens on those connections:
  *
- * **Those behaviours are fixed when the network is built.** They are readonly
- * fields, supplied to `addNetwork` and never reassigned. A mutable hook would
- * mean the answer to "what does this network do with an envelope?" depends on
- * when you ask, and on whichever module last wrote to the field — a second
- * source of truth for behaviour, discoverable only by grepping for
- * assignments. Fixing them at construction makes that pattern unavailable.
+ *   - how an authored envelope goes out
+ *   - how a binary delta goes out
+ *   - which inbound event the network admits
+ *   - what to report about an event it refuses
+ *
+ * **The behaviours are fixed when the network is built.** They are readonly
+ * fields, supplied to `addNetwork` and never reassigned.
+ *
+ * A mutable hook would make the answer to "what does this network do with an
+ * envelope?" depend on when you ask, and on whichever module wrote to the
+ * field last. That gives behaviour a second source of truth, which a reader
+ * can find only by a search for assignments. Fixed fields make the pattern
+ * unavailable.
  *
  * Callers never reach for the fields. They call the module-level functions
  * below — `publishAuthored(world, network, envelope)` and friends — which take
@@ -18,8 +24,8 @@
  * calling convention, one place the defaults live.
  *
  * The networks themselves live on `world.networks`. This module holds the
- * operations; the world holds the state, so `destroyWorld` clears its own field
- * rather than each layer remembering a side table of its own.
+ * operations. The world holds the state, so `destroyWorld` clears its own field
+ * rather than each layer keeping a side table of its own.
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'

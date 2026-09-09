@@ -27,7 +27,7 @@ no UID path        →  no-op (the wire cannot address it)
 
 Removal authors **inline**, like every other mutation verb. `setComponent` pairs with `removeComponent`, `addRelation` pairs with `removeRelation`, and `setUID` pairs with `removeEntity`. Each of those verbs queues its own reverse at the point of the mutation, so there is no networked twin of `removeEntity` to remember to call.
 
-**Queueing is not sending.** `removeEntity` queues every named removal; `flushAuthored` decides what travels, and it drops a destroy this peer does not own. Who may announce a removal is a distribution question, so the rule lives in the flush rather than in the ECS verb.
+**Queueing is not sending.** `removeEntity` queues every named removal. `flushAuthored` then decides what travels, and drops a destroy this peer does not own. Who may announce a removal is a distribution question, so the rule lives in the flush rather than in the ECS verb.
 
 **Ownership is the only gate, and it does three jobs.** A peer cannot announce the removal of something it does not own. The echo suppresses itself: a received destroy names an entity owned by the *remote* user, so the queued entry never leaves. And local cleanup stays local, because the disconnect sweep removes entities owned by the departing user, never by this one.
 

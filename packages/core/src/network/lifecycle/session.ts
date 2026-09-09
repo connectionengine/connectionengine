@@ -406,12 +406,10 @@ export const rebroadcastAuthored = (
 /**
  * Put a connection on a network, and register its teardown in the same breath.
  *
- * The two halves live here together on purpose. Cleanup used to sit behind an
- * observer, and before that behind a `sweepDisconnectedPeer` that four call
- * sites had to remember. `connection.onClose` fires however the connection
- * ends — a graceful `leave`, a dropped transport, `leaveWorld`, or a closed
- * in-memory link — so registering once at the point of setup covers every one
- * of them. A caller that attaches a connection cannot forget to detach it,
+ * The two halves belong together. `connection.onClose` fires however the
+ * connection ends — a graceful `leave`, a dropped transport, `leaveWorld`, or
+ * a closed in-memory link — so one registration at the point of setup covers
+ * every route. A caller that attaches a connection cannot forget to detach it,
  * because attaching is what registers the detach.
  */
 export const attachConnection = (world: World, network: Network, connection: Connection): void => {

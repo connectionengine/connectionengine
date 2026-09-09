@@ -144,7 +144,7 @@ describe('createBinaryPipeline — paired write + read', () => {
       { networkId: 100, entity: e1 },
       { networkId: 200, entity: e2 }
     ])
-    // Resolver only knows network ID 200 (mapped to t); 100 is unknown.
+    // The resolver knows network ID 200 (mapped to t). It does not know 100.
     const header = targetPipe.read(buf, (nid: number) => (nid === 200 ? t : undefined))
     expect(header.entityCount).toBe(2)
     expect(soaGet(Velocity, t, 'linear', 'x')).toBeCloseTo(9)

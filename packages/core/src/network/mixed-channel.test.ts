@@ -8,7 +8,7 @@
  * Concretely — an authored event is the only thing that may create or remove a
  * component, and it carries the whole component so governance can inspect the
  * initial continuous state too. Binary deltas may only *modify* something that
- * already exists; they can never bring it into being. That is what stops the
+ * already exists. They can never bring it into being. That is what stops the
  * ungoverned fast path from resurrecting a write governance refused.
  */
 
@@ -134,7 +134,7 @@ describe('mixed-channel — a delta may not create a governed component', () => 
   })
 
   it('discarding one component still decodes the rest of the packet', () => {
-    // Velocity is pre-created on the target so it is eligible to receive; Body
+    // Velocity is pre-created on the target so it can receive. Body
     // is not, so it must be skipped without corrupting the read cursor.
     const source = mkWorld('mx-cursor-src')
     const target = mkWorld('mx-cursor-tgt')
@@ -151,7 +151,7 @@ describe('mixed-channel — a delta may not create a governed component', () => 
     setComponent(target, te, Velocity, {}, { origin: 'network' })
     targetPipe.read(buf, () => te)
 
-    // Body was skipped; Velocity still applied, which is only possible if the
+    // Body was skipped. Velocity still applied, which is only possible if the
     // skipped component's bytes were consumed.
     expect(hasComponent(target, te, Body)).toBe(false)
     expect(getComponent(target, te, Velocity)?.linear.x).toBeCloseTo(0.5)

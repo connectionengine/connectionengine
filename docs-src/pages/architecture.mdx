@@ -28,7 +28,7 @@ Engine (per-app ECS runtime container; createWorld({ engine, agent }) — always
             └── onRejected (diagnostic for a refused event)
 ```
 
-Component and Relation **definitions** are module-level globals. `defineComponent({ id })` produces one `ComponentDefinition`, shared across every engine. Per-engine *storage* lives in `engine.componentStores`. The **identity caches** (`nameCache`, `uidOf`, `parentOf`) live as typed `WeakMap<Engine, …>` extension properties on `UIDComponent` and `BelongsTo` — a global definition with per-engine state.
+Component and Relation **definitions** are module-level globals. `defineComponent({ id })` produces one `ComponentDefinition`, shared across every engine. Per-engine *storage* lives in `engine.componentStores`. The **identity indexes** sit on the definitions they describe: `BelongsTo` declares `index: true`, and `UIDComponent` carries `nameCache` and `uidOf` as typed extension properties. Each map keys on the Engine, so one global definition holds per-engine state.
 
 Three rules govern the dependency graph:
 
@@ -75,7 +75,7 @@ Both packages compose with core. Neither forks it.
 - A transport that encodes authored events as AD4M Links inside a Perspective
 - Lifecycle plumbing that subscribes to Perspective changes for inbound events
 
-A consumer picks one package at the edge, or neither. Core itself stays identity-agnostic and crypto-agnostic. Its `Agent` interface is only `{ did: string; sign?: (bytes) => Uint8Array | Promise<Uint8Array> }`.
+A consumer picks one package at the edge, or neither. Core itself stays identity-agnostic and crypto-agnostic. Its `Agent` interface holds two fields: a `did` string, and an optional `sign` function.
 
 ## The two replication channels
 

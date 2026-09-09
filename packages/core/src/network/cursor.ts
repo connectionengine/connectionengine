@@ -71,7 +71,7 @@ export const moveViewCursor = (v: ViewCursor, where: number): ViewCursor => {
 
 /**
  * Capture the current cursor, and return a function that restores it. The
- * caller uses it to undo a speculative write when a component block ends up
+ * caller uses it to undo a speculative write when a component block stays
  * empty. No prop changed, so the caller discards the reserved change-mask
  * space.
  */

@@ -15,7 +15,7 @@ The engine owns three things:
 The engine does *not* own two things:
 
 - **Component and Relation definitions** are module-level singletons. `defineComponent({ id: 'Foo', ... })` produces one `ComponentDefinition` object, shared across every engine that uses it. A component defined at module load works for any engine that starts or stops later, because there is no per-engine registration step.
-- **Identity indexes** live on the definitions they describe. `BelongsTo` declares `index: true`, so `defineRelation` supplies `BelongsTo.get(world, entity)` and `BelongsTo.indexFor(engine)`. `UIDComponent` carries `nameCache` and `uidOf` as typed extension properties, read through `UIDComponent.get(world, entity)`, `nameCacheFor(engine)`, and `uidOfFor(engine)`. Each extension is global; the inner maps key on the Engine, so two engines in one process keep their state apart.
+- **Identity indexes** live on the definitions they describe. `BelongsTo` declares `index: true`, so `defineRelation` supplies `BelongsTo.get(world, entity)` and `BelongsTo.indexFor(engine)`. `UIDComponent` carries `nameCache` and `uidOf` as typed extension properties, read through `UIDComponent.get(world, entity)`, `nameCacheFor(engine)`, and `uidOfFor(engine)`. Each extension is global. The inner maps key on the Engine, so two engines in one process keep their state apart.
 
 A CE World is NOT an engine. A World is a logical scope inside an engine — see [Worlds & Systems](/worlds-and-systems).
 
@@ -34,7 +34,7 @@ const engine = createEngine()
 const world = createWorld({ engine, agent: createAnonAgent() })
 ```
 
-Two worlds inside one engine share the bitECS storage, the clock, and the identity caches:
+Two worlds inside one engine share the bitECS storage, the clock, and the identity indexes:
 
 ```ts
 const engine = createEngine()
@@ -42,7 +42,7 @@ const worldA = createWorld({ engine, agent: aliceAgent })
 const worldB = createWorld({ engine, agent: bobAgent })
 ```
 
-Two engines give full isolation. Entity IDs, time, and identity caches all stay separate. Multi-peer test harnesses use this pattern to simulate independent machines:
+Two engines give full isolation. Entity IDs, time, and identity indexes all stay separate. A multi-peer test harness uses this pattern to simulate independent machines:
 
 ```ts
 const worldA = createWorld({ engine: createEngine(), agent: aliceAgent })
@@ -51,7 +51,7 @@ const worldB = createWorld({ engine: createEngine(), agent: bobAgent })
 
 ## Extension state on definitions
 
-The identity caches are one instance of a broader pattern. Components and relations can carry any typed extension property on their definitions. Anything you put on the options object, beyond the reserved keys, lands on the resulting definition with its type preserved.
+The identity indexes are one instance of a broader pattern. A component or a relation can carry any typed extension property on its definition. Every key on the options object, except the reserved ones, lands on the definition with its type preserved.
 
 ```ts
 import type { Engine, Entity } from '@connectionengine/core'

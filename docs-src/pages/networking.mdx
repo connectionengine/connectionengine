@@ -47,7 +47,7 @@ addNetwork(world, {
 
 Omit one and it takes the default: fan out across `connections`, and admit everything.
 
-Nothing reassigns them afterwards. A mutable hook would make "what does this network do with an envelope?" depend on when you ask and on whichever module wrote to the field last — a second source of truth for behaviour, findable only by grepping for assignments. Making the fields readonly puts that pattern out of reach, and the compiler says so.
+Nothing reassigns them afterwards. A mutable field would make the answer to "what does this network do with an envelope?" depend on when you ask, and on whichever module wrote to it last. The fields are readonly, so the compiler refuses that.
 
 Callers never read the fields either. They call the module-level functions, which take the network and dispatch to whatever it holds:
 
@@ -142,9 +142,7 @@ Disconnect cleanup is **paired with connection setup**. `attachConnection` puts 
 - **Authority moves on.** Every entity whose `AuthoritativeFor` names the departed peer gets a new writer, or it would freeze.
 - **The user's entities go**, but only once their *last* peer disconnects. A user with a desktop and a phone stays present while either survives, which `query([ConnectedTo, …])` answers directly.
 
-Cleanup used to be a `sweepDisconnectedPeer(world, connection)` that those same four call sites had to remember, and missing one left a departed peer holding authority forever with nothing to signal it. An observer on `onRemove(ConnectedTo)` replaced it, and traded that fault for two others: the observer registered per world but fired per *engine*, so every world sharing an engine ran cleanup for every other world's disconnect, and it never detached. Pairing the teardown with the setup fixes all three — one registration, at the one place a connection gets built.
-
-`ConnectedTo` stays as **state**: `connectedPeers` and the last-peer-standing query read it. It simply stops serving as an event source — a fact, not a trigger.
+`ConnectedTo` records presence. `connectedPeers` and the last-peer-standing query read it. Removing it starts nothing: `disconnectPeer` reads `connection.peer` to know which peer left, then removes the component and runs the cleanup.
 
 `ConnectedTo` is `sync: false`. It records a local observation, not shared truth — Alice seeing Bob connected says nothing about whether Carol can reach him.
 
@@ -162,7 +160,10 @@ The rule is structural rather than opt-in. Ownership **is** session-bound. An en
 
 The lifecycle layer also relays envelopes, so that a peer reachable only through another one still receives them. When an authored envelope arrives from connection X, the receiver applies it, then forwards **the events the apply accepted** to every other connection on the same network.
 
-Two details make that work. Forwarding the accepted list, rather than filtering the incoming envelope against the event log, matters because applying has already logged those events — a not-seen filter at that point would discard every one of them and forward only what the peer refused. And a duplicate arriving by a second path costs nothing, because `appendEventLog` drops it at the receiver.
+Two details make that work:
+
+- **Forward the accepted list, not a filtered envelope.** Applying has already logged those events, so a not-seen filter at that point would discard every one of them and forward only what the peer refused.
+- **Let duplicates arrive.** A second path may deliver the same event again. `appendEventLog` drops it at the receiver.
 
 A peer therefore relays what it took, and never relays what its own gates refused. Relaying stays inside one network: an event arriving on `voice` does not cross into `gameplay`, because the members of one network did not agree to receive the traffic of another.
 
