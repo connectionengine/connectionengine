@@ -1,0 +1,105 @@
+---
+description: The runtime container — bitECS storage, time, and the per-engine extension state.
+---
+
+# Engine
+
+An **Engine** is the ECS runtime container. Per-engine state lives here: bitECS storage, per-component instance and view bags, and time. Systems run at the engine level. Several `World` objects can coexist inside one engine, where they share storage and tick together.
+
+The engine owns three things:
+
+- **One bitECS world.** Every entity allocated in this engine shares an ID space. A CE World scopes itself to a subtree inside that space, through the `BelongsTo` chain rooted at `worldRoot`.
+- **Per-component storage.** The SoA typed arrays live directly on each `ComponentDefinition`, so `Transform.position.x[eid]` works without a lookup. The per-entity instance maps and view bags for value fields live on the engine, in `componentStores`, keyed by `(ComponentDefinition, entity)`.
+- **Time state.** `clock`, `frameTime`, `simulationTime`, `fixedTimeStep`, `deltaSeconds`, and `accumulator`. The engine ticks. `tickEngine` and `runSystems` drive every system registered on it.
+- **Systems.** `defineSystem(engine, ...)` registers phase-ordered functions. `destroyEngine(engine)` disposes them.
+
+The engine does *not* own two things:
+
+- **Component and Relation definitions** are module-level singletons. `defineComponent({ id: 'Foo', ... })` produces one `ComponentDefinition` object, shared across every engine that uses it. A component defined at module load works for any engine that starts or stops later, because there is no per-engine registration step.
+- **Identity indexes** live on the definitions they describe. `BelongsTo` declares `index: true`, so `defineRelation` supplies `BelongsTo.get(world, entity)` and `BelongsTo.indexFor(engine)`. `UIDComponent` carries `nameCache` and `uidOf` as typed extension properties, read through `UIDComponent.get(world, entity)`, `nameCacheFor(engine)`, and `uidOfFor(engine)`. Each extension is global. The inner maps key on the Engine, so two engines in one process keep their state apart.
+
+A CE World is NOT an engine. A World is a logical scope inside an engine — see [Worlds & Systems](/worlds-and-systems).
+
+## Always explicit
+
+Every `createWorld` takes an explicit `engine`. You decide what to share and what to isolate at every call:
+
+```ts
+import { createEngine, createWorld, createAnonAgent, defineComponent } from '@connectionengine/core'
+
+// Module-level: registers globally.
+const Health = defineComponent({ id: 'Health', schema: /* ... */ })
+
+// One engine per app — the dominant production shape.
+const engine = createEngine()
+const world = createWorld({ engine, agent: createAnonAgent() })
+```
+
+Two worlds inside one engine share the bitECS storage, the clock, and the identity indexes:
+
+```ts
+const engine = createEngine()
+const worldA = createWorld({ engine, agent: aliceAgent })
+const worldB = createWorld({ engine, agent: bobAgent })
+```
+
+Two engines give full isolation. Entity IDs, time, and identity indexes all stay separate. A multi-peer test harness uses this pattern to simulate independent machines:
+
+```ts
+const worldA = createWorld({ engine: createEngine(), agent: aliceAgent })
+const worldB = createWorld({ engine: createEngine(), agent: bobAgent })
+```
+
+## Extension state on definitions
+
+The identity indexes are one instance of a broader pattern. A component or a relation can carry any typed extension property on its definition. Every key on the options object, except the reserved ones, lands on the definition with its type preserved.
+
+```ts
+import type { Engine, Entity } from '@connectionengine/core'
+
+export const UIDComponent = defineComponent({
+  id: 'UID',
+  schema: Schema.Object({ value: Schema.String({ default: '' }) }),
+  // Typed extension — keyed by Engine so each engine keeps its own buckets.
+  nameCache: new WeakMap<Engine, Map<Entity, Map<string, Entity>>>(),
+  uidOf: new WeakMap<Engine, Map<Entity, string>>(),
+  // Accessors belong on the definition too, so the component answers
+  // questions about itself rather than exporting a `getUID` free function.
+  get: (world: World, entity: Entity): string | undefined => /* ... */
+})
+
+// Anything else can do the same. Use WeakMap<Engine, ...> for per-engine
+// state, or a plain Map / object for genuinely process-global indexes.
+```
+
+An **exclusive relation** needs none of that boilerplate. Declare `index: true` and `defineRelation` supplies the map and its accessors, because a relation index always maps one entity onto another:
+
+```ts
+export const OwnedBy = defineRelation({ name: 'OwnedBy', exclusive: true, index: true })
+
+OwnedBy.get(world, entity)        // Entity | undefined, O(1)
+OwnedBy.set(world, entity, user)  // adds the relation; the index follows
+OwnedBy.indexFor(engine)          // the whole map, to iterate
+```
+
+`addRelation` and `removeRelation` maintain the map, so no caller touches it. A relation that omits the option carries no accessors, and the compiler says so.
+
+`index: true` requires `exclusive: true`. An index holds one target per subject, so pairing it with a relation that holds many would give a map that disagrees with its own relation. The compiler rejects the combination, and `defineRelation` throws for a caller that reached it without types.
+
+The reserved component option keys are `id`, `label`, `schema`, and `sync`. The reserved relation keys are `name`, `sync`, `exclusive`, `autoRemoveSubject`, `store`, and `onTargetRemoved`. Every other key passes through.
+
+## What the engine holds — at a glance
+
+```ts
+interface Engine {
+  readonly bitECS: bitecs.World                                    // entity ID space
+  readonly componentStores: WeakMap<ComponentDefinition, ...>      // per-(component, entity) instance + view bags
+                                                                   // (SoA arrays live on the definition itself)
+
+  clock: Clock                                                     // injectable
+  frameTime: number; simulationTime: number
+  fixedTimeStep: number; deltaSeconds: number; accumulator: number
+}
+```
+
+You almost never touch these fields directly. `defineComponent`, `defineRelation`, `getComponentById(id)`, and `setComponent(world, e, def, value)` give access to most engine state. The fields stay public so that plugin code and tooling can inspect them.

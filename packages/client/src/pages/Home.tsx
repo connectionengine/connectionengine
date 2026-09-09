@@ -3,8 +3,8 @@ import { fetchHealth } from '../api/health'
 import HomeView from '../views/HomeView'
 
 /**
- * The Home page component.
- * Manages the state and data fetching for the application health status.
+ * The Home page component. It holds the state, and it fetches the health status
+ * of the application.
  */
 export default function Home() {
   const [message, setMessage] = createSignal('Loading...')

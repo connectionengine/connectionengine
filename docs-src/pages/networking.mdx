@@ -1,0 +1,206 @@
+---
+description: Transports, sessions, late join — how two worlds become one shared world.
+---
+
+# Peers & Sessions
+
+## The three layers
+
+The network stack has three layers:
+
+- **`TransportEndpoint`** — the mechanism. It answers "how do bytes get from here to there?" WebRTC, WebSocket, in-memory, and AD4M Perspective all satisfy the same small interface.
+- **`Network`** — the sync topology. It holds a `Connection` set, publish hooks, and a governance gate. A world can hold many networks, for spatial segmentation, for voice and video channels, or for admin overlays. All networks on a world share one event log, and deliver it through different connections.
+- **`Connection` + lifecycle** — the protocol. It answers "what do those bytes mean?", "when does a peer count as connected?", and "what happens at disconnect?"
+
+The layers stay orthogonal. You can write a new transport without a change to the protocol. You can add a new network without a rewrite of the transports. You can change governance on one network without an effect on the others.
+
+## Networks
+
+A `World` owns each `Network`. Every world has at least one — the `'default'` network, which the engine creates on first connect:
+
+```ts
+import { addNetwork, ensureDefaultNetwork } from '@connectionengine/core'
+
+ensureDefaultNetwork(world)            // returns the default network, creating it lazily
+addNetwork(world, { id: 'voice' })     // a second network for voice channels
+addNetwork(world, { id: 'admin' })     // a third for moderator overlays
+```
+
+The mutation pipeline of the world routes mutations across networks. Today it broadcasts to all of them. When a write fires:
+
+- `publishAuthored(world, network, envelope)` dispatches the authored events for its network.
+- `publishRuntime(world, network, dirty)` dispatches the binary runtime packets for its network.
+
+One event log carries many topologies. A peer connected only on `voice` never sees gameplay events. A peer connected on both networks sees both.
+
+### Behaviour is fixed when a network is built
+
+A network carries four behaviours: how authored envelopes leave, how binary deltas leave, which inbound events it admits, and what to report about the ones it refuses. All four are **readonly fields, supplied to `addNetwork`**:
+
+```ts
+addNetwork(world, {
+  id: 'gameplay',
+  onValidateAuthored: (world, network, event) => validateEvent(world, event).allowed,
+  onRejected: (world, network, event, reason) => console.warn('refused', event.predicate, reason)
+})
+```
+
+Omit one and it takes the default: fan out across `connections`, and admit everything.
+
+Nothing reassigns them afterwards. A mutable field would make the answer to "what does this network do with an envelope?" depend on when you ask, and on whichever module wrote to it last. The fields are readonly, so the compiler refuses that.
+
+Callers never read the fields either. They call the module-level functions, which take the network and dispatch to whatever it holds:
+
+```ts
+publishAuthored(world, network, envelope)
+publishRuntime(world, network, dirty)
+validateAuthored(world, network, event)   // → boolean
+```
+
+To run different behaviour, build a different network. That is what `@connectionengine/ad4m-bridge` does — `connectAd4m` adds an `'ad4m'` network whose outbound path writes AD4M Links, and removes it on close. A Perspective is its own sync topology, so it gets its own network rather than overriding one that already exists.
+
+## TransportEndpoint
+
+A `TransportEndpoint` exposes **two channels** with different delivery semantics:
+
+```ts
+interface TransportChannel<T = unknown> {
+  send(payload: T): void
+  onMessage(handler: (payload: T) => void): () => void
+}
+
+interface TransportEndpoint {
+  readonly events: TransportChannel               // reliable, ordered
+  readonly stream: TransportChannel<ArrayBuffer>  // typically unreliable, ArrayBuffer-only
+  onClose(handler: () => void): () => void
+  close(): void
+}
+```
+
+The split matches the two replication channels of the engine:
+
+| Transport channel | Carries                                            | Wire mapping                                                                  |
+|-------------------|----------------------------------------------------|-------------------------------------------------------------------------------|
+| `events`          | Control messages + authored envelopes (`event`)    | TCP / WebSocket / reliable QUIC stream / ordered+reliable `RTCDataChannel`     |
+| `stream`          | Binary runtime packets (`continuous`)              | QUIC datagrams / unordered+unreliable `RTCDataChannel`                         |
+
+A WebSocket-only transport satisfies both slots with one underlying connection. That transport does not get the loss-tolerance benefit on `stream`. A QUIC transport gets that benefit natively. A WebRTC transport opens two data channels with different reliability configuration, and assigns one channel to each slot.
+
+The interface stays mechanism-agnostic. The concrete implementation holds the backend — WebRTC, WebSocket, in-memory, AD4M Perspective, or QUIC. Consumers do not branch on the backend. They send on the correct channel, and route incoming messages from the correct handler.
+
+**Routing is explicit — the engine never sniffs payload shape.** The lifecycle layer sends authored envelopes with `events.send` and binary packets with `stream.send`, then listens on each channel separately. Two channels means it never has to inspect an unknown payload to work out what it is.
+
+## The session protocol
+
+`joinNetwork(world, { endpoint })` joins a network over a transport endpoint. It uses the default network when you do not name one. (`joinWorld` is a backward-compatible alias for `joinNetwork` over the default network.) It runs a four-step session:
+
+```
+1. HELLO    — both sides send { agentDID, knownEventCount, networkId bindings }
+2. REPLAY   — each host streams its eventLog from joiner's cursor as chunks
+3. SNAPSHOT — each side sends current state (all components, every channel)
+4. LIVE     — authored envelopes + binary packets flow over the same endpoint
+```
+
+```ts
+import { createMemoryTransport, joinWorld } from '@connectionengine/core'
+
+const link = createMemoryTransport()
+
+const [hostResult, joinerResult] = await Promise.all([
+  joinWorld(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
+  joinWorld(joiner, { endpoint: link.b, knownEventCount: 0 })
+])
+
+console.log(joinerResult.snapshotEntityCount) // entities in the peer's baseline
+console.log(joinerResult.replayedEventCount) // number of events caught up
+```
+
+`joinWorld` resolves once replay-end fires. The snapshot precedes that marker on the ordered `events` channel, so the joiner has already applied it. The same endpoint then carries live envelopes, with no further setup.
+
+## Late join: replay for history, snapshot for the present
+
+**Replay reconstructs history.** The joiner sends `knownEventCount: 0`, or whatever cursor it holds from a previous session, together with the signature of its last known event. The host only honours that cursor when its own event at that position carries the same signature, which proves the two logs share a prefix. On any mismatch the host replays from the start, because the cursor counts events in the log of the joiner and would otherwise skip host events the joiner never had. The host then streams the missing events. The joiner applies each event through the normal mutation pipeline. That works for three reasons:
+
+- The event log is **canonical** for causal change. The creation and the removal of every component pass through it, whatever the schema.
+- `appendEventLog` is **idempotent** on the event signature. Apply drops the events that the joiner already holds, and does so silently.
+- Apply itself is **convergent**. A second `setComponent` with the same value does nothing, and `addRelation` on an existing pair does nothing.
+
+**Replay cannot reconstruct motion.** A creating event carries the whole component, including its continuous fields, but every SoA write after that event stays deliberately unauthored ([Components](/components)). Replay therefore leaves a joiner holding the pose that each component was *created* with. The delta channel cannot close that gap, because it sends only the entities in the current dirty set. Anything at rest stays stale indefinitely, rather than until its next update.
+
+The SNAPSHOT step closes the gap. `createSnapshot` walks every named entity and serialises **all** of its components, whatever their channel. It reads the SoA fields straight out of the typed arrays as plain arrays. The receiver applies the snapshot with `origin: 'network'`, so nothing echoes back.
+
+**Order matters: replay first, snapshot last.** History comes first, then the present. In the opposite order, a replayed creation event would overwrite the newer snapshot. Set `sendStateSnapshot: false` to opt out. The joiner is then correct about what exists, and stale about where it is.
+
+**A snapshot carries no more authority than its sender.** Every component and relation in it passes the same two gates that an authored event from that peer passes — `validateAuthored`, and the standing check that guards `AuthoritativeFor`. The receiver skips a rejected write, so the bootstrap path cannot admit what the authored path refuses. A local `applySnapshot` omits the `from` option, and the engine trusts it.
+
+The same `Snapshot` API in `network/snapshot.ts` stays useful on its own, for persistence, debugging, checkpoint and rollback, and hot-reload.
+
+## Disconnect cleanup
+
+Disconnect cleanup is **paired with connection setup**. `attachConnection` puts a connection on its network and registers `disconnectPeer` on `connection.onClose` in the same function, so attaching is what registers the detach. `onClose` fires however the connection ends — a graceful `leave`, a dropped transport, `leaveWorld`, or a closed in-memory link. The teardown does this:
+
+- **Authority moves on.** Every entity whose `AuthoritativeFor` names the departed peer gets a new writer, or it would freeze.
+- **The user's entities go**, but only once their *last* peer disconnects. A user with a desktop and a phone stays present while either survives, which `query([ConnectedTo, …])` answers directly.
+
+`ConnectedTo` records presence. `connectedPeers` and the last-peer-standing query read it. Removing it starts nothing: `disconnectPeer` reads `connection.peer` to know which peer left, then removes the component and runs the cleanup.
+
+`ConnectedTo` is `sync: false`. It records a local observation, not shared truth — Alice seeing Bob connected says nothing about whether Carol can reach him.
+
+```ts
+import { createPeer, createUser, spawnPrefab } from '@connectionengine/core'
+
+const user = createUser(world, { did: 'did:key:...' })
+const avatar = spawnPrefab(world, 'avatar:alice', { owner: user, parent: scene })
+// when the user's last peer disconnects → avatar (and everything else owned by `user`) is swept
+```
+
+The rule is structural rather than opt-in. Ownership **is** session-bound. An entity that must outlive the session of a user must not be owned by that user. Give it a different owner, such as a world-scope entity or a system user.
+
+## Mesh propagation
+
+The lifecycle layer also relays envelopes, so that a peer reachable only through another one still receives them. When an authored envelope arrives from connection X, the receiver applies it, then forwards **the events the apply accepted** to every other connection on the same network.
+
+Two details make that work:
+
+- **Forward the accepted list, not a filtered envelope.** Applying has already logged those events, so a not-seen filter at that point would discard every one of them and forward only what the peer refused.
+- **Let duplicates arrive.** A second path may deliver the same event again. `appendEventLog` drops it at the receiver.
+
+A peer therefore relays what it took, and never relays what its own gates refused. Relaying stays inside one network: an event arriving on `voice` does not cross into `gameplay`, because the members of one network did not agree to receive the traffic of another.
+
+## connectInMemory
+
+Use `connectInMemory` for tests and solo-mode scenarios that do not need the full handshake:
+
+```ts
+import { connectInMemory } from '@connectionengine/core'
+
+const link = connectInMemory(worldA, worldB)
+// later:
+link.close()
+```
+
+It is a shortcut over `createMemoryTransport` plus `joinWorld` that skips the replay phase. Authored envelopes propagate. Runtime binary packets flow over a `BinaryChannel` attached to each connection as it is wired. Disconnect cleanup runs.
+
+It takes the network behaviours too, and passes them to whichever side it creates a default network for:
+
+```ts
+connectInMemory(worldA, worldB, {
+  onValidateAuthored: (world, network, event) => validateEvent(world, event).allowed
+})
+```
+
+It lives in `testing/` because that is what it is. Production code opens a session with `joinWorld`.
+
+Use `joinWorld` for the production-shaped flow, which includes late-join replay.
+
+## Choosing a transport
+
+Core includes the in-memory transport. Real transports compose with the lifecycle. Each one must satisfy the dual-channel contract. The natural mappings are:
+
+- **WebRTC** — direct peer-to-peer. Open two `RTCDataChannel`s on the peer connection. Assign the ordered and reliable channel to `events`, and the unordered and unreliable channel to `stream`. Give the endpoint to `joinWorld`.
+- **WebSocket** — client-server or relay. Wrap one socket, and assign it to both `events` and `stream`. You lose the loss-tolerance benefit on `stream`, because everything stays reliable and ordered. The rest of the stack works unchanged.
+- **QUIC** — open a reliable stream for `events`, and send `stream` payloads as QUIC datagrams. This is the best fit on paper. No browser API for it is ecosystem-stable yet.
+- **AD4M Perspective** — `@connectionengine/ad4m-bridge` wraps the `addLinks` and `addListener` functions of a Perspective as the `events` channel. `stream` typically rides a sibling WebRTC channel, because Links are too heavy for binary packets at the simulation tick rate.
+- **Signed in-memory** — `connectLocalInMemory` in `@connectionengine/local` adds Ed25519 signing on the `events` channel. `stream` stays unsigned, and the ECS level checks authority.
+
+Core has no WebRTC, WebSocket, or QUIC implementation yet. The integration point is the `TransportEndpoint` interface. Once you satisfy it for your wire, you can reuse the rest of the stack.

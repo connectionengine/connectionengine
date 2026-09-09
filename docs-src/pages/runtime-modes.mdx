@@ -1,0 +1,105 @@
+---
+description: One core, three deployments. Pick the identity + transport story that fits.
+---
+
+# Solo, Local, AD4M
+
+The same `@connectionengine/core` runs in three modes, each more integrated than the last. You pick one at the edge of your app. Core does not care which one you pick.
+
+## Solo
+
+No identity. No transport. One world in one process.
+
+```ts
+import { createEngine, createWorld, createAnonAgent } from '@connectionengine/core'
+
+const engine = createEngine()
+const world = createWorld({ engine, agent: createAnonAgent() })
+```
+
+`createAnonAgent()` returns `{ did: 'did:anon:abc123' }`, an opaque identity that cannot sign. Four cases suit it:
+
+- Single-player games or tools.
+- Offline-first apps that have not yet added multi-user support.
+- Tests of pure ECS or engine logic, with no network involved.
+- Prototyping. You can build the whole component graph and the system logic without any thought about peers, and add a real identity later.
+
+Nothing else about a solo world differs. It holds a full mutation pipeline, a full event log, and full governance support. It never publishes outbound, because it has no connections to publish to.
+
+## Local (`@connectionengine/local`)
+
+Real Ed25519 identity, signed authored events, capability-based authorisation, and an in-memory transport that signs.
+
+```ts
+import { createLocalAgent } from '@connectionengine/local'
+import { createEngine, createWorld } from '@connectionengine/core'
+
+const alice = createLocalAgent({ seed: 'alice' })
+// → { did: 'did:key:z6Mk...', keyPair: { publicKey, privateKey }, sign }
+
+const world = createWorld({ engine: createEngine(), agent: alice })
+```
+
+A `LocalAgent` holds a real `sign` function. Under `connectLocalInMemory(worldA, worldB)`, the local keypair signs every outbound authored event. The receiver verifies each inbound event against the `author` DID of that event before it applies the event. A tampered event fails verification and drops. It never reaches the apply path, and it never enters the event log.
+
+Use Local mode in three cases:
+
+- You want real cryptographic identity (`did:key:z6Mk...`) without a backing service.
+- You build a peer-to-peer app in which each user holds their own keys.
+- You want ZCAP capability chains for delegated authorisation. `addCapabilityConstraint(world, scope, cap)` attaches a capability, and the registered `capability` constraint kind enforces it.
+
+Local mode is the simplest way to release a real multi-user app with no infrastructure dependency. Add a WebRTC `TransportEndpoint` on top, and you have a peer-to-peer app with verified events.
+
+## AD4M (`@connectionengine/ad4m-bridge`)
+
+Identity, transport, and persistence all come from a running [AD4M](https://github.com/coasys/ad4m) instance. Authored events become AD4M Links inside a Perspective.
+
+```ts
+import { Ad4mClient } from '@coasys/ad4m'
+import { createAd4mAgent, connectAd4m } from '@connectionengine/ad4m-bridge'
+import { createEngine, createWorld } from '@connectionengine/core'
+
+const ad4m = new Ad4mClient(/* ... */)
+const agent = await createAd4mAgent(ad4m)
+const world = createWorld({ engine: createEngine(), agent })
+
+const perspective = await ad4m.perspective.get('uuid:...')
+await connectAd4m(world, perspective)
+```
+
+Every authored mutation in `world` now replicates as a Link in the Perspective. Every Link that another agent in the Neighbourhood adds materialises as an authored event in `world`. The Perspective **is** both the wire and the persistence store.
+
+Use AD4M mode in three cases:
+
+- You want a peer-to-peer app in which **AD4M handles persistence for you**. The Languages of AD4M back the Perspective with Holochain, or with whatever Language the Perspective uses.
+- You want to interoperate with other AD4M apps that share the same Perspective. The view of a different app over the same Neighbourhood sees your entities as Links.
+- You build toward the [convergence path](/vision), with Connection Engine as the spatial layer inside [WE](https://github.com/coasys/we).
+
+The runtime binary channel does not pass through AD4M, because it runs at too high a frequency for Link-based storage. The authored channel uses AD4M. The runtime channel uses whichever direct transport you attach beside it, and that is typically WebRTC.
+
+## Switching modes
+
+Core knows one thing about identity: the `Agent` interface, which holds a `did` and an optional `sign` function. A mode change is therefore a one-line change at the call site that creates the world. Everything else stays the same.
+
+```ts
+// Solo:
+createWorld({ engine, agent: createAnonAgent() })
+
+// Local:
+createWorld({ engine, agent: createLocalAgent({ seed: 'alice' }) })
+
+// AD4M:
+createWorld({ engine, agent: await createAd4mAgent(ad4mClient) })
+```
+
+The three-mode design exists for that reason. Start solo while prototyping, move to local once you have multi-user requirements, and move to AD4M when you want decentralised persistence and ecosystem interoperation. None of those steps needs a rewrite of your component schemas, your systems, or your governance.
+
+## What the modes do not change
+
+- **The schema model.** The same `defineComponent` definitions work across all three modes.
+- **The mutation pipeline.** The same authored and runtime split applies.
+- **Governance.** The same constraint registry applies. Local adds `capability`, and AD4M adds its own kinds.
+- **Late join.** The same event-sourced replay protocol runs over whichever transport you use.
+- **Authority and ownership.** The same `OwnedBy` and `AuthoritativeFor` semantics apply.
+
+The modes change WHO signs your events, WHERE the bytes go, and WHO stores them. They do not change the data model that your app is built on.

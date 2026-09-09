@@ -1,0 +1,187 @@
+---
+description: One schema, two channels. How writes become packets, packets become writes, and nothing loops forever.
+---
+
+# The Mutation Pipeline
+
+## The shape
+
+A local write dispatches to one queue or to both queues:
+
+```
+setComponent(world, e, Health, { current: 50 })
+        │
+        ▼
+has SoA fields   →  mark world.runtimeDirty[componentId].add(entity)
+create / remove /
+write value field →  push into world.authoredQueue (entity, predicate, op, value, origin)
+sync: false      →  no-op (never replicated)
+
+removeEntity(world, e)
+        │
+        ▼
+owned by localUser →  push a `destroy` into world.authoredQueue, with the path
+owned by anyone else →  no-op
+no UID path        →  no-op (the wire cannot address it)
+```
+
+Removal authors **inline**, like every other mutation verb. `setComponent` pairs with `removeComponent`, `addRelation` pairs with `removeRelation`, and `setUID` pairs with `removeEntity`. Each of those verbs queues its own reverse at the point of the mutation, so there is no networked twin of `removeEntity` to remember to call.
+
+**Queueing is not sending.** `removeEntity` queues every named removal. `flushAuthored` then decides what travels, and drops a destroy this peer does not own. Who may announce a removal is a distribution question, so the rule lives in the flush rather than in the ECS verb.
+
+**Ownership is the only gate, and it does three jobs.** A peer cannot announce the removal of something it does not own. The echo suppresses itself: a received destroy names an entity owned by the *remote* user, so the queued entry never leaves. And local cleanup stays local, because the disconnect sweep removes entities owned by the departing user, never by this one.
+
+That also covers local cleanup with no special case. Disconnect cleanup removes entities owned by the departing user, which are never the local user's, so it stays local — as it must, since every peer performs its own.
+
+`removeEntity` captures both the path and the entity's relation indexes **before** the bitECS removal, because neither survives to flush time: the cascade takes the `OwnedBy` relation, and `cleanupIdentity` takes the path. Entity ids recycle immediately, so reading either one later could answer for a different entity entirely.
+
+The owner comes from the index `OwnedBy` declares. An exclusive relation may pass `index: true` to `defineRelation`, which supplies a per-engine subject → target map plus `get`, `set`, and `indexFor` on the definition itself. `OwnedBy.get(world, entity)` and `AuthoritativeFor.get(world, entity)` answer in O(1). The index answers one question the relation cannot — what the target *was*, for a subject the engine has already removed.
+
+One write can land in both queues. The authored event carries the **whole** component, including the SoA fields as plain arrays, so governance can inspect the creating write in full. A write that only moves SoA fields on an existing component marks the entity dirty and never reaches the event log. That is the per-tick case. See [Components](/components).
+
+The driver flushes both queues explicitly at end-of-frame, after `runSystems` returns:
+
+```
+flushAuthored(world)
+        │
+        ▼
+for each queued mutation where origin === 'local':
+    resolve entityPath, stamp { author, timestamp }
+    appendEventLog(world, event)         // idempotent on signature
+
+for each event:
+    networks = routeNetworks(world, entity)   // today: broadcast-to-all
+    for each network:
+        publishAuthored(world, network, envelopeForNetwork)
+
+flushRuntime(world)
+        │
+        ▼
+snapshot world.runtimeDirty into Map<componentId, Set<entity>>
+clear the dirty set
+for each (componentId, entity):
+    networks = routeNetworks(world, entity)
+    for each network:
+        accumulate into perNetworkDirty[networkId][componentId]
+for each network:
+    publishRuntime(world, network, perNetworkDirty[networkId])
+```
+
+`publishAuthored` and `publishRuntime` are module-level functions. Each takes the world and the network, and dispatches to the behaviour that network was built with. Core never decides how data goes on a wire. Core routes envelopes to the correct networks, and each network sends them its own way.
+
+The behaviours are readonly, so no module can reassign one after the fact. That keeps a single answer to "what does this network do with an envelope?" — the one supplied to `addNetwork`. See [Networking](/networking).
+
+`routeNetworks(world, entity)` makes the routing decision. Today it broadcasts to all networks (`Array.from(getNetworks(world).values())`). A future spatial layer will replace it with proximity-based routing, without a change to `mutation.ts`.
+
+## Receive paths
+
+```
+applyAuthoredEnvelope(world, envelope, network?)
+        │
+        ├─ for each event:
+        │    governance gate via validateAuthored(world, network, event)
+        │    if event.predicate === 'AuthoritativeFor':
+        │        checkAuthorityChangeStanding(world, event)   ← inline call into network/authority
+        │        (rejects with reason if author has no standing)
+        │    if appendEventLog(world, event) returned true:
+        │        applyEvent — setComponent / addRelation / etc. with origin: 'network'
+```
+
+Two gates run before the engine applies an event. The per-network `validateAuthored` carries the governance rules, and different networks can enforce different ones. It defaults to admitting everything. The authority-transfer standing check is unconditional. `network/mutation.ts` calls `checkAuthorityChangeStanding` in `network/authority.ts` directly. Both modules live in `network/`, so this is an ordinary named import.
+
+For `continuous` state, **no separate "apply runtime envelope" function exists**. The binary pipeline (`network/binary.ts`) is the receive path. It reads packets and writes straight into SoA storage, and never calls `setComponent`.
+
+This asymmetry is part of what the two channels buy you. The `event` side has a full apply pipeline, because each event carries semantic meaning. The `continuous` side is pure data: arrays in, arrays out, and no event objects to construct.
+
+## The origin tag, and why it exists
+
+Every mutating call tags itself `origin: 'local' | 'network'`. The mutation pipeline publishes only the mutations stamped `local`. If you stamp `network`, the write happens, but the pipeline queues nothing for outbound.
+
+The tag matters on receive. When the authored envelope of peer A arrives at peer B, the receive path applies each event with `setComponent(..., { origin: 'network' })`. Without the tag, peer B would queue those writes for outbound and re-broadcast them. Peer A would then receive its own writes back and re-broadcast them again, forever.
+
+The rule is therefore: **the receive path stamps `network`, and the local path stamps `local`, which is the default**. You almost never write `origin: 'network'` yourself, because that is the job of the network layer.
+
+Watch out for one subtlety. `origin` does not record where a write came from. It records whether the pipeline should re-broadcast the write. You can tag a locally-applied write `network` when you want to keep it off the wire. Treat it as a control flag rather than a provenance flag.
+
+## Idempotent event log
+
+The world holds two parallel structures:
+
+```ts
+eventLog: AuthoredEvent[]  // ordered append-only canonical log
+eventLogSeen: Set<string>  // composite signature index
+```
+
+Every push goes through `appendEventLog(world, event)`. That function computes the signature `${author}|${timestamp}|${seq}|${op}|${predicate}|${entityPath}|${JSON(value)}` and skips any signature it has already seen. Late-join replay is safe as a result. A peer that reconnects with `knownEventCount: 0` receives events it already holds, and append drops each one.
+
+`seq` is a per-author ordinal that `flushAuthored` stamps. The clock has millisecond resolution, so a whole frame of writes usually shares one timestamp. Without the ordinal, writing a value, changing it, and restoring it inside one frame gives the first and third writes identical signatures, and the third is dropped as a duplicate — leaving the author and its peers permanently disagreeing.
+
+
+The same dedup property makes relaying safe with three or more peers. Peer B receives a fresh event from peer A, applies it, and forwards it to peer C. If C already received that event from A directly, C drops it on append.
+
+Push through `appendEventLog` rather than writing to `eventLog` directly, or the signature index falls out of step with the log.
+
+You can read the log directly if you need to:
+
+```ts
+import { eventSignature, hasEventBeenSeen, appendEventLog } from '@connectionengine/core'
+
+if (!hasEventBeenSeen(world, event)) {
+  appendEventLog(world, event)
+}
+```
+
+Normally you do not need to. The mutation pipeline does it.
+
+## What about authority on the `continuous` channel?
+
+The `continuous` channel has no governance gate. A binary packet from peer X arrives and updates SoA fields, with no further check. Authority applies **structurally**, through the `AuthoritativeFor` relation. A system that runs locally asks "do I hold authority over this entity for this component?" before it runs physics or moves anything. See [Authority & Ownership](/authority-and-ownership).
+
+This split is intentional. Per-packet signature verification at the simulation tick rate costs too much. Per-event signature verification on authored events, at sub-Hz cadence, costs little. Authority on `continuous` is a property of the entity graph rather than of the wire.
+
+One gate *does* apply here — a gate of existence. A delta may only modify a component that already exists. If the entity lacks the component, the pipeline decodes the delta into a scratch slot and drops it. A packet never materialises a component.
+
+## A complete flow
+
+```
+peer A:                                          peer B:
+
+setComponent(world, e, Health, { current: 50 })
+  → world.authoredQueue.push({ ..., origin: 'local' })
+
+setComponent(world, e, Transform, { position: [1,2,3] })
+  → world.runtimeDirty.get('Transform').add(e)
+
+runSystems(engine, 1/60)
+  → ...systems...
+
+flushAuthored(world)
+  eventLog.push(event)
+  publishAuthored(world, network, { events: [...], fromPeer: did })
+  → connection.send(envelope)
+                                                 ── microtask ──→
+                                                 endpoint.onMessage(envelope)
+                                                 isAuthoredEnvelope? yes
+                                                 applyAuthoredEnvelope(world, envelope)
+                                                   for event:
+                                                     validateAuthored? ok
+                                                     checkAuthorityChangeStanding? ok (non-authority event)
+                                                     appendEventLog (new)
+                                                     applyEvent → setComponent(..., { origin: 'network' })
+                                                   B's authoredQueue: no entries (origin: network skipped)
+flushRuntime(world)
+       publishRuntime(world, network, dirty)
+       → connection.channel?.publish(dirty)
+            sendBindingsControl({ networkId, entityPath })
+            pipeline.write(...) → ArrayBuffer
+            connection.send(buffer)
+                                                 ── microtask ──→
+                                                 endpoint.onMessage(buffer)
+                                                 ArrayBuffer? yes
+                                                 channel.applyBuffer(buffer)
+                                                   pipeline.read → SoA stores updated
+                                                   setComponent(..., {}, { origin: 'network' })
+                                                     (only to register bitECS presence on first packet)
+```
+
+Every write in the engine follows that path.

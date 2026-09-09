@@ -6,7 +6,7 @@ interface StatusProps {
 }
 
 /**
- * A component that displays the client and server status messages.
+ * A component that shows the status messages of the client and of the server.
  */
 const Status: Component<StatusProps> = (props) => {
   return (

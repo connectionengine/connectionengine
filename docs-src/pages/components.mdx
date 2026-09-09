@@ -1,0 +1,248 @@
+---
+description: Schema-driven components, replication channels, and why your schema decides your wire format.
+---
+
+# Components
+
+## A component is a schema
+
+```ts
+import { Schema, defineComponent } from '@connectionengine/core'
+
+const Transform = defineComponent({
+  id: 'Transform',
+  schema: Schema.Object({
+    position: Schema.Vec3(),
+    rotation: Schema.Quat()
+  })
+})
+
+const Health = defineComponent({
+  id: 'Health',
+  schema: Schema.Object({
+    current: Schema.Number({ default: 100 }),
+    max: Schema.Number({ default: 100 })
+  })
+})
+```
+
+Three facts control everything else about `defineComponent`:
+
+1. **Definitions are global.** `defineComponent({ id: 'Foo', ... })` registers a process-wide singleton, keyed on `id`. A second call with the same id returns the same definition. Per-engine storage lives in `engine.componentStores`. Every engine that uses the definition shares it.
+
+2. **SoA storage lives on the definition.** SoA-tagged fields (`Schema.Vec3`, `Schema.Quat`, `Schema.ArrayBuffer`, `Schema.SoAStore`) become properties on the returned definition. `Transform.position` is a `Vec3SoA` — the same object that a bitECS-style `defineComponent({ position: { x: f32, y: f32, z: f32 } })` returns. There is no separate "stores" lookup. The definition *is* the store.
+
+3. **The schema decides the wire.** SoA fields travel the binary `continuous` channel. Value-typed fields travel the authored `event` channel. A component that holds both sends each half over its own channel. The contents of your schema decide which channels it uses.
+
+## Replication channels
+
+How a component replicates follows from its schema. The definition records
+nothing about it. One rule covers every component:
+
+> **Existence is governed. Values are governed only where they are discrete.**
+
+| What happens                                     | Where it goes                                        | Governed |
+|--------------------------------------------------|------------------------------------------------------|----------|
+| Created, removed, or a value-typed field written | Authored event, carrying the **whole** component     | Yes      |
+| Only SoA fields written                          | Binary delta, per-field change mask, per-peer shadow | No       |
+| `sync: false`                                    | Nowhere                                              | n/a      |
+
+*Every* synced component therefore authors. Creation is causal, whatever the
+schema holds. A field-less tag component authors too, because its presence is
+the data. The schema decides one thing only: whether the component *also* holds
+continuous state. `hasSyncedSoA` answers that question:
+
+```ts
+hasSyncedSoA(Transform) // true  — SoA fields, and replicated
+hasSyncedSoA(Health)    // false — value fields only
+hasSyncedSoA(LocalPose) // false — SoA fields, but sync: false
+```
+
+That leads to the rule you most need to remember: **a binary delta may only
+modify a component that already exists. It can never create one or remove one.**
+Without that rule, the ungoverned channel could restore a write that governance
+had just refused.
+
+`continuous` and `event` remain the useful names for the two channels, but
+nothing stores those labels. You choose the schema, and you use `sync` to opt
+out:
+
+```ts
+const Score = defineComponent({
+  id: 'Score',
+  // No SoA fields → `event` channel. No override needed.
+  schema: Schema.Object({ points: Schema.Number({ default: 0 }) })
+})
+
+const RenderCache = defineComponent({
+  id: 'RenderCache',
+  sync: false, // pure derived state — do not ship it
+  schema: Schema.Object({ lastDrawTime: Schema.Number({ default: 0 }) })
+})
+```
+
+## The `$`-prefixed meta surface
+
+All metadata on the definition uses a `$` prefix. The bare keys stay reserved for the SoA stores that come from the schema:
+
+- `Score.$id`              — component id (`'Score'`)
+- `Score.$label`           — human label (defaults to `$id`)
+- `Score.$schema`          — the TypeBox schema you passed in
+- `Score.$sync`            — `true` unless you opt out
+- `Score.$componentSchema` — the shareable replication-metadata blob (jsonSchema + shaclShape)
+- `Score.$soaFields` / `Score.$valueFields` — field-name partitions that the mutation pipeline uses
+
+For `Transform`:
+
+```ts
+Transform.$id           // 'Transform'
+Transform.$soaFields    // ['position', 'rotation']
+Transform.position      // Vec3SoA<Float32ArrayConstructor>
+Transform.rotation      // QuatSoA<Float32ArrayConstructor>
+```
+
+The bare names (`position`, `rotation`) stay reserved for *your* schema fields.
+
+## Mixed components
+
+A component may hold both kinds of field:
+
+```ts
+const Body = defineComponent({
+  id: 'Body',
+  schema: Schema.Object({
+    position: Schema.Vec3(),                 // SoA     → continuous half
+    label:    Schema.String({ default: '' }) // value   → discrete half
+  })
+})
+Body.$soaFields   // ['position']
+Body.$valueFields // ['label']
+```
+
+No special rule applies. A mixed component exercises both sides of the one rule.
+Creation of a `Body` authors an event that carries `position` *and* `label`, so
+a constraint can inspect the initial pose. A later move authors nothing. A
+rename authors the whole component again.
+
+Governance therefore decides whether an entity carries a `Body` at all, and what
+its `label` says. Governance does not police where the body *is* this frame,
+which it could never do at tick rate. Continuous constraints belong in
+**systems**. A system makes an invalid state unreachable rather than
+inadmissible. A force field that keeps other users from walking into you is a
+system, not a governance rule.
+
+Know two things before you use a mixed component:
+
+- **The halves can tear.** They travel different transports at different cadences. `getComponent` can therefore return an object whose halves come from slightly different moments.
+- **A per-tick `setComponent` does not author.** A write of SoA fields alone to an existing component rides the binary channel alone. Use the hot path (`Body.position.x[eid] = …`, or the view bag), and nothing touches the event log.
+
+Split into `Transform { position, rotation }` and `Label { text }`, then compose
+with `definePrefab`, when the two halves are not genuinely one thing. Mix them
+when they are.
+
+## Reading and writing
+
+```ts
+import { setComponent, getComponent, hasComponent, removeComponent } from '@connectionengine/core'
+
+setComponent(world, entity, Health, { current: 50 })
+// → addComponent in bitECS, fills defaults, writes value fields to the
+//   instance store, marks dirty if it has a continuous half and queues an
+//   authored event if it has a discrete half (both, for a mixed component)
+
+getComponent(world, entity, Health)
+// → { current: 50, max: 100 }  — the live instance object
+
+hasComponent(world, entity, Health) // → true
+
+removeComponent(world, entity, Health)
+// → bitECS removeComponent, drops instance, clears dirty flag,
+//   queues an authored remove event for anything with a discrete half
+```
+
+## Two read paths, both equally fast
+
+Continuous components give you two ways to read state, and neither one costs more than the other. Use whichever fits the system you write.
+
+### 1. `Transform.position.x[eid]` — the bitECS-style hot path
+
+SoA storage lives directly on the definition. The per-axis arrays are real `Float32Array`s, suitable for `gl.bufferData` GPU uploads and for tight inner loops:
+
+```ts
+const positionX = Transform.position.x
+const positionY = Transform.position.y
+const positionZ = Transform.position.z
+
+for (const eid of entities) {
+  positionX[eid] += dt * velocityX[eid]
+  positionY[eid] += dt * velocityY[eid]
+  positionZ[eid] += dt * velocityZ[eid]
+}
+```
+
+This path adds no indirection and no per-call work. Systems use it at 60 fps.
+
+### 2. `getComponent(world, e, Transform).position.x` — the ergonomic path
+
+Use this path when you want a named handle on the component of a single entity:
+
+```ts
+const t = getComponent(world, e, Transform)
+if (!t) return
+t.position.x += dt * vx
+t.position.y += dt * vy
+console.log(`rotation: ${t.rotation.w}`)
+```
+
+Both paths read and write the same SoA storage. There are no copies and no refresh step. The view objects use property accessors (`Object.defineProperty` getters and setters) that delegate straight to the SoA arrays. A write through either path is immediately visible to the other.
+
+### Stable references, zero garbage on the hot path
+
+`getComponent` returns a **stable JS object reference** for a given `(component, entity)` pair. Repeated calls return the same object. The per-field view objects inside it (`t.position`, `t.rotation`) are also stable per entity:
+
+```ts
+const t1 = getComponent(world, entity, Transform)
+const t2 = getComponent(world, entity, Transform)
+t1 === t2                     // true
+t1.position === t2.position   // true — same view, getter-backed
+```
+
+Each channel backs this differently:
+
+- **Event-channel components** (value fields): `getComponent` returns the instance-store record of the engine for that entity directly. It **is** the underlying data. `setComponent` mutates the same object.
+- **Continuous-channel components** (SoA fields): `getComponent` returns a cached per-entity view bag whose fields are `SoA.view(entity)` projections. The `.x`, `.y`, `.z`, and `.w` accessors of each projection read and write the underlying typed arrays. There is no refresh step, and the values stay live.
+- **Mixed components**: one merged view bag. The SoA fields are the same live projections. The value fields are getters and setters that delegate to the instance store. The result is still one stable object per entity, and still no allocation after the first call.
+
+**A write through the view works.** `t.position.x = 5` sets `Transform.position.x[entity] = 5`. The mutation pipeline does not detect that write on its own. For replicated state, call `setComponent`, or mark the entity dirty explicitly, so that the binary delta includes it.
+
+## The `{ origin }` option
+
+Every mutating call accepts `{ origin: 'local' | 'network' }`:
+
+```ts
+setComponent(world, entity, Health, { current: 50 }, { origin: 'network' })
+```
+
+- `'local'` (the default) means "this came from local code, replicate it." The mutation pipeline collects it and ships it.
+- `'network'` means "this came from a received envelope, do NOT re-broadcast." Without the stamp, envelopes would echo between peers forever.
+
+You almost never write `origin: 'network'` yourself. The receive path (`applyAuthoredEnvelope` and the binary pipeline) writes it for you. The option stays public because it is central to the no-loop invariant: the receive side stamps `network`, and the dirty-flag and authored-queue path skips anything stamped `network`.
+
+## Defaults and `Value.Default`
+
+The `default: ...` in the schema is the source of truth. On the first `setComponent`, the engine fills any field you did not supply from the defaults, through the `Value.Default` function of TypeBox. Later `setComponent` calls do partial updates, and write only the fields you supply.
+
+This makes the following safe:
+
+```ts
+setComponent(world, e, Health, {}) // creates with current: 100, max: 100
+setComponent(world, e, Health, { current: 25 }) // current: 25, max: 100
+```
+
+The receive path depends on this behaviour. The codec writes SoA values straight into `component.position.x[entity]`, and never calls `setComponent`. If the entity does not already have the component, the codec decodes the delta into a scratch slot and drops it, because creation is governed.
+
+## When you have a lot of components
+
+Components are cheap. Do not make one component do everything. A `Stats` component with twenty fields is harder to reason about than five focused components — `Health`, `Mana`, `Stamina`, `Combat`, and `Movement`. Smaller components also work better with queries. `query(world, [Health, Damaged])` is more selective than `query(world, [Stats])` plus a manual filter.
+
+Fields that move together at the same cadence are the exception. `position` and `rotation` on `Transform` belong together, because the engine writes and replicates them as one logical unit. Keep fields together when their behaviour is correlated. Split them when it is not.

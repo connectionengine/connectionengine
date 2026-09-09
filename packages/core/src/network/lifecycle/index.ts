@@ -1,0 +1,31 @@
+/**
+ * Lifecycle — the session protocol, and the per-connection state for a live
+ * multi-peer world.
+ *
+ * - `session.ts`  — the whole connection lifecycle: handshake, live traffic,
+ *                   relay, and the teardown a closed connection triggers
+ * - `replay.ts`   — join-time catch-up. It streams the authored event log and
+ *                   the state snapshot, and holds their apply handlers.
+ * - `network-id.ts` — the NetworkId component, local helpers, and remote table
+ * - `binary-channel.ts` — the per-connection binary pipeline, and the bindings
+ *                   sync
+ */
+
+export type { JoinNetworkOptions, JoinResult, JoinWorldOptions } from './session'
+export { joinNetwork, joinWorld, leaveWorld } from './session'
+// The pieces a transport implementation wires for itself when it does not use
+// the full `joinNetwork` handshake. `testing/connect-memory.ts` is the worked
+// example.
+export { attachConnection, attachRuntimeChannel, rebroadcastAuthored } from './session'
+export type { NetworkIdBinding, RemoteBindingTable } from './network-id'
+export {
+  createRemoteBindingTable,
+  ensureNetworkId,
+  getNetworkId,
+  NetworkIdComponent,
+  networkIdBindings
+} from './network-id'
+export type { BinaryChannel, BindControlMessage, ChannelOptions } from './binary-channel'
+export { createBinaryChannel, isBindControl } from './binary-channel'
+export type { ReplayChunkMessage, ReplayEndMessage, SnapshotMessage } from './replay'
+export { applyReplayChunk, applyStateSnapshot, endReplay, streamEventLog, streamStateSnapshot } from './replay'

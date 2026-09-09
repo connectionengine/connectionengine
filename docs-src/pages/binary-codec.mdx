@@ -1,0 +1,139 @@
+---
+description: How runtime SoA fields become bytes — change masks, shadow maps, NetworkIds, optional compression.
+---
+
+# The Binary Wire
+
+The `continuous` channel exists because per-event JSON envelopes cost too much at the simulation tick rate, for transforms, velocities, and other continuously-moving data. Three ideas shape the binary codec:
+
+1. **No strings on the wire.** Component identity is the wire index, set at handshake. Entity identity is a compact `NetworkId`, also set at handshake. Field identity is a bit position in a change mask.
+2. **Per-field delta encoding.** A per-typed-array shadow map holds the last value sent. The codec emits only the fields that changed, within a float epsilon tolerance. An entity with no changes produces zero bytes.
+3. **Per-connection state.** Each `Connection` holds its own `BinaryChannel` with its own shadow map. Each peer therefore keeps an independent record of what the local side already delivered. That independence matters when one peer drops packets or reconnects.
+
+## Wire format
+
+```
+Packet:
+  [f64 timestamp][u32 entityCount]
+  for each entity that wrote:
+    [u32 networkId][u8/u16/u32 componentMask]
+    for each set bit in componentMask:
+      [u8/u16/u32 propMask]
+      for each set bit in propMask: prop payload (raw or compressed)
+```
+
+Mask widths grow with population: 1 byte for 8 or fewer components and props, 2 bytes for 16 or fewer, and 4 bytes for 32 or fewer. The codec does not support more than 32. Split the data into several components instead.
+
+## A pipeline is a `{ write, read }` pair
+
+```ts
+import { createBinaryPipeline } from '@connectionengine/core'
+
+const pipe = createBinaryPipeline(world, [Transform, Velocity])
+
+const buffer = pipe.write(
+  { timestamp: world.engine.clock.now() },
+  [{ networkId: 100, entity: alicePlayer }]
+)
+
+// later, on the receiving side:
+const peerPipe = createBinaryPipeline(peerWorld, [Transform, Velocity])
+peerPipe.read(buffer, (networkId) => peerEntityMap.get(networkId))
+```
+
+Both sides agree on the components list, because **the index of a component in that array is its wire identity**. The component IDs themselves never travel. Only the position travels. The handshake takes responsibility for that "ordered registration" requirement.
+
+In practice you do not construct pipelines yourself. The lifecycle layer builds one per connection. It sizes the pipeline to the runtime components that are globally registered, sorted by id for a deterministic peer-agnostic order.
+
+## NetworkIds
+
+Entity paths stay stable across worlds, but they are verbose. The binary channel cannot carry strings, so each entity that enters the wire gets a `NetworkId` component — a compact `u32` allocated lazily when the entity first becomes dirty:
+
+```
+Per-world (sender side):
+  NetworkId component on each entity  ← world.nextNetworkId allocates sequentially
+
+Per-connection (receiver side):
+  RemoteBindingTable: Map<u32, EntityPath>  ← received via control messages, resolved per packet
+```
+
+When an entity becomes dirty for the first time, the channel sends a `{ type: 'bind', bindings: [{ networkId, entityPath }] }` control message **over the `events` channel of the transport**, which is reliable and ordered. The receiver therefore sees the binding before the binary packet that uses it arrives on the `stream` channel.
+
+The initial hello includes a snapshot of the local table. The first binary packet after the handshake can therefore use any entity that already exists, without a separate `bind` control message.
+
+## Shadow maps and rewind
+
+This is the mechanism that makes per-field delta encoding cheap:
+
+```ts
+// Inside the write loop, for each prop:
+const rewindFn = rewindViewCursor(view)
+const writeMask = spaceUint8(view)  // reserve a byte we'll fill later
+let mask = 0
+for (let i = 0; i < props.length; i++) {
+  if (writePropIfChanged(view, props[i], entity, forceFullSync)) mask |= 1 << i
+}
+if (mask === 0) {
+  rewindFn()  // undo everything we just wrote — nothing changed
+  return false
+}
+writeMask(mask)  // commit the mask now that we know what was written
+```
+
+The shadow map uses the key `(typedArray, entity)` and stores the value written last. `writePropIfChanged` compares the current store value against the shadow, with `PROP_EPSILON` tolerance for floats. It writes the value when the two differ, and then updates the shadow. If no field of any component changed for an entity, the whole entity block rewinds. If nothing changed for any entity, the packet holds only a header, and the lifecycle layer does not send header-only packets.
+
+## Forcing full state
+
+Two calls force a full snapshot, whatever the shadow holds:
+
+```ts
+pipe.write(meta, entries, true) // third arg = forceFullSync
+pipe.resetShadow()              // next write emits everything
+```
+
+The per-connection channel also schedules periodic full syncs, through `RuntimeTransportConfig.fullSyncInterval`. It defaults to every 300 ticks, which is about 5 seconds at the default simulation tick rate. This recovers from packet loss automatically, and needs no explicit ACKs.
+
+## Optional compression
+
+Two compression schemes are available, and you opt in per component and field:
+
+```ts
+const pipe = createBinaryPipeline(world, [Transform], {
+  compression: {
+    Transform: {
+      position: { kind: 'vec3-int16', range: 1000 },   // 6 bytes vs 12
+      rotation: { kind: 'quat-smallest3' }              // 4 bytes vs 16
+    }
+  }
+})
+```
+
+- **`vec3-int16`** — quantises each axis to a signed 16-bit integer that spans `[-range, +range]`. Use it for positions and velocities with known bounds. The error stays below one percent inside the range.
+- **`quat-smallest3`** — packs a unit quaternion into 32 bits with the smallest-three method: a 2-bit index of the largest component, plus three signed 10-bit components, and reconstruction of the fourth. The absolute error is approximately 0.005 per component.
+
+Compressed fields collapse multi-axis groups into single props with single mask bits. The shadow map still works field by field. If any of x, y, or z changed, the codec sends the whole packed payload.
+
+These schemes are tools, not defaults. Do not compress until you have measured the bandwidth pressure. The quantisation error is real, and it can become visible in physics or animation.
+
+## RuntimeTransportConfig
+
+Use this configuration for per-component throttling and full-sync scheduling:
+
+```ts
+joinWorld(world, {
+  endpoint,
+  runtimeConfigs: [
+    { componentIds: ['Transform'], rate: 60, fullSyncInterval: 300 },
+    { componentIds: ['Velocity'],  rate: 30, fullSyncInterval: 600 },
+    { componentIds: ['Health'],    rate: 10 }
+  ]
+})
+```
+
+`rate` sets a target in Hz, scaled against the simulation tick rate. On a 60 Hz simulation, `rate: 30` publishes every second tick. On a 120 Hz simulation, `rate: 30` skips three ticks out of four. An unset `rate` publishes every tick. `fullSyncInterval` sets the number of ticks between forced full snapshots.
+
+Throttling never loses a movement. An entity held back by the rate cap moves into a per-channel pending set and goes out on the next tick the throttle allows, because `flushRuntime` has already cleared the dirty set of the world by then.
+
+A forced full sync covers every entity this connection has addressed that still carries the component, not only the entities dirty on that tick. An entity that stopped moving while a packet carrying it was lost is exactly the case that needs repairing, and it is not dirty.
+
+The defaults suit most applications: publish every tick, full sync every 300 ticks. Use the configuration when you have many components with very different cadence requirements.

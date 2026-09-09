@@ -1,0 +1,69 @@
+/**
+ * createLocalRuntime — a one-call setup for a world in fully local mode.
+ *
+ * This helper serves a solo app or a local-multiplayer app that does not want
+ * to compose the agent, the engine, the world, the transport, and the
+ * governance itself.
+ *
+ *   const { world, agent } = createLocalRuntime({ seed: 'alice' })
+ *   // ... use the world. The signing and the governance are already attached.
+ *
+ * For a two-peer setup, link the runtimes with `connectLocalInMemory`:
+ *
+ *   const a = createLocalRuntime({ seed: 'alice' })
+ *   const b = createLocalRuntime({ seed: 'bob' })
+ *   connectLocalInMemory(a.world, b.world)
+ */
+
+import {
+  createEngine,
+  createWorld,
+  ensureDefaultNetwork,
+  type Clock,
+  type Engine,
+  type World
+} from '@connectionengine/core'
+import { createLocalAgent, type LocalAgent } from './agent'
+import { capabilityGate } from './governance'
+import { publishSigned } from './transport'
+
+export interface CreateLocalRuntimeOptions {
+  /** Seed for the Ed25519 keypair of the local agent. A seed makes the keypair
+   *  deterministic. */
+  seed?: string
+  /** An agent built earlier. It overrides `seed`. */
+  agent?: LocalAgent
+  /** Optional engine. It defaults to a fresh isolated engine. A local runtime
+   *  usually stands alone, and one engine per runtime keeps its storage
+   *  isolated from the other peers in the same process. */
+  engine?: Engine
+  /** Simulation tick rate of the engine. It applies only when this function
+   *  constructs a fresh engine, and it is ignored when the caller supplies
+   *  `engine`. It defaults to 1/60. */
+  fixedTimeStep?: number
+  /** Clock for the engine. It applies only to a fresh engine, and it defaults
+   *  to the wall clock. */
+  clock?: Clock
+  /** Attach the capability governance gate. Defaults to true. Set the trusted
+   *  issuers with `setTrustedIssuers` before opening a session. */
+  governance?: boolean
+}
+
+export interface LocalRuntime {
+  world: World
+  agent: LocalAgent
+}
+
+export const createLocalRuntime = (options: CreateLocalRuntimeOptions = {}): LocalRuntime => {
+  const agent = options.agent ?? createLocalAgent({ seed: options.seed })
+  const engine = options.engine ?? createEngine({ fixedTimeStep: options.fixedTimeStep, clock: options.clock })
+  const world = createWorld({ engine, agent })
+  // Build the default network with both behaviours of this runtime: sign
+  // outbound, gate inbound. They are fixed here because a network cannot be
+  // re-taught either one afterwards.
+  ensureDefaultNetwork(world, {
+    onPublishAuthored: publishSigned,
+    onValidateAuthored: options.governance === false ? undefined : capabilityGate
+  })
+  return { world, agent }
+}

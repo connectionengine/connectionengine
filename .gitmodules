@@ -1,0 +1,4 @@
+[submodule "packages/ad4m"]
+	path = packages/ad4m
+	url = https://github.com/coasys/ad4m.git
+	branch = dev
