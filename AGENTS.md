@@ -40,7 +40,27 @@ git add packages/ad4m && git commit -m "bump ad4m submodule"
 
 Do not add the import when this rule fails. Take one of two other actions instead. Move the missing concept down a layer. Or invert the dependency with a registered hook.
 
-The precedent for inversion is `onWorldDestroy` in `ecs/world.ts`. `network/network.ts` registers a hook there, so `destroyWorld` closes networks without `ecs/` importing anything from `network/`.
+The precedent for inversion is `onWorldDestroy` in `ecs/world.ts`. `network/network.ts` registers a hook there, so `destroyWorld` closes networks without `ecs/` importing anything from `network/`. `onWorldCreate` does the same for observer registration — `network/mutation.ts` and `network/presence.ts` both use it.
+
+## Behaviour is fixed at construction — no mutable hooks on runtime objects
+
+A `Network` carries four behaviours: `onPublishAuthored`, `onPublishRuntime`, `onValidateAuthored`, `onRejected`. All four are **readonly**, supplied to `addNetwork` and never reassigned.
+
+Callers never read those fields. They call the module-level dispatchers in `network/network.ts`:
+
+```ts
+publishAuthored(world, network, envelope)
+publishRuntime(world, network, dirty)
+validateAuthored(world, network, event) // → boolean
+reportRejected(world, network, event, reason)
+```
+
+Rules that follow from this:
+
+- **Never add a mutable hook field to a runtime object.** A field that any module may reassign makes the object's behaviour depend on call order, and the only way to find the answer is to grep for assignments.
+- **To change behaviour, build a different object.** `connectAd4m` adds its own `'ad4m'` network rather than overriding the default one, and removes it on close.
+- **`ensureDefaultNetwork(world, options)` applies its options only when it creates the network.** A second caller cannot re-teach an existing one. Where two entry points must agree — `createLocalRuntime` and `connectLocalInMemory` in `local/` — both pass the _same_ function values, so either creation order gives the same result.
+- **The same rule applies to the observer pattern.** Side effects that used to be procedures other code had to remember to call are now derived from component state: entity removal replicates from `onRemove(UIDComponent)` gated on ownership, and disconnect cleanup runs from `onRemove(ConnectedTo)`. Prefer an observer over a function four call sites must remember.
 
 **For type-only cycles inside one layer**, use an inline `import(...)` reference in the type position. Do not declare a forward interface. For example, `world.ts` refers to `ComponentSchema` as `Map<string, import('./component').ComponentSchema>`, and does not redeclare the interface, because the type belongs in `component.ts`. An inline import keeps the type definition in one place. It leaves no runtime import to join a cycle. It does not trigger `import/no-cycle`. Do not use the older pattern that duplicates an interface in a leaf module, because those copies drift.
 
@@ -71,4 +91,6 @@ The outputs land in `.codegraph/`, which `.gitignore` excludes. After `map` runs
 - **The `origin` tag prevents re-broadcast.** A mutation tagged `network`, which means the engine received it from a peer, does not re-enter the outbound queue. Break this and peers echo each other forever. The tests in `packages/core/tests/integration.test.ts` lock it in.
 - **Solid signals do not work under the default `node` export condition of Vitest.** Both `local/` and `ad4m-bridge/` hold a `vitest.config.ts` that aliases `solid-js` to its dev build. Copy that config into any new workspace package that pulls Solid in transitively.
 - **`pnpm run check` and `pnpm run test` can fail before they start.** pnpm refuses to run when a dependency has an unapproved build script, and reports `ERR_PNPM_IGNORED_BUILDS` instead of a compile error. Run `pnpm approve-builds` once, or pass `--config.verify-deps-before-run=false`.
+- **Tests are typechecked.** Every package tsconfig includes `tests` alongside `src`. Keep it that way: when core excluded tests, four hook assignments that the readonly refactor should have caught at compile time only surfaced as runtime failures.
+- **`packages/client` `pnpm test` needs local TLS certs.** Playwright starts the Vite dev server, which reads `.certs/localhost.key`. Without those files the e2e run fails before any test executes. That failure is environmental, not a code regression.
 - **A test that leaks a timer or an open handle hangs the whole run.** vitest reports the assertions as passed, then the worker spins at 100% CPU and never exits. If `vitest run` stops producing output while a core stays pegged, look at the file named in the last `stdout |` line rather than at the test that follows it.

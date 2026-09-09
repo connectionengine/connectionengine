@@ -9,8 +9,6 @@
  * - `network-id.ts` — the entity-to-networkId tables, local and remote
  * - `binary-channel.ts` — the per-connection binary pipeline, and the bindings
  *                   sync
- * - `connect-memory.ts` — an in-process link that skips the handshake, for
- *                   tests and solo mode
  */
 
 export type { JoinNetworkOptions, JoinResult, JoinWorldOptions } from './session'
@@ -21,5 +19,3 @@ export type { BinaryChannel, BindControlMessage, ChannelOptions } from './binary
 export { createBinaryChannel, isBindControl } from './binary-channel'
 export type { ReplayChunkMessage, ReplayEndMessage, SnapshotMessage } from './replay'
 export { applyReplayChunk, applyStateSnapshot, endReplay, streamEventLog, streamStateSnapshot } from './replay'
-export type { ConnectInMemoryOptions, MemoryConnectionPair } from './connect-memory'
-export { connectInMemory } from './connect-memory'

@@ -58,17 +58,20 @@ When a rule needs a notion of "now", use `event.timestamp`. The author stamps it
 
 ## The gate
 
-Set `network.validateAuthored` to attach the check to a network. Each network on a world holds its own gate, so different networks can enforce different rules:
+A network carries its gate as `onValidateAuthored`. Supply it when the network is built. Each network on a world holds its own gate, so different networks can enforce different rules:
 
 ```ts
 import { ensureDefaultNetwork, validateEvent } from '@connectionengine/core'
 
-const network = ensureDefaultNetwork(world)
-network.validateAuthored = (event) => validateEvent(world, event).allowed
-network.onReject = (event, reason) => console.warn('refused', event.predicate, reason)
+const network = ensureDefaultNetwork(world, {
+  onValidateAuthored: (world, network, event) => validateEvent(world, event).allowed,
+  onRejected: (world, network, event, reason) => console.warn('refused', event.predicate, reason)
+})
 ```
 
-`validateEvent` walks the scope hierarchy from the entity of the event, collects every applicable constraint, runs each kind, and returns `{ allowed, violations }`. Inbound `applyAuthoredEnvelope` consults the gate before it applies an event. A refused event neither applies nor enters the event log, and `onReject` reports why.
+The gate is a readonly field, so nothing can swap it later. A network that behaved one way at frame 100 and another at frame 200 would make "what does this network admit?" a question with no fixed answer. To run a different gate, build a different network with `addNetwork`.
+
+`validateEvent` walks the scope hierarchy from the entity of the event, collects every applicable constraint, runs each kind, and returns `{ allowed, violations }`. Inbound `applyAuthoredEnvelope` consults the gate before it applies an event. A refused event neither applies nor enters the event log, and `onRejected` reports why.
 
 The gate runs on **received** events. Local writes pass through the authored queue and go out optimistically. Call `validateEvent` yourself before `setComponent` if you want to check a local write first.
 

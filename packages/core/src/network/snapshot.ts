@@ -20,6 +20,7 @@ import { createEntity, removeEntity } from '../ecs/entity'
 import { worldComponents, worldRelations } from './mutation'
 import { checkAuthorityChangeStanding } from './authority'
 import type { Network } from './network'
+import { validateAuthored } from './network'
 import type { AuthoredEvent, Entity, World } from '../ecs/world'
 
 export interface SnapshotEntity {
@@ -161,7 +162,7 @@ const admitter = (
   from: SnapshotOrigin | undefined
 ): ((entityPath: string[], predicate: string, value: unknown) => boolean) => {
   if (!from) return () => true
-  const gate = from.network?.validateAuthored
+  const network = from.network
   return (entityPath, predicate, value) => {
     // `seq` disambiguates events in the log. This one is a probe for the gates
     // and never reaches the log, so any value works.
@@ -174,7 +175,7 @@ const admitter = (
       timestamp: snapshot.metadata.timestamp,
       seq: 0
     }
-    if (gate && !gate(event)) return false
+    if (network && !validateAuthored(world, network, event)) return false
     return checkAuthorityChangeStanding(world, event) === undefined
   }
 }

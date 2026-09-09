@@ -16,7 +16,7 @@
  */
 
 import { Schema } from '../schema'
-import { defineComponent, getComponent } from '../ecs/component'
+import { defineComponent, getComponent, hasComponent } from '../ecs/component'
 import { parentOfFor } from '../ecs/entity'
 import { query } from '../ecs/query'
 import type { Entity, World } from '../ecs/world'
@@ -39,6 +39,29 @@ export const PeerComponent = defineComponent({
   schema: Schema.Object({
     peerId: Schema.String({ default: '' }),
     latency: Schema.Number({ default: 0 })
+  })
+})
+
+/**
+ * Present on a peer entity for as long as this world holds a live connection to
+ * it. Absent means disconnected.
+ *
+ * Connectedness is a **fact about this peer**, not a procedure to run at every
+ * point a connection might end. Writing it on connect and removing it on
+ * disconnect turns "clean up after a departed peer" from something four call
+ * sites must remember into something an observer derives. See
+ * `watchDisconnects` in `network/presence.ts`.
+ *
+ * `sync: false`, because it is a local observation rather than shared truth.
+ * Alice seeing Bob connected says nothing about whether Carol can reach him, so
+ * replicating it would assert something no other peer can verify.
+ */
+export const ConnectedTo = defineComponent({
+  id: 'ConnectedTo',
+  label: 'ConnectedTo',
+  sync: false,
+  schema: Schema.Object({
+    networkId: Schema.String({ default: '' })
   })
 })
 
@@ -79,3 +102,9 @@ export const getPeersForUser = (world: World, user: Entity): Entity[] => {
   }
   return peers
 }
+
+/** Is this world holding a live connection to `peer`? */
+export const isPeerConnected = (world: World, peer: Entity): boolean => hasComponent(world, peer, ConnectedTo)
+
+/** Every peer this world currently holds a connection to. */
+export const connectedPeers = (world: World): readonly Entity[] => query(world, [ConnectedTo])

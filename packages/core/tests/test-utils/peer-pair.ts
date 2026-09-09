@@ -16,8 +16,12 @@ import { createAnonAgent, createWorld, destroyWorld, type World } from '../../sr
 import { runSystems } from '../../src/ecs/system'
 import { flushAuthored, flushRuntime } from '../../src/network/mutation'
 import { createPeer, createUser } from '../../src/network/peer'
-import { connectInMemory, type MemoryConnectionPair } from '../../src/network/lifecycle/connect-memory'
-import { flushAsync, type MemoryTransportOptions } from '../../src/network/transport'
+import {
+  connectInMemory,
+  type ConnectInMemoryOptions,
+  type MemoryConnectionPair
+} from '../../src/testing/connect-memory'
+import { flushAsync } from '../../src/network/transport'
 
 /** Bootstrap a world's local user + peer so `spawnPrefab` and the authority
  *  pipeline have a default identity to work with. */
@@ -45,8 +49,9 @@ export interface PeerPair {
 }
 
 export interface CreatePeerPairOptions {
-  /** Memory transport options (latency, governance gate). */
-  transport?: MemoryTransportOptions
+  /** Passed straight to `connectInMemory`: latency, runtime components, and
+   *  the network behaviours each side is built with. */
+  transport?: ConnectInMemoryOptions
   /** Names — also used as deterministic seeds for the anonymous agents. */
   names?: [string, string]
   /** Starting wall-clock time for both peers. */

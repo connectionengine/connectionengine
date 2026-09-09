@@ -142,8 +142,12 @@ export interface ValidationResult {
 
 /**
  * Validate an incoming authored event against every constraint that guards it.
- * Use it as `network.validateAuthored`, or as the `validate` option of
- * `connectInMemory`.
+ * Supply it as the `onValidateAuthored` behaviour when a network is built:
+ *
+ *   addNetwork(world, {
+ *     id,
+ *     onValidateAuthored: (world, _network, event) => validateEvent(world, event).allowed
+ *   })
  */
 export const validateEvent = (world: World, event: AuthoredEvent): ValidationResult => {
   const entity = resolveEntityPath(world, event.entityPath) ?? world.worldRoot

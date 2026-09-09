@@ -20,7 +20,14 @@
  * verified, and applied. A tampered event drops silently.
  */
 
-import type { AuthoredEnvelope, AuthoredEvent, Connection, World } from '@connectionengine/core'
+import type {
+  AuthoredEnvelope,
+  AuthoredEvent,
+  Connection,
+  ConnectInMemoryOptions,
+  PublishAuthored,
+  World
+} from '@connectionengine/core'
 import { applyAuthoredEnvelope, connectInMemory, getNetwork, type MemoryConnectionPair } from '@connectionengine/core'
 import { type KeyPair, fromHex, sign, stableStringify, toHex, verifyByDID } from './did'
 import type { LocalAgent } from './agent'
@@ -82,12 +89,26 @@ const verifyAndUnwrap = (signed: SignedAuthoredEnvelope): AuthoredEnvelope | nul
 
 export type LocalConnectionPair = MemoryConnectionPair
 
-export interface ConnectLocalOptions {
-  /** Optional governance gate, applied to each authored event after the
-   *  verification step. */
-  validate?: (world: World, event: AuthoredEvent) => boolean
-  /** Optional simulated latency, in milliseconds. */
-  latencyMs?: number
+/**
+ * The signing publisher is what this transport is for, so it is not one of the
+ * behaviours a caller may supply. Everything else passes through to
+ * `connectInMemory`.
+ */
+export type ConnectLocalOptions = Omit<ConnectInMemoryOptions, 'onPublishAuthored'>
+
+/**
+ * The outbound authored path of this transport: sign every event with the
+ * keypair of the local agent, then fan the signed envelope across the
+ * connections of the network.
+ *
+ * It reads the keypair from the world it is handed, so one function serves
+ * every world. Supply it when the network is built:
+ *
+ *   ensureDefaultNetwork(world, { onPublishAuthored: publishSigned })
+ */
+export const publishSigned: PublishAuthored = (world, network, envelope) => {
+  const signed = signEnvelope(envelope, assertLocalAgent(world))
+  for (const conn of network.connections) conn.events.send(signed)
 }
 
 const isSignedAuthored = (payload: unknown): payload is SignedAuthoredEnvelope =>
@@ -107,19 +128,16 @@ export const connectLocalInMemory = (
   worldB: World,
   options: ConnectLocalOptions = {}
 ): LocalConnectionPair => {
-  const keyA = assertLocalAgent(worldA)
-  const keyB = assertLocalAgent(worldB)
+  // Fail early and by name when either side lacks a keypair, rather than on the
+  // first publish.
+  assertLocalAgent(worldA)
+  assertLocalAgent(worldB)
 
   // Core handles the runtime fanout, the memory transport, and the lifecycle.
-  // This function overrides the publishAuthored hook of each world, so that the
-  // signing step runs.
-  const pair = connectInMemory(worldA, worldB, {
-    validate: options.validate,
-    latencyMs: options.latencyMs
-  })
-
-  installSigningOverride(worldA, keyA)
-  installSigningOverride(worldB, keyB)
+  // The signing publisher goes in as the outbound authored path of each side.
+  // A world from `createLocalRuntime` already has it, and supplies the same
+  // function, so either creation order gives the same behaviour.
+  const pair = connectInMemory(worldA, worldB, { ...options, onPublishAuthored: publishSigned })
 
   // Add a side-channel listener to each connection. It recognises a signed
   // authored envelope, which is the only payload shape that connectInMemory
@@ -129,18 +147,6 @@ export const connectLocalInMemory = (
   attachVerifier(worldB, pair.b)
 
   return pair
-}
-
-const installSigningOverride = (world: World, kp: KeyPair): void => {
-  // Replace the authored fanout of the default network with the signing
-  // fanout. The binary path of the continuous channel stays as installFanout
-  // set it up.
-  const network = getNetwork(world, 'default')
-  if (!network) return
-  network.publishAuthored = (envelope: AuthoredEnvelope) => {
-    const signed = signEnvelope(envelope, kp)
-    for (const conn of network.connections) conn.events.send(signed)
-  }
 }
 
 const attachVerifier = (world: World, connection: Connection): void => {

@@ -194,7 +194,8 @@ export const checkAuthorityChangeStanding = (world: World, event: AuthoredEvent)
  * back to `world.localPeer` when it knows no remaining local peer of the owner,
  * which gives a last-resort host migration.
  *
- * `sweepDisconnectedPeer` calls it, so it runs automatically on disconnect.
+ * The observer on `ConnectedTo` removal calls it, in `network/presence.ts`, so
+ * it runs on every disconnect without anyone invoking it.
  *
  * The reassignment does not author. Every peer that sees the disconnect runs
  * this same deterministic choice and reaches the same successor, so an event

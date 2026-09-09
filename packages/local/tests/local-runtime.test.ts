@@ -27,7 +27,11 @@ import {
   runSystems,
   Schema,
   createManualClock,
-  applyAuthoredEnvelope
+  addNetwork,
+  applyAuthoredEnvelope,
+  validateAuthored,
+  type AuthoredEvent,
+  type World
 } from '@connectionengine/core'
 import {
   addCapabilityConstraint,
@@ -35,14 +39,53 @@ import {
   createLocalAgent,
   createLocalRuntime,
   createRootCapability,
+  capabilityGate,
   fromHex,
-  installCapabilityValidator,
   setTrustedIssuers,
   sign,
   stableStringify,
   toHex,
   verifyByDID
 } from '../src'
+
+/**
+ * Put `scene:gov` under a capability that only one holder satisfies, and trust
+ * its issuer. Any other author writing `L.Health` under that scene then fails
+ * the capability kind. Returns the path of a child entity under that scene,
+ * which is what the constraint resolution walks up from.
+ */
+const governScene = (world: World): string[] => {
+  const issuer = createLocalAgent({ seed: 'gov-issuer' })
+  const holder = createLocalAgent({ seed: 'gov-holder' })
+  setTrustedIssuers([issuer.keyPair.did])
+  // spawnPrefab needs an owner, and createLocalRuntime leaves identity to the app.
+  createUser(world, { did: world.localAgent.did, asLocal: true })
+  const scene = spawnPrefab(world, 'scene:gov')
+  addCapabilityConstraint(
+    world,
+    scene,
+    createRootCapability({
+      invoker: holder.keyPair.did,
+      predicates: ['L.Health'],
+      scope: ['scene:gov'],
+      issuer: issuer.keyPair
+    })
+  )
+  const child = createEntity(world)
+  setUID(world, child, 'x', { parent: scene })
+  return ['scene:gov', 'x']
+}
+
+/** An event from a DID that holds no capability, aimed at a governed path. */
+const strangerEvent = (entityPath: string[]): AuthoredEvent => ({
+  entityPath,
+  predicate: 'L.Health',
+  op: 'set',
+  value: { current: 1 },
+  author: 'did:test:stranger',
+  timestamp: 0,
+  seq: 0
+})
 
 // Components used across tests
 const Health = defineComponent({
@@ -140,8 +183,17 @@ describe('Local runtime — signed two-peer replication', () => {
   it('createLocalRuntime convenience wires agent + governance', () => {
     const { world, agent } = createLocalRuntime({ seed: 'convenience' })
     expect(world.localAgent).toBe(agent)
-    // governance was installed on the default network (validateAuthored is set)
-    expect(getNetwork(world, 'default')?.validateAuthored).toBeDefined()
+    // The capability gate went in when the network was built, so it runs. An
+    // unsigned, uncapability-backed write from a stranger fails it.
+    const network = getNetwork(world, 'default')!
+    expect(validateAuthored(world, network, strangerEvent(governScene(world)))).toBe(false)
+    destroyWorld(world)
+  })
+
+  it('createLocalRuntime with governance:false admits what the gate would refuse', () => {
+    const { world } = createLocalRuntime({ seed: 'ungoverned', governance: false })
+    const network = getNetwork(world, 'default')!
+    expect(validateAuthored(world, network, strangerEvent(governScene(world)))).toBe(true)
     destroyWorld(world)
   })
 })
@@ -170,10 +222,10 @@ describe('Local runtime — capability governance', () => {
     // Both peers trust Alice as an issuer. This is process-wide deployment
     // config: peers holding different lists would disagree on the same event.
     setTrustedIssuers([aliceAgent.keyPair.did])
-    installCapabilityValidator(worldA)
-    installCapabilityValidator(worldB)
 
-    connectLocalInMemory(worldA, worldB)
+    // The gate is fixed when the network is built, so it goes in with the
+    // connection rather than being attached afterwards.
+    connectLocalInMemory(worldA, worldB, { onValidateAuthored: capabilityGate })
 
     const scene = spawnPrefab(worldA, 'scene:cap')
     addCapabilityConstraint(worldA, scene, aliceCap)
@@ -209,10 +261,9 @@ describe('Local runtime — capability governance', () => {
 describe('Local runtime — direct envelope apply', () => {
   it('applyAuthoredEnvelope drops events failing validateAuthored', () => {
     const { world } = createLocalRuntime({ seed: 'baseline' })
-    const network = getNetwork(world, 'default')!
-    const evRejecter = network.validateAuthored
-    // Install a deny-all gate for this test
-    network.validateAuthored = () => false
+    // A deny-all network. The gate cannot be swapped on an existing network, so
+    // the test builds one that refuses everything.
+    const network = addNetwork(world, { id: 'deny', onValidateAuthored: () => false })
     applyAuthoredEnvelope(
       world,
       {
@@ -233,7 +284,6 @@ describe('Local runtime — direct envelope apply', () => {
     )
     // Gate rejected → event never landed in the log.
     expect(world.eventLog).toHaveLength(0)
-    network.validateAuthored = evRejecter
     destroyWorld(world)
   })
 })

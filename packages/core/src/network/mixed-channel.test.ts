@@ -219,8 +219,9 @@ describe('mixed-channel — governance holds', () => {
     const target = mkWorld('mx-gov-tgt')
 
     // Target refuses every write to MX.Body.
-    const network = ensureDefaultNetwork(target)
-    network.validateAuthored = (event) => event.predicate !== 'MX.Body'
+    const network = ensureDefaultNetwork(target, {
+      onValidateAuthored: (_w, _n, event) => event.predicate !== 'MX.Body'
+    })
 
     const e = createEntity(source)
     setUID(source, e, 'rock')

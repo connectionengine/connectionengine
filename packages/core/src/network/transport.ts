@@ -9,7 +9,7 @@
  *
  * `createMemoryTransport()` here returns a paired endpoint for tests. For the
  * test and solo-mode shortcut that links two worlds without the formal
- * handshake, see `connectInMemory(a, b)` in `lifecycle/connect-memory.ts`. Use
+ * handshake, see `connectInMemory(a, b)` in `testing/connect-memory.ts`. Use
  * it when you need only envelope-level fanout between worlds in one process.
  */
 
@@ -50,6 +50,46 @@ export interface TransportChannel<T = unknown> {
 export interface TransportEndpoint {
   readonly events: TransportChannel
   readonly stream: TransportChannel<ArrayBuffer>
+  onClose(handler: () => void): () => void
+  close(): void
+}
+
+/**
+ * What a connection does with its binary delta channel: send the dirty set,
+ * take an inbound packet, take an inbound networkId binding.
+ *
+ * Structural, so `transport.ts` stays a leaf. `BinaryChannel` satisfies it
+ * without either module importing the other, which is what lets `network.ts`
+ * publish through a connection while `lifecycle/` builds the channel.
+ */
+export interface RuntimeChannel {
+  publish(dirty: Map<string, Set<number>>): void
+  applyBuffer(buffer: ArrayBuffer): void
+  registerBindings(bindings: readonly { networkId: number; entityPath: string[] }[]): void
+}
+
+/**
+ * A live link to one remote peer, scoped to ONE Network.
+ *
+ * It lives here rather than in `network.ts` because it is a transport concept:
+ * a pair of `TransportChannel`s plus the session metadata that identifies who
+ * is on the other end. Keeping it here also lets `network.ts` reach the binary
+ * channel without the two modules importing each other.
+ *
+ * Two peers can hold several Connections between them, one for each Network
+ * they share. Whether those share an underlying transport is the business of
+ * the transport, and the engine does not track it.
+ */
+export interface Connection {
+  /** Peer entity for the remote end. Zero until the handshake identifies it. */
+  peer: number
+  /** Remote agent DID. It holds `'did:unknown:pending'` until the hello arrives. */
+  remoteDID: string
+  readonly events: TransportChannel
+  readonly stream: TransportChannel<ArrayBuffer>
+  /** Binary delta channel for this connection. Set when the connection is
+   *  wired, so the publish path never has to build one lazily. */
+  channel?: RuntimeChannel
   onClose(handler: () => void): () => void
   close(): void
 }

@@ -138,8 +138,9 @@ describe('applySnapshot — governance', () => {
     setComponent(source, e, Health, { current: 42 })
     setComponent(source, e, Transform, { position: [1, 2, 3] })
 
-    const network = ensureDefaultNetwork(target)
-    network.validateAuthored = (event) => event.predicate !== Health.$id
+    const network = ensureDefaultNetwork(target, {
+      onValidateAuthored: (_w, _n, event) => event.predicate !== Health.$id
+    })
 
     applySnapshot(target, createSnapshot(source), { from: { author: 'did:test:peer', network } })
 
@@ -157,11 +158,12 @@ describe('applySnapshot — governance', () => {
     setComponent(source, named(source, 'thing'), Health, { current: 1 })
 
     const authors: string[] = []
-    const network = ensureDefaultNetwork(target)
-    network.validateAuthored = (event) => {
-      authors.push(event.author)
-      return true
-    }
+    const network = ensureDefaultNetwork(target, {
+      onValidateAuthored: (_w, _n, event) => {
+        authors.push(event.author)
+        return true
+      }
+    })
     applySnapshot(target, createSnapshot(source), { from: { author: 'did:test:sender', network } })
 
     expect(authors.length).toBeGreaterThan(0)
@@ -199,8 +201,8 @@ describe('applySnapshot — governance', () => {
     const snap = createSnapshot(world)
 
     const restored = createWorld({ engine: createEngine(), agent: createAnonAgent('restored') })
-    const network = ensureDefaultNetwork(restored)
-    network.validateAuthored = () => false // would reject everything, if consulted
+    // A gate that would reject everything, if the local path consulted it.
+    ensureDefaultNetwork(restored, { onValidateAuthored: () => false })
     applySnapshot(restored, snap)
 
     const re = getEntityByUID(restored, restored.worldRoot, 'thing')!

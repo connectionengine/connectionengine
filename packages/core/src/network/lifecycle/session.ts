@@ -29,17 +29,17 @@
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
-import { allComponents, getComponent, hasSyncedSoA, setComponent } from '../../ecs/component'
+import { allComponents, getComponent, hasSyncedSoA, removeComponent, setComponent } from '../../ecs/component'
 import { applyAuthoredEnvelope, flushAuthored } from '../mutation'
-import * as bitecs from 'bitecs'
-import { createEntity, removeEntity } from '../../ecs/entity'
+import { createEntity } from '../../ecs/entity'
 import { getEntityByUID, getEntityPath, setUID } from '../../ecs/entity'
 import { addRelation } from '../../ecs/relation'
-import { AuthoritativeFor, OwnedBy, getAuthority, recoverAuthority } from '../authority'
-import { PeerComponent, UserComponent, findUserByDID } from '../agents'
+import { AuthoritativeFor, OwnedBy } from '../authority'
+import { ConnectedTo, PeerComponent, UserComponent } from '../agents'
 import type { RuntimeTransportConfig, TransportEndpoint } from '../transport'
-import type { Connection, Network } from '../network'
-import { ensureDefaultNetwork, getNetworks } from '../network'
+import type { Network } from '../network'
+import type { Connection } from '../transport'
+import { ensureDefaultNetwork } from '../network'
 import { createBinaryChannel, isBindControl, type BinaryChannel } from './binary-channel'
 import { getNetworkIdTable, type NetworkIdBinding } from './network-id'
 import {
@@ -157,16 +157,11 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
   const chunkSize = options.replayChunkSize ?? 256
   const myKnownCount = options.knownEventCount ?? 0
 
-  installFanout(world, network)
-
   const connection = wrapEndpoint(endpoint)
-  if (options.runtimeComponents && options.runtimeComponents.length > 0) {
-    const channel = createBinaryChannel(world, connection, {
-      components: options.runtimeComponents,
-      configs: options.runtimeConfigs
-    })
-    setConnectionChannel(connection, channel)
-  }
+  attachRuntimeChannel(world, connection, {
+    components: options.runtimeComponents,
+    configs: options.runtimeConfigs
+  })
 
   let replayedEventCount = 0
   let snapshotEntityCount = 0
@@ -181,7 +176,10 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
         case 'hello': {
           connection.remoteDID = payload.agentDID
           connection.peer = ensureRemotePeerEntity(world, payload)
-          getChannelOrNull(connection)?.registerBindings(payload.bindings)
+          // Presence is a fact about the peer, so record it as one. Its removal
+          // is what drives disconnect cleanup — see `network/presence.ts`.
+          setComponent(world, connection.peer, ConnectedTo, { networkId: network.id })
+          connection.channel?.registerBindings(payload.bindings)
           flushAuthored(world)
           // History first, then the present. `replay.ts` explains why the order
           // matters.
@@ -202,14 +200,13 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
           resolveReplay()
           break
         case 'leave':
-          sweepDisconnectedPeer(world, connection)
           connection.close()
           break
       }
       return
     }
     if (isBindControl(payload)) {
-      getChannelOrNull(connection)?.registerBindings(payload.bindings)
+      connection.channel?.registerBindings(payload.bindings)
       return
     }
     if (isAuthoredEnvelope(payload)) {
@@ -225,11 +222,11 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
 
   endpoint.stream.onMessage((buffer) => {
     if (!options.runtimeComponents) return
-    getChannelOrNull(connection)?.applyBuffer(buffer)
+    connection.channel?.applyBuffer(buffer)
   })
 
   endpoint.onClose(() => {
-    sweepDisconnectedPeer(world, connection)
+    disconnected(world, connection)
     network.connections.delete(connection)
   })
 
@@ -258,8 +255,8 @@ export const joinWorld = joinNetwork
 export type JoinWorldOptions = JoinNetworkOptions
 
 /**
- * Leave a network. The function sends a graceful-leave signal to the peer,
- * closes the endpoint, and runs the disconnect cleanup locally.
+ * Leave a network. The function tells the peer, then closes the endpoint.
+ * Closing drops `ConnectedTo`, and the disconnect cleanup follows from that.
  */
 export const leaveWorld = async (world: World, connection: Connection): Promise<void> => {
   try {
@@ -267,11 +264,8 @@ export const leaveWorld = async (world: World, connection: Connection): Promise<
   } catch {
     // The peer may have gone already.
   }
-  sweepDisconnectedPeer(world, connection)
   connection.close()
 }
-
-const getChannelOrNull = (connection: Connection) => getConnectionChannel(connection) ?? null
 
 /**
  * Resolve the peerId of the local engine. HELLO carries that value, so that the
@@ -339,62 +333,38 @@ const ensureAgentPath = (world: World, path: string[], decorate: (entity: Entity
   return cursor
 }
 
-// ── Outbound publish + relay ─────────────────────────────────────────────────-
-//
-// A Network needs someone to turn its publish hooks into actual sends. That is
-// this: `installFanout` fans an envelope across the connections of one network,
-// and `rebroadcastAuthored` relays onward what an inbound envelope left
-// accepted.
-
-const channels = new WeakMap<Connection, BinaryChannel>()
-
-export const setConnectionChannel = (connection: Connection, channel: BinaryChannel): void => {
-  channels.set(connection, channel)
-}
-
-export const getConnectionChannel = (connection: Connection): BinaryChannel | undefined => channels.get(connection)
+// ── Runtime channel + relay ──────────────────────────────────────────────────-
 
 /**
- * Get the binary channel of a connection, or create it. The lazy build draws
- * from every continuous-channel ComponentDefinition on the engine of the world,
- * sorted by id for a deterministic, peer-agnostic order. The engine registry
- * then guarantees that both sides reach the same list, for as long as both
- * packages have imported the same component modules.
+ * Build the binary channel for a connection.
+ *
+ * The channel goes on at wire time, so the publish path can call
+ * `connection.channel?.publish(dirty)` without a lazy build or a side table
+ * keyed on the connection.
+ *
+ * The default component list is every continuous-channel definition on the
+ * engine, sorted by id. That order is the wire identity, so both peers must
+ * derive the same list — which they do, as long as both imported the same
+ * component modules.
+ *
+ * An app with no continuous components gets no channel. Its whole state moves
+ * on the authored path, so a binary pipeline would carry nothing. The field
+ * stays undefined and every call site already guards it.
  */
-export const ensureChannel = (world: World, connection: Connection): BinaryChannel | undefined => {
-  let channel = channels.get(connection)
-  if (channel) return channel
-  const components = allComponents()
-    .filter(hasSyncedSoA)
-    .sort((a, b) => (a.$id < b.$id ? -1 : a.$id > b.$id ? 1 : 0))
+export const attachRuntimeChannel = (
+  world: World,
+  connection: Connection,
+  options: { components?: readonly ComponentDefinition[]; configs?: RuntimeTransportConfig[] } = {}
+): BinaryChannel | undefined => {
+  const components =
+    options.components ??
+    allComponents()
+      .filter(hasSyncedSoA)
+      .sort((a, b) => (a.$id < b.$id ? -1 : a.$id > b.$id ? 1 : 0))
   if (components.length === 0) return undefined
-  channel = createBinaryChannel(world, connection, { components })
-  channels.set(connection, channel)
+  const channel = createBinaryChannel(world, connection, { components, configs: options.configs })
+  connection.channel = channel
   return channel
-}
-
-/**
- * Install the fanout on a network. The function is idempotent. It attaches
- * `publishAuthored` and `publishRuntime`, so that each hook fans across the
- * connections of this network. The runtime binary path uses the `BinaryChannel`
- * of each connection.
- */
-export const installFanout = (world: World, network: Network): void => {
-  if (network.publishAuthored && network.publishRuntime) return
-  if (!network.publishAuthored) {
-    network.publishAuthored = (envelope: AuthoredEnvelope) => {
-      for (const conn of network.connections) conn.events.send(envelope)
-    }
-  }
-  if (!network.publishRuntime) {
-    network.publishRuntime = (dirty: Map<string, Set<Entity>>) => {
-      for (const conn of network.connections) {
-        const channel = ensureChannel(world, conn)
-        if (!channel) continue
-        channel.publish(dirty)
-      }
-    }
-  }
 }
 
 /**
@@ -429,53 +399,16 @@ export const rebroadcastAuthored = (
   }
 }
 
-// ── Disconnect cleanup ───────────────────────────────────────────────────────-
-//
-// Two things follow from a connection closing, and both are consequences of
-// the ownership model rather than choices a caller makes.
+// ── Disconnect ───────────────────────────────────────────────────────────────-
 
 /**
- * Disconnect cleanup. Authority recovery always runs, because every disconnect
- * can cost an authority. The sweep of user-owned entities runs only when this
- * connection was the last connection of that user on the world.
+ * Record that a connection has ended.
+ *
+ * Dropping `ConnectedTo` is the whole of it. Authority recovery and the
+ * owner sweep are observers of that removal, in `network/presence.ts`, so
+ * nothing here has to remember to perform them.
  */
-export const sweepDisconnectedPeer = (world: World, connection: Connection): void => {
-  recoverAuthorityForLeavingPeer(world, connection)
-
-  const did = connection.remoteDID
-  if (!did || did.startsWith('did:unknown')) return
-  const userEntity = findUserByDID(world, did)
-  if (userEntity === undefined) return
-  for (const network of getNetworks(world).values()) {
-    for (const other of network.connections) {
-      if (other === connection) continue
-      if (other.remoteDID && findUserByDID(world, other.remoteDID) === userEntity) return
-    }
-  }
-  // This was the last connection of the user, so remove every entity that the
-  // user owns. Snapshot the set first, because removeEntity mutates the
-  // AuthoritativeFor query.
-  const owned = bitecs.query(world.engine.bitECS, [OwnedBy.$relation(userEntity)]) as Entity[]
-  for (const e of [...owned]) {
-    if (e === userEntity) continue
-    removeEntity(world, e)
-  }
-}
-
-/**
- * Walk every entity in the world whose authority targets `connection.peer`, and
- * reassign each one through `recoverAuthority`. The function does nothing when
- * the connection carries no peer entity, which happens when its HELLO never
- * arrived.
- */
-const recoverAuthorityForLeavingPeer = (world: World, connection: Connection): void => {
-  const leavingPeer = connection.peer
-  if (!leavingPeer) return
-  // Walk every entity in the engine that targets the leaving peer through
-  // AuthoritativeFor. The walk reads the targets index of the relation directly.
-  const owingEntities: Entity[] = []
-  for (const candidate of bitecs.query(world.engine.bitECS, [AuthoritativeFor.$relation(leavingPeer)]) as Entity[]) {
-    if (getAuthority(world, candidate) === leavingPeer) owingEntities.push(candidate)
-  }
-  for (const e of owingEntities) recoverAuthority(world, e, leavingPeer)
+export const disconnected = (world: World, connection: Connection): void => {
+  if (!connection.peer) return
+  removeComponent(world, connection.peer, ConnectedTo)
 }

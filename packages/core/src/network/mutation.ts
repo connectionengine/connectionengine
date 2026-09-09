@@ -50,7 +50,7 @@ import {
 import { observe, onRemove } from '../ecs/observer'
 import { checkAuthorityChangeStanding, getOwner } from './authority'
 import type { Network } from './network'
-import { getNetwork, getNetworks } from './network'
+import { getNetwork, getNetworks, publishAuthored, publishRuntime, reportRejected, validateAuthored } from './network'
 
 /**
  * Routing strategy. It answers one question: which networks receive a mutation
@@ -204,7 +204,7 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
   const envelope: AuthoredEnvelope = { events, fromPeer: author }
   if (networks.length === 1) {
     // One network: every event routes to it, so skip the grouping map.
-    networks[0].publishAuthored?.(envelope)
+    publishAuthored(world, networks[0], envelope)
     return envelope
   }
 
@@ -219,7 +219,7 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
   for (const [networkId, networkEvents] of perNetwork) {
     const network = getNetwork(world, networkId)
     if (!network) continue
-    network.publishAuthored?.({ events: networkEvents, fromPeer: author })
+    publishAuthored(world, network, { events: networkEvents, fromPeer: author })
   }
   return envelope
 }
@@ -250,11 +250,11 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
   if (networks.length === 0) return snapshot.size === 0 ? undefined : snapshot
   if (networks.length === 1) {
     // One network: every entity routes to it, so publish the snapshot as-is.
-    networks[0].publishRuntime?.(snapshot)
+    publishRuntime(world, networks[0], snapshot)
     return snapshot.size === 0 ? undefined : snapshot
   }
   if (snapshot.size === 0) {
-    for (const network of networks) network.publishRuntime?.(snapshot)
+    for (const network of networks) publishRuntime(world, network, snapshot)
     return undefined
   }
 
@@ -280,7 +280,7 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
   for (const [networkId, dirty] of perNetwork) {
     const network = getNetwork(world, networkId)
     if (!network) continue
-    network.publishRuntime?.(dirty)
+    publishRuntime(world, network, dirty)
   }
   return snapshot
 }
@@ -297,15 +297,15 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
  * order. `rebroadcastAuthored` relays exactly that list. A peer therefore
  * forwards what it accepted, and never forwards what its own gates refused.
  *
- * Each drop reports through `network.onReject`, so a caller can see why an
- * event failed to land instead of watching it disappear.
+ * Each drop reports through `reportRejected`, so a caller that built the
+ * network with an `onRejected` behaviour sees why an event failed to land
+ * instead of watching it disappear.
  */
 export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope, network?: Network): AuthoredEvent[] => {
-  const gate = network?.validateAuthored
   const accepted: AuthoredEvent[] = []
   for (const event of envelope.events) {
-    if (gate && !gate(event)) {
-      network?.onReject?.(event, 'governance')
+    if (network && !validateAuthored(world, network, event)) {
+      reportRejected(world, network, event, 'governance')
       continue
     }
     // An authority transfer must come from a peer that holds standing. That
@@ -314,7 +314,7 @@ export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope, 
     // so it needs no cross-layer plumbing.
     const standing = checkAuthorityChangeStanding(world, event)
     if (standing !== undefined) {
-      network?.onReject?.(event, `authority: ${standing}`)
+      if (network) reportRejected(world, network, event, `authority: ${standing}`)
       continue
     }
     // Already in the log. Not an error — a mesh delivers the same event by

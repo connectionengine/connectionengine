@@ -24,7 +24,8 @@ import {
   type World
 } from '@connectionengine/core'
 import { createLocalAgent, type LocalAgent } from './agent'
-import { installCapabilityValidator } from './governance'
+import { capabilityGate } from './governance'
+import { publishSigned } from './transport'
 
 export interface CreateLocalRuntimeOptions {
   /** Seed for the Ed25519 keypair of the local agent. A seed makes the keypair
@@ -57,9 +58,12 @@ export const createLocalRuntime = (options: CreateLocalRuntimeOptions = {}): Loc
   const agent = options.agent ?? createLocalAgent({ seed: options.seed })
   const engine = options.engine ?? createEngine({ fixedTimeStep: options.fixedTimeStep, clock: options.clock })
   const world = createWorld({ engine, agent })
-  // installCapabilityValidator targets the default network, so make sure that
-  // network exists.
-  ensureDefaultNetwork(world)
-  if (options.governance !== false) installCapabilityValidator(world)
+  // Build the default network with both behaviours of this runtime: sign
+  // outbound, gate inbound. They are fixed here because a network cannot be
+  // re-taught either one afterwards.
+  ensureDefaultNetwork(world, {
+    onPublishAuthored: publishSigned,
+    onValidateAuthored: options.governance === false ? undefined : capabilityGate
+  })
   return { world, agent }
 }

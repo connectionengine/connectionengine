@@ -28,10 +28,36 @@ addNetwork(world, { id: 'admin' })     // a third for moderator overlays
 
 The mutation pipeline of the world routes mutations across networks. Today it broadcasts to all of them. When a write fires:
 
-- Each `network.publishAuthored` dispatches the authored events for its network.
-- Each `network.publishRuntime` dispatches the binary runtime packets for its network.
+- `publishAuthored(world, network, envelope)` dispatches the authored events for its network.
+- `publishRuntime(world, network, dirty)` dispatches the binary runtime packets for its network.
 
 One event log carries many topologies. A peer connected only on `voice` never sees gameplay events. A peer connected on both networks sees both.
+
+### Behaviour is fixed when a network is built
+
+A network carries four behaviours: how authored envelopes leave, how binary deltas leave, which inbound events it admits, and what to report about the ones it refuses. All four are **readonly fields, supplied to `addNetwork`**:
+
+```ts
+addNetwork(world, {
+  id: 'gameplay',
+  onValidateAuthored: (world, network, event) => validateEvent(world, event).allowed,
+  onRejected: (world, network, event, reason) => console.warn('refused', event.predicate, reason)
+})
+```
+
+Omit one and it takes the default: fan out across `connections`, and admit everything.
+
+Nothing reassigns them afterwards. A mutable hook would make "what does this network do with an envelope?" depend on when you ask and on whichever module wrote to the field last — a second source of truth for behaviour, findable only by grepping for assignments. Making the fields readonly puts that pattern out of reach, and the compiler says so.
+
+Callers never read the fields either. They call the module-level functions, which take the network and dispatch to whatever it holds:
+
+```ts
+publishAuthored(world, network, envelope)
+publishRuntime(world, network, dirty)
+validateAuthored(world, network, event)   // → boolean
+```
+
+To run different behaviour, build a different network. That is what `@connectionengine/ad4m-bridge` does — `connectAd4m` adds an `'ad4m'` network whose outbound path writes AD4M Links, and removes it on close. A Perspective is its own sync topology, so it gets its own network rather than overriding one that already exists.
 
 ## TransportEndpoint
 
@@ -111,7 +137,14 @@ The same `Snapshot` API in `network/snapshot.ts` stays useful on its own, for pe
 
 ## Disconnect cleanup
 
-The lifecycle layer runs `sweepDisconnectedPeer` when a connection closes, whether the peer sent a graceful `leave` or not. The sweep reads the `remoteDID` of the closed connection and finds the matching user entity in this world. It then checks whether another connection still represents that user, because one user can hold several peers — a desktop and a phone, for example. If no other connection represents the user, the sweep removes **every entity owned by that user**.
+Disconnect cleanup is **derived, not invoked**. A completed handshake writes `ConnectedTo` onto the peer entity, and closing the endpoint removes it. An observer on that removal does the rest:
+
+- **Authority moves on.** Every entity whose `AuthoritativeFor` names the departed peer gets a new writer, or it would freeze.
+- **The user's entities go**, but only once their *last* peer disconnects. A user with a desktop and a phone stays present while either survives, which `query([ConnectedTo, …])` answers directly.
+
+Presence being a component rather than a procedure matters: cleanup used to be a `sweepDisconnectedPeer(world, connection)` that four call sites had to remember — the graceful `leave`, the endpoint close, `leaveWorld`, and the in-memory link. Missing one left a departed peer holding authority forever with nothing to signal it. An observer cannot be forgotten, because there is no call to omit.
+
+`ConnectedTo` is `sync: false`. It records a local observation, not shared truth — Alice seeing Bob connected says nothing about whether Carol can reach him.
 
 ```ts
 import { createPeer, createUser, spawnPrefab } from '@connectionengine/core'
@@ -143,7 +176,17 @@ const link = connectInMemory(worldA, worldB)
 link.close()
 ```
 
-It is a shortcut over `createMemoryTransport` plus `joinWorld` that skips the replay phase. Authored envelopes propagate. Runtime binary packets flow, and the engine builds a `BinaryChannel` lazily on first publish. Disconnect cleanup runs.
+It is a shortcut over `createMemoryTransport` plus `joinWorld` that skips the replay phase. Authored envelopes propagate. Runtime binary packets flow over a `BinaryChannel` attached to each connection as it is wired. Disconnect cleanup runs.
+
+It takes the network behaviours too, and passes them to whichever side it creates a default network for:
+
+```ts
+connectInMemory(worldA, worldB, {
+  onValidateAuthored: (world, network, event) => validateEvent(world, event).allowed
+})
+```
+
+It lives in `testing/` because that is what it is. Production code opens a session with `joinWorld`.
 
 Use `joinWorld` for the production-shaped flow, which includes late-join replay.
 

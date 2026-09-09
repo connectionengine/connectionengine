@@ -29,7 +29,7 @@ Removal replicates **reactively**. `removeEntity` is plain ECS and knows nothing
 
 **Ownership is the only gate, and it does two jobs.** A peer cannot announce the removal of something it does not own. And the echo suppresses itself: when a received destroy is applied, the entity belongs to the *remote* user, so the observer declines to queue and the destroy stops rather than bouncing between peers.
 
-That also covers local cleanup with no special case. The disconnect sweep removes entities owned by the departing user, which are never the local user's, so the sweep stays local — as it must, since every peer runs its own.
+That also covers local cleanup with no special case. Disconnect cleanup removes entities owned by the departing user, which are never the local user's, so it stays local — as it must, since every peer performs its own.
 
 `removeEntity` runs the bitECS removal before it clears the identity caches, so the path of the departing entity is still resolvable when the observer fires. `flushAuthored` runs later and could not resolve one, which is why the event carries the path.
 
@@ -48,7 +48,7 @@ for each queued mutation where origin === 'local':
 for each event:
     networks = routeNetworks(world, entity)   // today: broadcast-to-all
     for each network:
-        network.publishAuthored?(envelopeForNetwork)
+        publishAuthored(world, network, envelopeForNetwork)
 
 flushRuntime(world)
         │
@@ -60,10 +60,12 @@ for each (componentId, entity):
     for each network:
         accumulate into perNetworkDirty[networkId][componentId]
 for each network:
-    network.publishRuntime?(perNetworkDirty[networkId])
+    publishRuntime(world, network, perNetworkDirty[networkId])
 ```
 
-The `publish*` callbacks are hooks that the network layer fills in, one per network on the world. Core never decides how data goes on a wire. Core routes envelopes to the correct networks and gives them to the registered listeners.
+`publishAuthored` and `publishRuntime` are module-level functions. Each takes the world and the network, and dispatches to the behaviour that network was built with. Core never decides how data goes on a wire. Core routes envelopes to the correct networks, and each network sends them its own way.
+
+The behaviours are readonly, so no module can reassign one after the fact. That keeps a single answer to "what does this network do with an envelope?" — the one supplied to `addNetwork`. See [Networking](/networking).
 
 `routeNetworks(world, entity)` makes the routing decision. Today it broadcasts to all networks (`Array.from(getNetworks(world).values())`). A future spatial layer will replace it with proximity-based routing, without a change to `mutation.ts`.
 
@@ -73,7 +75,7 @@ The `publish*` callbacks are hooks that the network layer fills in, one per netw
 applyAuthoredEnvelope(world, envelope, network?)
         │
         ├─ for each event:
-        │    governance gate via network.validateAuthored?(event)
+        │    governance gate via validateAuthored(world, network, event)
         │    if event.predicate === 'AuthoritativeFor':
         │        checkAuthorityChangeStanding(world, event)   ← inline call into network/authority
         │        (rejects with reason if author has no standing)
@@ -81,7 +83,7 @@ applyAuthoredEnvelope(world, envelope, network?)
         │        applyEvent — setComponent / addRelation / etc. with origin: 'network'
 ```
 
-Two gates run before the engine applies an event. The optional per-network `validateAuthored` is the governance hook, and different networks can enforce different rules. The authority-transfer standing check is unconditional. `network/mutation.ts` calls `checkAuthorityChangeStanding` in `network/authority.ts` directly. Both modules live in `network/`, so this is an ordinary named import rather than a runtime hook.
+Two gates run before the engine applies an event. The per-network `validateAuthored` carries the governance rules, and different networks can enforce different ones. It defaults to admitting everything. The authority-transfer standing check is unconditional. `network/mutation.ts` calls `checkAuthorityChangeStanding` in `network/authority.ts` directly. Both modules live in `network/`, so this is an ordinary named import.
 
 For `continuous` state, **no separate "apply runtime envelope" function exists**. The binary pipeline (`network/binary.ts`) is the receive path. It reads packets and writes straight into SoA storage, and never calls `setComponent`.
 
@@ -151,22 +153,21 @@ runSystems(world, 1/60)
 
 flushAuthored(world)
   eventLog.push(event)
-  publishAuthored({ events: [...], fromPeer: did })
+  publishAuthored(world, network, { events: [...], fromPeer: did })
   → connection.send(envelope)
                                                  ── microtask ──→
                                                  endpoint.onMessage(envelope)
                                                  isAuthoredEnvelope? yes
                                                  applyAuthoredEnvelope(world, envelope)
                                                    for event:
-                                                     governance.validate? ok
+                                                     validateAuthored? ok
                                                      checkAuthorityChangeStanding? ok (non-authority event)
                                                      appendEventLog (new)
                                                      applyEvent → setComponent(..., { origin: 'network' })
                                                    B's authoredQueue: no entries (origin: network skipped)
 flushRuntime(world)
-       publishRuntime(dirty)
-       → ensureChannel(connection)
-       → channel.publish(dirty)
+       publishRuntime(world, network, dirty)
+       → connection.channel?.publish(dirty)
             sendBindingsControl({ networkId, entityPath })
             pipeline.write(...) → ArrayBuffer
             connection.send(buffer)

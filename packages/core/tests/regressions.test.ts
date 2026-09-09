@@ -16,8 +16,11 @@ import { createEntity, getEntityByUID, removeEntity, setUID, getEntityPath } fro
 import { addRelation } from '../src/ecs/relation'
 import { spawnPrefab } from '../src/network/prefab'
 import { createPeer, createUser } from '../src/network/peer'
-import { flushAuthored, flushRuntime } from '../src/network/mutation'
-import { connectInMemory } from '../src/network/lifecycle/connect-memory'
+import { isPeerConnected } from '../src/network/agents'
+import '../src/network/presence'
+import { applyAuthoredEnvelope, flushAuthored, flushRuntime } from '../src/network/mutation'
+import { addNetwork, ensureDefaultNetwork, validateAuthored } from '../src/network/network'
+import { connectInMemory } from '../src/testing/connect-memory'
 import { createMemoryTransport, flushAsync } from '../src/network/transport'
 import { joinWorld } from '../src/network/lifecycle/session'
 import {
@@ -28,7 +31,6 @@ import {
   recoverAuthority,
   grantAuthority
 } from '../src/network/authority'
-import { ensureDefaultNetwork } from '../src/network/network'
 import { createPeerPair } from './test-utils/peer-pair'
 
 const Health = defineComponent({
@@ -43,6 +45,17 @@ const Pose = defineComponent({
 
 const machine = (name: string): World =>
   createWorld({ engine: createEngine({ clock: createManualClock(0) }), agent: createAnonAgent(name) })
+
+/** A minimal inbound event, used to ask a network what its gate says. */
+const probeEvent = (): AuthoredEvent => ({
+  entityPath: ['probe'],
+  predicate: Health.$id,
+  op: 'set',
+  value: { current: 1 },
+  author: 'did:key:OTHER',
+  timestamp: 0,
+  seq: 0
+})
 
 const bootstrap = (world: World, name: string): void => {
   const user = createUser(world, { did: world.localAgent.did, asLocal: true })
@@ -128,10 +141,11 @@ describe('relayed topologies', () => {
     ] as const)
       bootstrap(w, n)
 
-    connectInMemory(a, b)
+    // B refuses anything carrying Health, so C must never learn about it. The
+    // gate goes in with the first connection that builds B's network, because
+    // behaviour is fixed at construction.
+    connectInMemory(a, b, { onValidateAuthored: (_w, _n, ev) => ev.predicate !== Health.$id })
     connectInMemory(b, c)
-    // B refuses anything carrying Health, so C must never learn about it.
-    ensureDefaultNetwork(b).validateAuthored = (ev) => ev.predicate !== Health.$id
 
     const tick = async () => {
       for (const w of [a, b, c]) {
@@ -152,11 +166,14 @@ describe('relayed topologies', () => {
     for (const w of [a, b, c]) destroyWorld(w)
   })
 
-  it('reports a rejected event through onReject', async () => {
-    const p = createPeerPair()
+  it('reports a rejected event through onRejected', async () => {
     const rejected: Array<{ event: AuthoredEvent; reason: string }> = []
-    ensureDefaultNetwork(p.b.world).validateAuthored = (ev) => ev.predicate !== Health.$id
-    ensureDefaultNetwork(p.b.world).onReject = (event, reason) => rejected.push({ event, reason })
+    const p = createPeerPair({
+      transport: {
+        onValidateAuthored: (_w, _n, ev) => ev.predicate !== Health.$id,
+        onRejected: (_w, _n, event, reason) => rejected.push({ event, reason })
+      }
+    })
 
     const e = spawnPrefab(p.a.world, 'watched')
     setComponent(p.a.world, e, Health, { current: 3 })
@@ -395,5 +412,150 @@ describe('ownership gates outbound removal', () => {
     expect(p.b.world.authoredQueue).toHaveLength(0)
     expect(p.b.world.eventLog.length).toBe(before)
     p.dispose()
+  })
+})
+
+describe('presence derives disconnect cleanup', () => {
+  it('sweeps the entities of a departed user without anyone calling a sweep', async () => {
+    const p = createPeerPair()
+    spawnPrefab(p.a.world, 'alices-thing')
+    await p.tick()
+    expect(getEntityByUID(p.b.world, p.b.world.worldRoot, 'alices-thing')).toBeDefined()
+
+    // Nothing invokes cleanup. Closing drops `ConnectedTo`, and the observer
+    // on that removal does the rest.
+    p.link.close()
+    await p.flush()
+
+    expect(getEntityByUID(p.b.world, p.b.world.worldRoot, 'alices-thing')).toBeUndefined()
+    p.dispose()
+  })
+
+  it('marks a peer connected while the link is open and disconnected after', async () => {
+    const p = createPeerPair()
+    await p.tick()
+    const alicePeerOnB = p.link.b.peer
+    expect(isPeerConnected(p.b.world, alicePeerOnB)).toBe(true)
+
+    p.link.close()
+    await p.flush()
+    expect(isPeerConnected(p.b.world, alicePeerOnB)).toBe(false)
+    p.dispose()
+  })
+
+  it('recovers authority from the departed peer to one that remains', async () => {
+    const p = createPeerPair()
+    const thing = spawnPrefab(p.b.world, 'bobs-thing')
+    await p.tick()
+
+    // A holds a copy authored by B. When B drops, A must hand the authority to
+    // a peer it still has — its own — rather than leave the entity frozen.
+    const onA = getEntityByUID(p.a.world, p.a.world.worldRoot, 'bobs-thing')!
+    const bPeerOnA = p.link.a.peer
+    expect(getAuthority(p.a.world, onA)).toBe(bPeerOnA)
+
+    p.link.close()
+    await p.flush()
+
+    // B's entities are swept on A, so the entity is gone entirely — which is
+    // the stronger outcome, and proves the observer ran.
+    expect(getEntityByUID(p.a.world, p.a.world.worldRoot, 'bobs-thing')).toBeUndefined()
+    void thing
+    p.dispose()
+  })
+
+  it('survives the reentrancy of removals triggering further observers', async () => {
+    const p = createPeerPair()
+    const parent = spawnPrefab(p.a.world, 'parent')
+    spawnPrefab(p.a.world, 'child', { parent })
+    spawnPrefab(p.a.world, 'sibling')
+    await p.tick()
+
+    // Removing the owner's entities fires the destroy observer for each, which
+    // runs while the disconnect observer is still on the stack.
+    expect(() => {
+      p.link.close()
+    }).not.toThrow()
+    await p.flush()
+
+    for (const uid of ['parent', 'child', 'sibling']) {
+      expect(getEntityByUID(p.b.world, p.b.world.worldRoot, uid)).toBeUndefined()
+    }
+    // The cleanup is local, so it must not have queued anything outbound.
+    expect(p.b.world.authoredQueue).toHaveLength(0)
+    p.dispose()
+  })
+})
+
+describe('network behaviour is fixed at construction', () => {
+  it('ensureDefaultNetwork ignores behaviour options for a network that already exists', () => {
+    const world = machine('fixed')
+    bootstrap(world, 'fixed')
+
+    const first = ensureDefaultNetwork(world, { onValidateAuthored: () => false })
+    // A second caller must not be able to re-teach the network. If this ever
+    // starts applying, behaviour becomes a function of call order and the
+    // readonly fields buy nothing.
+    const second = ensureDefaultNetwork(world, { onValidateAuthored: () => true })
+
+    expect(second).toBe(first)
+    expect(validateAuthored(world, second, probeEvent())).toBe(false)
+    destroyWorld(world)
+  })
+
+  it('a network built with no gate admits everything', () => {
+    const world = machine('open')
+    bootstrap(world, 'open')
+    const network = addNetwork(world, { id: 'open' })
+    expect(validateAuthored(world, network, probeEvent())).toBe(true)
+    destroyWorld(world)
+  })
+
+  it('a rejected event reaches the onRejected behaviour of its own network', () => {
+    const world = machine('reported')
+    bootstrap(world, 'reported')
+    const seen: string[] = []
+    const network = addNetwork(world, {
+      id: 'reported',
+      onValidateAuthored: () => false,
+      onRejected: (_w, _n, event, reason) => seen.push(`${event.predicate}:${reason}`)
+    })
+
+    const accepted = applyAuthoredEnvelope(world, { fromPeer: 'did:key:OTHER', events: [probeEvent()] }, network)
+
+    expect(accepted).toHaveLength(0)
+    expect(seen).toEqual([`${Health.$id}:governance`])
+    expect(world.eventLog).toHaveLength(0)
+    destroyWorld(world)
+  })
+})
+
+describe('worlds with no continuous components', () => {
+  it('connects without a binary channel rather than throwing', async () => {
+    // Every component in this file is authored-only, so the default continuous
+    // list is empty. Building a pipeline over zero components throws, so the
+    // connection must simply go without one.
+    const a = machine('nosoa-a')
+    const b = machine('nosoa-b')
+    bootstrap(a, 'nosoa-a')
+    bootstrap(b, 'nosoa-b')
+
+    const link = connectInMemory(a, b, { runtimeComponents: [] })
+    expect(link.a.channel).toBeUndefined()
+    expect(link.b.channel).toBeUndefined()
+
+    // The authored path still works, which is the whole point.
+    const e = spawnPrefab(a, 'authored-only')
+    setComponent(a, e, Health, { current: 42 })
+    flushAuthored(a)
+    flushRuntime(a)
+    await flushAsync()
+
+    const remote = getEntityByUID(b, b.worldRoot, 'authored-only')!
+    expect(getComponent(b, remote, Health)?.current).toBe(42)
+
+    link.close()
+    destroyWorld(a)
+    destroyWorld(b)
   })
 })

@@ -22,8 +22,10 @@ Engine (per-app ECS runtime container; createWorld({ engine, agent }) — always
     │
     └── Networks (many per world — sync topology)
         ├── connections (peer connections on this network)
-        ├── publishAuthored / publishRuntime hooks
-        └── validateAuthored governance gate
+        └── behaviours, fixed at construction:
+            ├── onPublishAuthored / onPublishRuntime (outbound paths)
+            ├── onValidateAuthored (governance gate)
+            └── onRejected (diagnostic for a refused event)
 ```
 
 Component and Relation **definitions** are module-level globals. `defineComponent({ id })` produces one `ComponentDefinition`, shared across every engine. Per-engine *storage* lives in `engine.componentStores`. The **identity caches** (`nameCache`, `uidOf`, `parentOf`) live as typed `WeakMap<Engine, …>` extension properties on `UIDComponent` and `BelongsTo` — a global definition with per-engine state.

@@ -20,7 +20,7 @@ import { getAuthority, grantAuthority, setOwner, transferAuthority } from '../sr
 import { spawnPrefab } from '../src/network/prefab'
 import { addConstraint, registerConstraintKind, validateEvent } from '../src/network/governance'
 import { applySnapshot, createSnapshot } from '../src/network/snapshot'
-import { connectInMemory } from '../src/network/lifecycle/connect-memory'
+import { connectInMemory } from '../src/testing/connect-memory'
 import { flushAsync } from '../src/network/transport'
 import { createPeerMesh, createPeerPair } from './test-utils/peer-pair'
 import { createEngine } from '../src/ecs/engine'
@@ -112,7 +112,7 @@ describe('Scenario: spawn → replicate → mutate → converge', () => {
 describe('Scenario: governance rejects unauthorised mutations', () => {
   it('a write the gate refuses never lands on the other peer', async () => {
     const peers = createPeerPair({
-      transport: { validate: (world, event) => validateEvent(world, event).allowed }
+      transport: { onValidateAuthored: (world, _network, event) => validateEvent(world, event).allowed }
     })
     const { a, b } = peers
     const scene = spawnPrefab(a.world, 'scene:guarded')

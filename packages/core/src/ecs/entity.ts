@@ -88,11 +88,13 @@ export const parentOfFor = (engine: Engine): Map<Entity, Entity> => lazy(Belongs
 export const createEntity = (world: World): Entity => bitecs.addEntity(world.engine.bitECS)
 
 /**
- * Remove an entity from this world. Local only — it replicates nothing.
+ * Remove an entity from this world. Plain ECS — this function knows nothing
+ * about peers.
  *
- * Use `destroyEntity` from `network/prefab` for an entity that other peers
- * hold. The pairing matches creation: `createEntity` allocates, `spawnPrefab`
- * allocates and puts on the wire.
+ * Removal still replicates, but reactively: the network layer observes
+ * `onRemove(UIDComponent)` and queues the `destroy` when the local user owns
+ * the entity. There is no networked twin of this function to remember to call.
+ * See `network/mutation.ts`.
  */
 export const removeEntity = (world: World, entity: Entity): void => {
   // bitECS removal first. It cascades the component and relation cleanup, and

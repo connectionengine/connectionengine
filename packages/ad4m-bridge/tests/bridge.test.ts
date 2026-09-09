@@ -22,9 +22,10 @@ import {
   getComponent,
   getEntityByUID,
   getNetwork,
+  publishAuthored,
   Schema
 } from '@connectionengine/core'
-import { createAd4mAgent, eventToLink, linkExpressionToEvent } from '../src'
+import { AD4M_NETWORK_ID, createAd4mAgent, eventToLink, linkExpressionToEvent } from '../src'
 import { createAd4mRuntime } from '../src/runtime'
 
 const Health = defineComponent({
@@ -135,7 +136,9 @@ describe('connectAd4m — outbound', () => {
     const { proxy, added } = mockPerspective()
     const { world } = await createAd4mRuntime(client, proxy, { engine: createEngine() })
 
-    getNetwork(world, 'default')?.publishAuthored?.({
+    const network = getNetwork(world, AD4M_NETWORK_ID)
+    if (!network) throw new Error('expected the ad4m network')
+    publishAuthored(world, network, {
       fromPeer: 'did:ad4m:alice',
       events: [
         {
@@ -209,15 +212,15 @@ describe('connectAd4m — inbound', () => {
 })
 
 describe('Ad4mTransportHandle.close', () => {
-  it('detaches the listener and clears publishAuthored', async () => {
+  it('detaches the listener and removes the ad4m network', async () => {
     const client = mockClient('did:ad4m:bob')
     const { proxy, listeners } = mockPerspective()
     const { world, transport } = await createAd4mRuntime(client, proxy, { engine: createEngine() })
     expect(listeners.size).toBe(1)
-    expect(getNetwork(world, 'default')?.publishAuthored).toBeDefined()
+    expect(getNetwork(world, AD4M_NETWORK_ID)).toBeDefined()
     await transport.close()
     expect(listeners.size).toBe(0)
-    expect(getNetwork(world, 'default')?.publishAuthored).toBeUndefined()
+    expect(getNetwork(world, AD4M_NETWORK_ID)).toBeUndefined()
     destroyWorld(world)
   })
 })

@@ -1,40 +1,46 @@
 /**
- * Link two worlds over a pair of in-memory `TransportEndpoint` objects, without
- * the formal `joinNetwork` handshake.
+ * Test and development utility: link two worlds in one process, skipping the
+ * `joinNetwork` handshake.
  *
- * Authored envelopes fan out through `installFanout` in `session.ts`. When the caller supplies
- * `runtimeComponents`, the function attaches a `BinaryChannel` to each
- * Connection, so that the runtime SoA deltas flow over a per-peer binary
- * pipeline.
+ * It lives in `testing/` because that is what it is. Production code opens a
+ * session with `joinNetwork`, which handshakes, replays the event log, and
+ * bootstraps a snapshot. This shortcut does none of that — it wires two worlds
+ * together directly so a test can assert on envelope-level behaviour without
+ * driving a protocol.
+ *
+ * It ships rather than living under `tests/` because `@connectionengine/local`
+ * builds `connectLocalInMemory` on top of it.
+ *
+ * Authored envelopes leave through the outbound path each network was built
+ * with, which defaults to fanning across its connections. Each Connection also
+ * gets a `BinaryChannel`, so that the runtime SoA deltas flow over a per-peer
+ * binary pipeline. Pass `runtimeComponents` to fix the wire order explicitly;
+ * otherwise both sides derive it from the registered continuous components.
  *
  * Use this function for an envelope-level integration test. Use `joinNetwork`
  * for the production-shaped path, which includes late join and event-log
  * replay.
  *
  * The connection joins the `'default'` network of each side, which the engine
- * creates on demand.
+ * creates on demand. Network behaviours in the options — the gate, the outbound
+ * paths — apply only to a side whose network this call creates, because a
+ * network fixes its behaviour at construction.
  */
 
-import type { AuthoredEvent, Entity, World } from '../../ecs/world'
-import type { ComponentDefinition } from '../../ecs/component'
-import { getComponent, setComponent } from '../../ecs/component'
-import { applyAuthoredEnvelope } from '../mutation'
-import { createEntity } from '../../ecs/entity'
-import { getEntityByUID, getEntityPath, setUID } from '../../ecs/entity'
-import { addRelation } from '../../ecs/relation'
-import { AuthoritativeFor, OwnedBy } from '../authority'
-import { PeerComponent, UserComponent } from '../agents'
-import type { Connection } from '../network'
-import { createMemoryTransport, type RuntimeTransportConfig, type TransportEndpoint } from '../transport'
-import { ensureDefaultNetwork, type Network } from '../network'
-import { createBinaryChannel, isBindControl, type BindControlMessage } from './binary-channel'
-import {
-  ensureChannel,
-  installFanout,
-  rebroadcastAuthored,
-  setConnectionChannel,
-  sweepDisconnectedPeer
-} from './session'
+import type { AuthoredEvent, Entity, World } from '../ecs/world'
+import type { ComponentDefinition } from '../ecs/component'
+import { getComponent, setComponent } from '../ecs/component'
+import { applyAuthoredEnvelope } from '../network/mutation'
+import { createEntity } from '../ecs/entity'
+import { getEntityByUID, getEntityPath, setUID } from '../ecs/entity'
+import { addRelation } from '../ecs/relation'
+import { AuthoritativeFor, OwnedBy } from '../network/authority'
+import { ConnectedTo, PeerComponent, UserComponent } from '../network/agents'
+import type { Connection } from '../network/network'
+import { createMemoryTransport, type RuntimeTransportConfig, type TransportEndpoint } from '../network/transport'
+import { ensureDefaultNetwork, type AddNetworkOptions, type Network } from '../network/network'
+import { isBindControl, type BindControlMessage } from '../network/lifecycle/binary-channel'
+import { attachRuntimeChannel, disconnected, rebroadcastAuthored } from '../network/lifecycle/session'
 
 export interface MemoryConnectionPair {
   a: Connection
@@ -42,8 +48,12 @@ export interface MemoryConnectionPair {
   close(): void
 }
 
-export interface ConnectInMemoryOptions {
-  validate?: (world: World, event: AuthoredEvent) => boolean
+/**
+ * The network behaviours travel under their own names, the same ones
+ * `addNetwork` takes. They apply only when this call is the one that creates
+ * the default network of a side — behaviour is fixed at construction.
+ */
+export interface ConnectInMemoryOptions extends Omit<AddNetworkOptions, 'id'> {
   latencyMs?: number
   runtimeComponents?: readonly ComponentDefinition[]
   runtimeConfigs?: RuntimeTransportConfig[]
@@ -66,8 +76,10 @@ const wireSide = (
   endpoint: TransportEndpoint,
   options: ConnectInMemoryOptions
 ): Connection => {
+  const peerEntity = ensureRemotePeerEntity(world, remote)
+  setComponent(world, peerEntity, ConnectedTo, { networkId: network.id })
   const connection: Connection = {
-    peer: ensureRemotePeerEntity(world, remote),
+    peer: peerEntity,
     remoteDID: remote.did,
     events: endpoint.events,
     stream: endpoint.stream,
@@ -77,18 +89,13 @@ const wireSide = (
       endpoint.close()
     }
   }
-  if (options.runtimeComponents && options.runtimeComponents.length > 0) {
-    setConnectionChannel(
-      connection,
-      createBinaryChannel(world, connection, {
-        components: options.runtimeComponents,
-        configs: options.runtimeConfigs
-      })
-    )
-  }
+  attachRuntimeChannel(world, connection, {
+    components: options.runtimeComponents,
+    configs: options.runtimeConfigs
+  })
   endpoint.events.onMessage((payload) => {
     if (isBindControl(payload)) {
-      ensureChannel(world, connection)?.registerBindings((payload as BindControlMessage).bindings)
+      connection.channel?.registerBindings((payload as BindControlMessage).bindings)
       return
     }
     if (isAuthoredEnvelope(payload)) {
@@ -99,10 +106,10 @@ const wireSide = (
     }
   })
   endpoint.stream.onMessage((buffer) => {
-    ensureChannel(world, connection)?.applyBuffer(buffer)
+    connection.channel?.applyBuffer(buffer)
   })
   endpoint.onClose(() => {
-    sweepDisconnectedPeer(world, connection)
+    disconnected(world, connection)
     network.connections.delete(connection)
   })
   network.connections.add(connection)
@@ -114,15 +121,8 @@ export const connectInMemory = (
   worldB: World,
   options: ConnectInMemoryOptions = {}
 ): MemoryConnectionPair => {
-  const networkA = ensureDefaultNetwork(worldA)
-  const networkB = ensureDefaultNetwork(worldB)
-  if (options.validate) {
-    const v = options.validate
-    if (!networkA.validateAuthored) networkA.validateAuthored = (e) => v(worldA, e)
-    if (!networkB.validateAuthored) networkB.validateAuthored = (e) => v(worldB, e)
-  }
-  installFanout(worldA, networkA)
-  installFanout(worldB, networkB)
+  const networkA = ensureDefaultNetwork(worldA, options)
+  const networkB = ensureDefaultNetwork(worldB, options)
   const transport = createMemoryTransport({ latencyMs: options.latencyMs })
   const a = wireSide(worldA, networkA, identityOf(worldB), transport.a, options)
   const b = wireSide(worldB, networkB, identityOf(worldA), transport.b, options)

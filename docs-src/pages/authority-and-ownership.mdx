@@ -55,7 +55,7 @@ const alice = createUser(world, { did: 'did:key:z6Mk...', asLocal: true })
 
 Three things use it:
 
-- Disconnect cleanup. When the last peer of a user disconnects, the sweep removes every entity that user owns. The sweep reads the owner-user, not the authority. An entity that must outlive the session of a user must not be owned by that user.
+- Disconnect cleanup. When the last peer of a user disconnects, every entity that user owns is removed. That reads the owner-user, not the authority. An entity that must outlive the session of a user must not be owned by that user.
 - Permission inference. "Is this requester one of the peers of the owner?" Grants for that case are common.
 - Display. It supplies the "made by Alice" text in your UX.
 
@@ -130,7 +130,7 @@ The short window in which no peer writes is usually acceptable, because receiver
 
 ## Recovery on disconnect — automatic
 
-When a peer drops, `sweepDisconnectedPeer` in the lifecycle layer runs `recoverAuthority` for every entity whose `AuthoritativeFor` targets the leaving peer. `recoverAuthority` selects the remaining peer of the owner-user with the lowest id. If it knows no local peer of the owner, it falls back to `world.localPeer` as a last-resort host-migration successor.
+When a peer drops, its `ConnectedTo` component goes away, and an observer on that removal runs `recoverAuthority` for every entity whose `AuthoritativeFor` targets the leaving peer. `recoverAuthority` selects the remaining peer of the owner-user with the lowest id. If it knows no local peer of the owner, it falls back to `world.localPeer` as a last-resort host-migration successor.
 
 ```ts
 // You do not call this yourself — it runs on disconnect automatically.
@@ -140,7 +140,7 @@ recoverAuthority(world, entity, disconnectedPeer)
 //   → grantAuthority(world, entity, successor, { origin: 'network' })
 ```
 
-The disconnect side must know which peer entity to recover from. That knowledge comes from the HELLO handshake. Every connection carries the DID and the peerId of the remote engine, and the receiver materialises a local `User` entity and `Peer` entity. It uses the path that the sender encoded, so a later authored-event replay for those same identities deduplicates. The engine stores the materialised peer entity on `connection.peer`, and the sweep walks that value.
+The disconnect side must know which peer entity to recover from. That knowledge comes from the HELLO handshake. Every connection carries the DID and the peerId of the remote engine, and the receiver materialises a local `User` entity and `Peer` entity. It uses the path that the sender encoded, so a later authored-event replay for those same identities deduplicates. The engine stores the materialised peer entity on `connection.peer`, and writes `ConnectedTo` onto it. Removing that component on close is what triggers the cleanup.
 
 ## Bootstrap writes
 

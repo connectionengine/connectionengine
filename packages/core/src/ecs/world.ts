@@ -8,10 +8,11 @@
  * (`authoredQueue`, `eventLog`, `runtimeDirty`), and the local identity
  * (`localAgent`, `localUser`, `localPeer`).
  *
- * Networks do not live on the world. They live in a per-world registry in
- * `network/network.ts`. See `getNetworks(world)`, `addNetwork(world, …)`, and
- * `ensureDefaultNetwork(world)`. This keeps the `ecs/` layer free of every
- * network-layer type.
+ * The world also carries its `networks` map. `ecs/` names the `Network` type
+ * through an inline import and never imports the module, so the layering holds
+ * while the state stays where it belongs. Build and read them through
+ * `addNetwork(world, …)`, `getNetworks(world)`, and `ensureDefaultNetwork(world)`
+ * in `network/network.ts`.
  *
  * Many Worlds can coexist in one Engine, but ECS queries and systems operate
  * engine-wide. A caller that wants world-scoped iteration walks the `BelongsTo`
@@ -123,6 +124,16 @@ export interface World {
   /** Runtime dirty set. `setComponent` writes to it for continuous-channel
    *  components. */
   runtimeDirty: Map<string, Set<Entity>>
+  /**
+   * Sync topologies on this world, keyed by network id.
+   *
+   * `Network` is a network-layer type, so `ecs/` names it only through the
+   * inline import below and never imports the module. Holding it here rather
+   * than in a side table keeps per-world state in one place: `destroyWorld`
+   * clears what the world holds, instead of every layer having to remember its
+   * own map.
+   */
+  networks: Map<string, import('../network/network').Network>
 
   /** Local peer entity. `createPeer` sets it for this runtime. */
   localPeer?: Entity
@@ -179,7 +190,8 @@ export const createWorld = (options: CreateWorldOptions): World => {
     eventLog: [],
     eventLogSeen: new Set(),
     authoredSeq: 0,
-    runtimeDirty: new Map()
+    runtimeDirty: new Map(),
+    networks: new Map()
   }
   Worlds.add(world)
   for (const hook of createHooks) hook(world)
@@ -195,6 +207,7 @@ export const destroyWorld = (world: World): void => {
   world.eventLog.length = 0
   world.eventLogSeen.clear()
   world.runtimeDirty.clear()
+  world.networks.clear()
   // Sweep every entity that is reachable from worldRoot. The identity caches
   // are per-engine, through the WeakMaps on UIDComponent and BelongsTo. Cleanup
   // of the descendants stops a later world in the same engine from reading a

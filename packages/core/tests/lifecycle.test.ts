@@ -32,6 +32,7 @@ import {
   hasComponent,
   joinWorld,
   leaveWorld,
+  publishAuthored,
   Schema,
   grantAuthority,
   setComponent,
@@ -167,9 +168,9 @@ describe('joinWorld — handshake + event-log replay', () => {
 
     // After join, host updates state; joiner should pick it up via live stream
     setComponent(host, e, Health, { current: 99 })
-    // Manually invoke publishAuthored by emulating flush — the lifecycle wires it
-    // (joinWorld calls installFanout on the default network)
-    getNetwork(host, 'default')?.publishAuthored?.({
+    // Emulate a flush by publishing straight onto the network that joinWorld
+    // built. The default outbound path fans across its connections.
+    publishAuthored(host, getNetwork(host, 'default')!, {
       fromPeer: host.localAgent.did,
       events: [
         {
@@ -178,7 +179,8 @@ describe('joinWorld — handshake + event-log replay', () => {
           op: 'set',
           predicate: 'LC.Health',
           entityPath: ['scene:live', 'thing'],
-          value: { current: 99, max: 100 }
+          value: { current: 99, max: 100 },
+          seq: 0
         }
       ]
     })
@@ -403,6 +405,7 @@ describe('Authority — receive-side gate', () => {
           entityPath: ['scene:rg', 'thing'],
           predicate: AuthoritativeFor.name,
           op: 'set',
+          seq: 0,
           value: { targetPath: ['user:rogue', 'peer:rogue-p'] },
           author: 'did:test:rogue',
           timestamp: 0
@@ -433,6 +436,7 @@ describe('Authority — receive-side gate', () => {
           entityPath: ['scene:ag', 'thing2'],
           predicate: AuthoritativeFor.name,
           op: 'set',
+          seq: 0,
           value: { targetPath: ['user:host2', 'peer:host-p2'] },
           author: 'did:test:host2',
           timestamp: 0
@@ -503,11 +507,12 @@ describe('Sanity: applyAuthoredEnvelope works alongside lifecycle', () => {
           op: 'set',
           value: { current: 7, max: 10 },
           author: 'did:test:direct',
-          timestamp: 0
+          timestamp: 0,
+          seq: 0
         }
       ]
     })
-    expect(host.eventLog.at(-1)?.value).toEqual({ current: 7, max: 10 })
+    expect(host.eventLog[host.eventLog.length - 1]?.value).toEqual({ current: 7, max: 10 })
 
     link.close()
     destroyWorld(host)
