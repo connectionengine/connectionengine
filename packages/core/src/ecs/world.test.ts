@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Worlds, createAnonAgent, createWorld, destroyWorld, tickEngine } from './world'
+import { createAnonAgent, createWorld, destroyWorld, tickEngine } from './world'
 import { createEngine } from './engine'
 import { createManualClock } from './clock'
 
@@ -14,7 +14,6 @@ describe('World', () => {
     expect(world.eventLog).toEqual([])
     expect(world.authoredQueue).toEqual([])
     expect(world.runtimeDirty.size).toBe(0)
-    expect(Worlds.has(world)).toBe(true)
     destroyWorld(world)
   })
 
@@ -33,20 +32,18 @@ describe('World', () => {
     const a = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const b = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     expect(a).not.toBe(b)
-    expect(Worlds.has(a) && Worlds.has(b)).toBe(true)
+    expect(a.engine).not.toBe(b.engine)
     destroyWorld(a)
-    expect(Worlds.has(a)).toBe(false)
-    expect(Worlds.has(b)).toBe(true)
+    // b remains usable after a goes away
+    expect(b.eventLog).toBeDefined()
     destroyWorld(b)
   })
 
   it('destroyWorld is idempotent', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     destroyWorld(world)
-    expect(Worlds.has(world)).toBe(false)
-    // calling again is a noop
-    destroyWorld(world)
-    expect(Worlds.has(world)).toBe(false)
+    // calling again does not throw
+    expect(() => destroyWorld(world)).not.toThrow()
   })
 })
 

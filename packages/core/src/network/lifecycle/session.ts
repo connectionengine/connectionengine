@@ -31,8 +31,7 @@ import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../../ecs/w
 import type { ComponentDefinition } from '../../ecs/component'
 import { allComponents, getComponent, hasSyncedSoA, setComponent } from '../../ecs/component'
 import { applyAuthoredEnvelope, flushAuthored } from '../mutation'
-import { createEntity } from '../../ecs/entity'
-import { getEntityByUID, getEntityPath, setUID } from '../../ecs/entity'
+import { ensureEntityPath, getEntityPath } from '../../ecs/entity'
 import { addRelation } from '../../ecs/relation'
 import { AuthoritativeFor, OwnedBy } from '../authority'
 import { ConnectedTo, PeerComponent, UserComponent } from '../agents'
@@ -289,43 +288,15 @@ const localPeerId = (world: World): string => {
 const ensureRemotePeerEntity = (world: World, hello: HelloMessage): Entity => {
   const userPath = hello.userPath.length > 0 ? hello.userPath : [`user:${hello.agentDID}`]
   const peerPath = hello.peerPath.length > 0 ? hello.peerPath : [...userPath, `peer:${hello.peerId}`]
-  const user = ensureAgentPath(world, userPath, (cursor) => {
+  const user = ensureEntityPath(world, userPath, (cursor) => {
     setComponent(world, cursor, UserComponent, { did: hello.agentDID, displayName: '' }, { origin: 'network' })
     OwnedBy.set(world, cursor, cursor, { origin: 'network' })
   })
-  return ensureAgentPath(world, peerPath, (cursor) => {
+  return ensureEntityPath(world, peerPath, (cursor) => {
     setComponent(world, cursor, PeerComponent, { peerId: hello.peerId, latency: 0 }, { origin: 'network' })
     OwnedBy.set(world, cursor, user, { origin: 'network' })
     addRelation(world, cursor, AuthoritativeFor, cursor, { origin: 'network' })
   })
-}
-
-/**
- * Walk a UID path, and create every missing node silently. The function runs
- * `decorate` on the leaf when, and only when, it created that leaf. A leaf that
- * already existed already carries its components, from replay or from earlier
- * setup.
- */
-const ensureAgentPath = (world: World, path: string[], decorate: (entity: Entity) => void): Entity => {
-  let parent: Entity = world.worldRoot
-  let cursor: Entity = world.worldRoot
-  let freshLeaf = false
-  for (let i = 0; i < path.length; i++) {
-    const uid = path[i]
-    const existing = getEntityByUID(world, parent, uid)
-    if (existing !== undefined) {
-      cursor = existing
-      freshLeaf = false
-    } else {
-      cursor = createEntity(world)
-      if (parent === world.worldRoot) setUID(world, cursor, uid, { origin: 'network' })
-      else setUID(world, cursor, uid, { parent, origin: 'network' })
-      freshLeaf = i === path.length - 1
-    }
-    parent = cursor
-  }
-  if (freshLeaf) decorate(cursor)
-  return cursor
 }
 
 // ── Runtime channel + relay ──────────────────────────────────────────────────-
@@ -394,15 +365,8 @@ export const rebroadcastAuthored = (
   }
 }
 
-// ── Disconnect ───────────────────────────────────────────────────────────────-
+// ── Connection lifecycle ─────────────────────────────────────────────────────-
 
-/**
- * Record that a connection has ended.
- *
- * Dropping `ConnectedTo` is the whole of it. Authority recovery and the
- * owner sweep are observers of that removal, in `network/presence.ts`, so
- * nothing here has to remember to perform them.
- */
 /**
  * Put a connection on a network, and register its teardown in the same breath.
  *
@@ -410,7 +374,7 @@ export const rebroadcastAuthored = (
  * connection ends — a graceful `leave`, a dropped transport, `leaveWorld`, or
  * a closed in-memory link — so one registration at the point of setup covers
  * every route. A caller that attaches a connection cannot forget to detach it,
- * because attaching is what registers the detach.
+ * because attaching registers the detach.
  */
 export const attachConnection = (world: World, network: Network, connection: Connection): void => {
   network.connections.add(connection)

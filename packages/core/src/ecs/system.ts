@@ -1,28 +1,32 @@
 /**
  * System — phase-ordered functions with an optional reactor.
  *
- * defineSystem registers a system into the phase scheduler of a world.
+ * `defineSystem(engine, definition)` registers a system on the engine.
  *   - phase: Input, Simulation, Animation, or Render. The phase selects the
  *     fixed or the variable timestep. Simulation uses the fixed timestep.
- *   - execute(world, deltaTime): the continuous logic. It runs every tick in
+ *   - execute(engine, deltaTime): the continuous logic. It runs every tick in
  *     its phase.
  *   - reactor(): a DOMless Solid component, logic only. `createRoot` mounts it
- *     once at registration. `removeSystem` and `destroyWorld` dispose it.
+ *     once at registration. `removeSystem` and `destroyEngine` dispose it.
  *   - before / after: ordering constraints. Each one names another system in
  *     the same phase. Every register and unregister sorts the phase
  *     topologically.
  *
- * runSystems(world, deltaSeconds) drives one frame. tickEngine gives the fixed
- * substeps to the Simulation systems, and the variable steps to the rest.
+ * `runSystems(engine, deltaSeconds)` drives one frame. `tickEngine` gives the
+ * fixed substeps to the Simulation systems, and the variable steps to the rest.
  *
- * This module is pure ECS. It knows nothing about authoring or replication. A
- * driver that flushes networking at frame end, such as a runtime mode or a test
- * harness, calls `flushAuthored` and `flushRuntime` from `network/mutation`
- * after `runSystems` returns.
+ * Systems belong to the engine, not to a world. The ECS operates engine-wide:
+ * queries, entities, SoA storage, and time all live on the engine, so systems
+ * match. `defineSystem` pushes a disposer that `destroyEngine` drains — setup
+ * registers teardown, the same principle that governs `attachConnection`.
+ *
+ * This module knows nothing about authoring or replication. A driver that
+ * flushes networking at frame end calls `flushAuthored` and `flushRuntime`
+ * from `network/mutation` after `runSystems` returns.
  */
 
 import { createRoot } from 'solid-js'
-import type { World } from './world'
+import type { Engine } from './engine'
 import { tickEngine } from './world'
 
 export type Phase = 'Input' | 'Simulation' | 'Animation' | 'Render'
@@ -37,7 +41,7 @@ export interface SystemDefinition {
   context?: ExecutionContext
   before?: string[]
   after?: string[]
-  execute?: (world: World, deltaTime: number) => void
+  execute?: (engine: Engine, deltaTime: number) => void
   reactor?: ReactorFunction
 }
 
@@ -52,17 +56,17 @@ export interface SystemHandle {
 interface SchedulerState {
   /** The systems of each phase, held in topological order. */
   byPhase: Map<Phase, SystemHandle[]>
-  /** Every handle, tracked so that destroyWorld can clean them up. */
+  /** Every handle, tracked so that destroyEngine can clean them up. */
   all: Set<SystemHandle>
 }
 
-const schedulers = new WeakMap<World, SchedulerState>()
+const schedulers = new WeakMap<Engine, SchedulerState>()
 
-const getOrCreate = (world: World): SchedulerState => {
-  let state = schedulers.get(world)
+const getOrCreate = (engine: Engine): SchedulerState => {
+  let state = schedulers.get(engine)
   if (!state) {
     state = { byPhase: new Map(PHASES.map((p) => [p, []])), all: new Set() }
-    schedulers.set(world, state)
+    schedulers.set(engine, state)
   }
   return state
 }
@@ -109,8 +113,8 @@ const sortPhase = (handles: SystemHandle[]): SystemHandle[] => {
   return sorted
 }
 
-export const defineSystem = (world: World, definition: SystemDefinition): SystemHandle => {
-  const state = getOrCreate(world)
+export const defineSystem = (engine: Engine, definition: SystemDefinition): SystemHandle => {
+  const state = getOrCreate(engine)
   let dispose: (() => void) | undefined
   if (definition.reactor) {
     const reactor = definition.reactor
@@ -124,11 +128,13 @@ export const defineSystem = (world: World, definition: SystemDefinition): System
   const phaseList = state.byPhase.get(definition.phase) ?? []
   phaseList.push(handle)
   state.byPhase.set(definition.phase, sortPhase(phaseList))
+  // Setup registers teardown. destroyEngine drains this list.
+  engine.disposers.push(() => removeSystem(engine, handle))
   return handle
 }
 
-export const removeSystem = (world: World, handle: SystemHandle): void => {
-  const state = schedulers.get(world)
+export const removeSystem = (engine: Engine, handle: SystemHandle): void => {
+  const state = schedulers.get(engine)
   if (!state) return
   state.all.delete(handle)
   const phaseList = state.byPhase.get(handle.phase)
@@ -142,24 +148,23 @@ export const removeSystem = (world: World, handle: SystemHandle): void => {
 }
 
 /**
- * Inject a system that was defined earlier into a world.
+ * Inject a system that was defined earlier into an engine.
  *
- * This function attaches a `SystemHandle` to the phase scheduler of the world
+ * This function attaches a `SystemHandle` to the phase scheduler of the engine
  * again. `defineSystem` produced that handle, or an earlier `removeSystem` call
  * released it. The function mounts the reactor of the handle again, under a
  * fresh `createRoot`. Plugin systems that detach and attach with the lifecycle
  * of their host use it.
  *
- * The function throws if a *different* handle with the same `name` is already
- * injected in this world. It is idempotent for the same handle, and does
- * nothing when that handle is already injected.
+ * The function throws if a *different* handle with the same `name` already
+ * exists on this engine. It does nothing when the handle already exists.
  */
-export const injectSystem = (world: World, handle: SystemHandle): void => {
-  const state = getOrCreate(world)
+export const injectSystem = (engine: Engine, handle: SystemHandle): void => {
+  const state = getOrCreate(engine)
   if (state.all.has(handle)) return
   for (const existing of state.all) {
     if (existing.name === handle.name) {
-      throw new Error(`injectSystem: a different system named "${handle.name}" is already injected on this world`)
+      throw new Error(`injectSystem: a different system named "${handle.name}" already exists on this engine`)
     }
   }
   if (handle.definition.reactor) {
@@ -176,20 +181,20 @@ export const injectSystem = (world: World, handle: SystemHandle): void => {
 }
 
 export const reorderSystem = (
-  world: World,
+  engine: Engine,
   handle: SystemHandle,
   ordering: { before?: string[]; after?: string[] }
 ): void => {
   ;(handle.definition as { before?: string[]; after?: string[] }).before = ordering.before ?? handle.definition.before
   ;(handle.definition as { before?: string[]; after?: string[] }).after = ordering.after ?? handle.definition.after
-  const state = schedulers.get(world)
+  const state = schedulers.get(engine)
   if (!state) return
   const phaseList = state.byPhase.get(handle.phase) ?? []
   state.byPhase.set(handle.phase, sortPhase(phaseList))
 }
 
-export const listSystems = (world: World, phase?: Phase): SystemHandle[] => {
-  const state = schedulers.get(world)
+export const listSystems = (engine: Engine, phase?: Phase): SystemHandle[] => {
+  const state = schedulers.get(engine)
   if (!state) return []
   if (phase) return state.byPhase.get(phase)?.slice() ?? []
   return Array.from(state.all)
@@ -198,20 +203,19 @@ export const listSystems = (world: World, phase?: Phase): SystemHandle[] => {
 // ── Frame runner ──────────────────────────────────────────────────────────────
 
 /**
- * Drive one frame of the world. It executes the systems in phase order.
+ * Drive one frame of the engine. It executes the systems in phase order.
  *
  * Phase order: Input → Simulation (fixed substeps) → Animation → Render.
  *
- * This function is pure ECS, and it does NOT flush networking. A driver that
- * needs end-of-frame replication calls `flushAuthored` and `flushRuntime` after
- * this function returns.
+ * This function does NOT flush networking. A driver that needs end-of-frame
+ * replication calls `flushAuthored` and `flushRuntime` after this function
+ * returns.
  */
-export const runSystems = (world: World, deltaSeconds: number): void => {
-  const state = getOrCreate(world)
-  const engine = world.engine
+export const runSystems = (engine: Engine, deltaSeconds: number): void => {
+  const state = getOrCreate(engine)
   const runPhase = (phase: Phase, dt: number): void => {
     for (const handle of state.byPhase.get(phase) ?? []) {
-      handle.definition.execute?.(world, dt)
+      handle.definition.execute?.(engine, dt)
     }
   }
   // Input runs once per frame, at the variable timestep.
@@ -226,10 +230,10 @@ export const runSystems = (world: World, deltaSeconds: number): void => {
   })
 }
 
-/** Dispose every system on a world. `destroyWorld` calls it through a hook. */
-export const disposeAllSystems = (world: World): void => {
-  const state = schedulers.get(world)
+/** Dispose every system on an engine and remove the scheduler state. */
+export const disposeAllSystems = (engine: Engine): void => {
+  const state = schedulers.get(engine)
   if (!state) return
   for (const h of state.all) h.dispose?.()
-  schedulers.delete(world)
+  schedulers.delete(engine)
 }

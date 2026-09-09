@@ -319,3 +319,31 @@ export const resolveEntityPath = (world: World, path: string[]): Entity | undefi
   }
   return cursor
 }
+
+/**
+ * Walk a UID path from the world root, and create every missing node. The
+ * optional `decorate` callback runs on the leaf, but only when this call
+ * created that leaf. An existing leaf already carries its components from
+ * replay or earlier setup.
+ */
+export const ensureEntityPath = (world: World, path: string[], decorate?: (entity: Entity) => void): Entity => {
+  let parent: Entity = world.worldRoot
+  let cursor: Entity = world.worldRoot
+  let freshLeaf = false
+  for (let i = 0; i < path.length; i++) {
+    const uid = path[i]
+    const existing = getEntityByUID(world, parent, uid)
+    if (existing !== undefined) {
+      cursor = existing
+      freshLeaf = false
+    } else {
+      cursor = createEntity(world)
+      if (parent === world.worldRoot) setUID(world, cursor, uid, { origin: 'network' })
+      else setUID(world, cursor, uid, { parent, origin: 'network' })
+      freshLeaf = i === path.length - 1
+    }
+    parent = cursor
+  }
+  if (freshLeaf && decorate) decorate(cursor)
+  return cursor
+}

@@ -37,7 +37,7 @@ import type { ComponentDefinition } from '../ecs/component'
 import { allComponents, getComponentById, hasSyncedSoA, removeComponent, setComponent } from '../ecs/component'
 import type { RelationDefinition } from '../ecs/relation'
 import { addRelation, allRelations, getRelationByName, removeRelation } from '../ecs/relation'
-import { createEntity, getEntityByUID, getEntityPath, removeEntity, resolveEntityPath, setUID } from '../ecs/entity'
+import { getEntityPath, removeEntity, resolveEntityPath, ensureEntityPath } from '../ecs/entity'
 import { checkAuthorityChangeStanding, OwnedBy } from './authority'
 import type { Network } from './network'
 import { getNetwork, getNetworks, publishAuthored, publishRuntime, reportRejected, validateAuthored } from './network'
@@ -315,21 +315,4 @@ const applyEvent = (world: World, event: AuthoredEvent): void => {
     if (event.op === 'set') addRelation(world, entity, relation, target, { origin: 'network' })
     else if (event.op === 'remove') removeRelation(world, entity, relation, target, { origin: 'network' })
   }
-}
-
-const ensureEntityPath = (world: World, path: string[]): Entity => {
-  let parent: Entity = world.worldRoot
-  let cursor: Entity = world.worldRoot
-  for (const uid of path) {
-    const existing = getEntityByUID(world, parent, uid)
-    if (existing !== undefined) {
-      cursor = existing
-    } else {
-      cursor = createEntity(world)
-      if (parent === world.worldRoot) setUID(world, cursor, uid, { origin: 'network' })
-      else setUID(world, cursor, uid, { parent, origin: 'network' })
-    }
-    parent = cursor
-  }
-  return cursor
 }

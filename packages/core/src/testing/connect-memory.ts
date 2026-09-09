@@ -32,8 +32,7 @@ import type { AuthoredEvent, Entity, World } from '../ecs/world'
 import type { ComponentDefinition } from '../ecs/component'
 import { getComponent, setComponent } from '../ecs/component'
 import { applyAuthoredEnvelope } from '../network/mutation'
-import { createEntity } from '../ecs/entity'
-import { getEntityByUID, getEntityPath, setUID } from '../ecs/entity'
+import { ensureEntityPath, getEntityPath } from '../ecs/entity'
 import { addRelation } from '../ecs/relation'
 import { AuthoritativeFor, OwnedBy } from '../network/authority'
 import { ConnectedTo, PeerComponent, UserComponent } from '../network/agents'
@@ -160,41 +159,13 @@ const identityOf = (world: World): RemoteIdentity => {
 const ensureRemotePeerEntity = (world: World, remote: RemoteIdentity): Entity => {
   const userPath = remote.userPath.length > 0 ? remote.userPath : [`user:${remote.did}`]
   const peerPath = remote.peerPath.length > 0 ? remote.peerPath : [...userPath, `peer:${remote.peerId}`]
-  const user = ensureAgentPath(world, userPath, (cursor) => {
+  const user = ensureEntityPath(world, userPath, (cursor) => {
     setComponent(world, cursor, UserComponent, { did: remote.did, displayName: '' }, { origin: 'network' })
     OwnedBy.set(world, cursor, cursor, { origin: 'network' })
   })
-  return ensureAgentPath(world, peerPath, (cursor) => {
+  return ensureEntityPath(world, peerPath, (cursor) => {
     setComponent(world, cursor, PeerComponent, { peerId: remote.peerId, latency: 0 }, { origin: 'network' })
     OwnedBy.set(world, cursor, user, { origin: 'network' })
     addRelation(world, cursor, AuthoritativeFor, cursor, { origin: 'network' })
   })
-}
-
-/**
- * Walk a UID path, and create every missing node silently. The function runs
- * `decorate` on the leaf when, and only when, it created that leaf. A leaf that
- * already existed already carries its components, from replay or from local
- * setup.
- */
-const ensureAgentPath = (world: World, path: string[], decorate: (entity: Entity) => void): Entity => {
-  let parent: Entity = world.worldRoot
-  let cursor: Entity = world.worldRoot
-  let freshLeaf = false
-  for (let i = 0; i < path.length; i++) {
-    const uid = path[i]
-    const existing = getEntityByUID(world, parent, uid)
-    if (existing !== undefined) {
-      cursor = existing
-      freshLeaf = false
-    } else {
-      cursor = createEntity(world)
-      if (parent === world.worldRoot) setUID(world, cursor, uid, { origin: 'network' })
-      else setUID(world, cursor, uid, { parent, origin: 'network' })
-      freshLeaf = i === path.length - 1
-    }
-    parent = cursor
-  }
-  if (freshLeaf) decorate(cursor)
-  return cursor
 }

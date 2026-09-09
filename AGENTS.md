@@ -97,6 +97,8 @@ So `ecs/` writing to the authored queue is deliberate and symmetric, not a leak.
 
 `attachConnection(world, network, connection)` adds the connection to its network and registers `disconnectPeer` on `connection.onClose` in the same call. Attaching is what registers the detach, so no call site can do one without the other, and `onClose` covers every way a connection ends.
 
+`defineSystem(engine, definition)` pushes its own `removeSystem` onto `engine.disposers`. `destroyEngine` drains the list. No caller has to remember to unregister a system — registration carries the undo.
+
 Prefer this over both alternatives that came before it: a cleanup procedure several call sites must remember, and an observer watching for the state change. `ConnectedTo` remains as queryable state — a fact, not a trigger.
 
 ## Behaviour is fixed at construction — no mutable hooks on runtime objects
@@ -145,6 +147,8 @@ The outputs land in `.codegraph/`, which `.gitignore` excludes. After `map` runs
 
 - **Component and relation definitions are global. Storage is per-engine.** `defineComponent({ id })` returns the same definition for the same id, in every engine. The SoA typed arrays live on the definition itself. The per-entity instance records and view bags live on the engine, in `engine.componentStores`.
 - **Entity IDs belong to the engine, not to the world.** Two worlds that share an engine share one bitECS ID space. Two worlds with separate engines get independent ID spaces.
+- **Systems belong to the engine, not to the world.** `defineSystem(engine, ...)`, `runSystems(engine, ...)`, `removeSystem(engine, ...)` — all take an `Engine`. The execute callback receives `(engine, deltaTime)`. Worlds come and go; systems outlive them and tick every world that shares the engine. `destroyEngine` drains `engine.disposers`, which disposes every system reactor. Call it after destroying the worlds.
+- **`ensureEntityPath` lives in `ecs/entity.ts`.** One canonical copy serves mutation, snapshot, session, and test code. It accepts an optional `decorate` callback, which fires only on a freshly created leaf entity. Do not duplicate it elsewhere.
 - **Entity IDs are runtime-local, and the engine never serialises them.** Identity on the wire uses BelongsTo and UID paths. See `getEntityPath` and `resolveEntityPath`.
 - **`AuthoredEvent` is unsigned.** The mutation pipeline in core produces and consumes plain events. Signing and verification are runtime-mode concerns. The `local/` package signs with Ed25519. The `ad4m-bridge/` package delegates to the AD4M executor.
 - **The `origin` tag prevents re-broadcast.** A mutation tagged `network`, which means the engine received it from a peer, does not re-enter the outbound queue. Break this and peers echo each other forever. The tests in `packages/core/tests/integration.test.ts` lock it in.

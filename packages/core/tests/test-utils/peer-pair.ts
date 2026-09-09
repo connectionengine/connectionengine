@@ -82,9 +82,9 @@ export const createPeerPair = (options: CreatePeerPairOptions = {}): PeerPair =>
     tick: async (deltaSeconds = 1 / 60) => {
       clockA.advance(deltaSeconds * 1000)
       clockB.advance(deltaSeconds * 1000)
-      runSystems(worldA, deltaSeconds)
-      runSystems(worldB, deltaSeconds)
-      // runSystems is pure ECS. The harness drives the network flush after
+      runSystems(worldA.engine, deltaSeconds)
+      runSystems(worldB.engine, deltaSeconds)
+      // runSystems drives the engine. The harness drives the network flush after
       // the frame settles. Authored first so receivers see new entities
       // before binary packets reference them.
       flushAuthored(worldA)
@@ -136,7 +136,7 @@ export const createPeerMesh = (n: number, options: CreatePeerPairOptions = {}): 
     tick: async (deltaSeconds = 1 / 60) => {
       for (const p of peers) {
         p.clock.advance(deltaSeconds * 1000)
-        runSystems(p.world, deltaSeconds)
+        runSystems(p.world.engine, deltaSeconds)
         flushAuthored(p.world)
         flushRuntime(p.world)
       }

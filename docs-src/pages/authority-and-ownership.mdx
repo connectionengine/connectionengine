@@ -90,10 +90,10 @@ Connection Engine does not enforce authority on the `continuous` channel. No per
 Instead, **your systems consult authority**. The convention is:
 
 ```ts
-defineSystem(world, {
+defineSystem(engine, {
   name: 'PhysicsStep',
   phase: 'Simulation',
-  execute: (world, dt) => {
+  execute: (engine, dt) => {
     for (const e of physicsQuery(world)) {
       if (AuthoritativeFor.get(world, e) !== world.localPeer) continue
       // ...integrate physics, write to Transform...

@@ -14,14 +14,14 @@
  */
 
 import { getComponentById, hasComponent, serialiseComponentValue, setComponent } from '../ecs/component'
-import { getEntityByUID, getEntityPath, setUID, uidOfFor } from '../ecs/entity'
+import { getEntityPath, uidOfFor, ensureEntityPath } from '../ecs/entity'
 import { addRelation, getRelationByName, getRelationTargets } from '../ecs/relation'
-import { createEntity, removeEntity } from '../ecs/entity'
+import { removeEntity } from '../ecs/entity'
 import { worldComponents, worldRelations } from './mutation'
 import { checkAuthorityChangeStanding } from './authority'
 import type { Network } from './network'
 import { validateAuthored } from './network'
-import type { AuthoredEvent, Entity, World } from '../ecs/world'
+import type { AuthoredEvent, World } from '../ecs/world'
 
 export interface SnapshotEntity {
   path: string[]
@@ -178,25 +178,6 @@ const admitter = (
     if (network && !validateAuthored(world, network, event)) return false
     return checkAuthorityChangeStanding(world, event) === undefined
   }
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-const ensureEntityPath = (world: World, path: string[]): Entity => {
-  let parent: Entity = world.worldRoot
-  let cursor: Entity = world.worldRoot
-  for (const uid of path) {
-    const existing = getEntityByUID(world, parent, uid)
-    if (existing !== undefined) {
-      cursor = existing
-    } else {
-      cursor = createEntity(world)
-      if (parent === world.worldRoot) setUID(world, cursor, uid, { origin: 'network' })
-      else setUID(world, cursor, uid, { parent, origin: 'network' })
-    }
-    parent = cursor
-  }
-  return cursor
 }
 
 // The component and relation enumeration uses worldComponents and

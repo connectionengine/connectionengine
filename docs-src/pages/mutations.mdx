@@ -152,7 +152,7 @@ setComponent(world, e, Health, { current: 50 })
 setComponent(world, e, Transform, { position: [1,2,3] })
   → world.runtimeDirty.get('Transform').add(e)
 
-runSystems(world, 1/60)
+runSystems(engine, 1/60)
   → ...systems...
 
 flushAuthored(world)

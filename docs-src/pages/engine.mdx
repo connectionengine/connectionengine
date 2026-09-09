@@ -10,7 +10,8 @@ The engine owns three things:
 
 - **One bitECS world.** Every entity allocated in this engine shares an ID space. A CE World scopes itself to a subtree inside that space, through the `BelongsTo` chain rooted at `worldRoot`.
 - **Per-component storage.** The SoA typed arrays live directly on each `ComponentDefinition`, so `Transform.position.x[eid]` works without a lookup. The per-entity instance maps and view bags for value fields live on the engine, in `componentStores`, keyed by `(ComponentDefinition, entity)`.
-- **Time state.** `clock`, `frameTime`, `simulationTime`, `fixedTimeStep`, `deltaSeconds`, and `accumulator`. The engine ticks, and `tickEngine` and `runSystems` drive every world rooted in it.
+- **Time state.** `clock`, `frameTime`, `simulationTime`, `fixedTimeStep`, `deltaSeconds`, and `accumulator`. The engine ticks. `tickEngine` and `runSystems` drive every system registered on it.
+- **Systems.** `defineSystem(engine, ...)` registers phase-ordered functions. `destroyEngine(engine)` disposes them.
 
 The engine does *not* own two things:
 

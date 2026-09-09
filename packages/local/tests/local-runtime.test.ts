@@ -101,7 +101,7 @@ const tick = async (
 ) => {
   for (const { world, clock } of worlds) {
     clock.advance(1000 / 60)
-    runSystems(world, 1 / 60)
+    runSystems(world.engine, 1 / 60)
     flushAuthored(world)
     flushRuntime(world)
   }

@@ -23,7 +23,7 @@
             "patterns": [
               {
                 "group": ["../network/*"],
-                "message": "ecs/ is the foundation layer. It cannot depend on network/. Authoring, transport, authority and governance all exist because of distribution, so they live in network/. Move the shared concept down into ecs/, or invert the dependency with a hook (see ecs/world.ts → onWorldDestroy)."
+                "message": "ecs/ is the foundation layer. It cannot depend on network/. Move the shared concept down into ecs/, or invert the dependency."
               }
             ]
           }

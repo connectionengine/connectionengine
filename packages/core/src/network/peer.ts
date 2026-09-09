@@ -13,7 +13,7 @@
  */
 
 import { setComponent } from '../ecs/component'
-import { BelongsTo, createEntity, setUID } from '../ecs/entity'
+import { createEntity, setUID } from '../ecs/entity'
 import { addRelation } from '../ecs/relation'
 import { AuthoritativeFor, OwnedBy } from './authority'
 import { PeerComponent, UserComponent, findUserByDID, type DID } from './agents'
@@ -94,7 +94,3 @@ const randomPeerId = (): string => {
       .padStart(2, '0')
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`
 }
-
-/** Re-export BelongsTo, so that a caller can construct it without a second
- *  import. */
-export { BelongsTo }

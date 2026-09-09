@@ -151,8 +151,6 @@ export interface World {
   localUser?: Entity
 }
 
-export const Worlds = new Set<World>()
-
 export interface CreateWorldOptions {
   /** Engine that allocates this world. Always pass it explicitly. A production
    *  app constructs one engine and composes its worlds inside it. A
@@ -177,12 +175,10 @@ export const createWorld = (options: CreateWorldOptions): World => {
     runtimeDirty: new Map(),
     networks: new Map()
   }
-  Worlds.add(world)
   return world
 }
 
 export const destroyWorld = (world: World): void => {
-  if (!Worlds.has(world)) return
   // The world holds its networks, so it closes them. `World` already names the
   // `Network` type, and `close()` is part of that type, so this needs no hook
   // and no import.
@@ -203,7 +199,6 @@ export const destroyWorld = (world: World): void => {
   world.eventLog.length = 0
   world.eventLogSeen.clear()
   world.runtimeDirty.clear()
-  Worlds.delete(world)
 }
 
 // ── Time loop ─────────────────────────────────────────────────────────────────

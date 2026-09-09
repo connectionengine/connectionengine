@@ -6,14 +6,19 @@
  * `World` objects, each a virtual hierarchy and network scope, can coexist
  * inside one engine. They share storage and tick together.
  *
- * The engine owns three things:
+ * The engine owns four things:
  *   - One bitECS world (`bitECS`). Entity IDs are unique inside this engine.
  *   - Per-component storage. The SoA arrays live on `ComponentDefinition`,
  *     which is a module-level singleton. The instance maps and view bags live
  *     in `componentStores`, keyed by engine-global entity ID.
+ *   - Systems. `defineSystem(engine, ...)` registers phase-ordered functions.
+ *     Each pushes a disposer onto `engine.disposers`.
  *   - Time state: `clock`, `frameTime`, `simulationTime`, `fixedTimeStep`,
  *     `deltaSeconds`, and `accumulator`. The engine ticks. `tickEngine` and
- *     `runSystems` drive every world rooted in it.
+ *     `runSystems` drive every system registered on it.
+ *
+ * `destroyEngine(engine)` drains the disposer list, which disposes every
+ * system reactor. Call it after destroying the worlds that share this engine.
  *
  * The identity caches (`nameCache`, `uidOf`, `parentOf`) are NOT here. They
  * live as typed extension properties on `UIDComponent` and `BelongsTo`. The
@@ -49,6 +54,10 @@ export interface Engine {
    *  per-engine STORAGE, keyed by definition. */
   readonly componentStores: WeakMap<ComponentDefinition, PerComponentStores>
 
+  /** Teardown callbacks. `defineSystem` pushes its disposer here.
+   *  `destroyEngine` drains the list. Other modules may push their own. */
+  readonly disposers: (() => void)[]
+
   // ── Time ───────────────────────────────────────────────────────────────────
   clock: Clock
   frameTime: number
@@ -62,6 +71,7 @@ export interface Engine {
 export const createEngine = (options: CreateEngineOptions = {}): Engine => ({
   bitECS: bitecs.createWorld(),
   componentStores: new WeakMap(),
+  disposers: [],
   clock: options.clock ?? wallClock,
   frameTime: 0,
   simulationTime: 0,
@@ -69,3 +79,10 @@ export const createEngine = (options: CreateEngineOptions = {}): Engine => ({
   deltaSeconds: 0,
   accumulator: 0
 })
+
+/** Tear down an engine and release its resources. It disposes every system
+ *  reactor and drains the disposer list. */
+export const destroyEngine = (engine: Engine): void => {
+  for (const dispose of engine.disposers) dispose()
+  engine.disposers.length = 0
+}
