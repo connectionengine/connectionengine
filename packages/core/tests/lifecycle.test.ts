@@ -65,7 +65,7 @@ const Health = defineComponent({
  */
 const Position = defineComponent({
   id: 'LC.Position',
-  schema: Schema.Object({ position: Schema.Vec3() })
+  schema: Schema.Object({ position: Schema.Vec3({ sync: 'continuous' }) })
 })
 
 /** Local identity bootstrap — equivalent to `createUser + createPeer` with

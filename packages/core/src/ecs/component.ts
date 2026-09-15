@@ -34,8 +34,9 @@
  * schema holds, because creation and removal are causal. A write to a
  * value-typed field authors an event too. The creating event carries the whole
  * component, so even the initial SoA state passes the gate. Only one case
- * escapes: a write to the SoA fields of a component that already exists. Those
- * writes ride the binary delta channel (see `hasSyncedSoA`). That channel may
+ * escapes: a write that touches only continuous fields on an existing component.
+ * Those writes ride the binary delta channel (see `hasContinuousFields`). That
+ * channel may
  * modify a component, but it never creates one, which `network/binary.ts`
  * enforces.
  *
@@ -107,21 +108,22 @@ export interface ComponentDefinitionMeta<T extends TSchema = TSchema> {
   readonly $defaults: Record<string, unknown>
   /** Internal: bitECS component ref for query/has/add. */
   readonly $ref: bitecs.ComponentRef
-  /** Internal: field names tagged as SoA. */
+  /** Internal: field names stored in SoA typed arrays (non-sparse math). */
   readonly $soaFields: readonly string[]
-  /** Internal: value-typed (instance store) field names. */
+  /** Internal: field names stored in the per-entity instance map (value-typed + sparse math). */
   readonly $valueFields: readonly string[]
+  /** Internal: fields that ride the binary delta channel (`sync: 'continuous'`). */
+  readonly $continuousFieldSet: ReadonlySet<string>
 }
 
 /**
- * Does this component put state on the binary delta channel?
- *
- * No counterpart function asks "does it author?", because every synced
- * component authors. Existence is always causal. Only continuous *values*
- * escape the gate.
+ * Does this component put state on the binary delta channel? Every synced
+ * component authors (existence + discrete values). Only continuous fields
+ * additionally ride the binary pipeline.
  */
-export const hasSyncedSoA = (component: Pick<ComponentDefinitionMeta, '$sync' | '$soaFields'>): boolean =>
-  component.$sync && component.$soaFields.length > 0
+export const hasContinuousFields = (
+  component: Pick<ComponentDefinitionMeta, '$sync' | '$continuousFieldSet'>
+): boolean => component.$sync && component.$continuousFieldSet.size > 0
 
 /**
  * Map one schema field to the SoA store type that it produces at runtime.
@@ -187,25 +189,38 @@ export type ComponentWriteShape<T extends TSchema> = T extends { properties: inf
 interface FieldClassification {
   soaFields: string[]
   valueFields: string[]
+  continuousFieldSet: Set<string>
 }
 
-const classifyFields = (schema: TSchema): FieldClassification => {
+const classifyFields = (schema: TSchema, componentSync: boolean): FieldClassification => {
   const soaFields: string[] = []
   const valueFields: string[] = []
-  if (schema.type !== 'object' || !schema.properties) return { soaFields, valueFields }
+  const continuousFieldSet = new Set<string>()
+  if (schema.type !== 'object' || !schema.properties) return { soaFields, valueFields, continuousFieldSet }
   for (const key of Object.keys(schema.properties)) {
     const prop = (schema.properties as Record<string, TSchema>)[key]
     const kind = prop[Kind]
-    if (kind === 'ArrayBuffer' || kind === 'SoAStore') soaFields.push(key)
-    else valueFields.push(key)
+    if (kind === 'ArrayBuffer' || kind === 'SoAStore') {
+      const sparse = (prop as unknown as { sparse?: boolean }).sparse ?? false
+      if (sparse) valueFields.push(key)
+      else soaFields.push(key)
+      if (componentSync) {
+        const sync = (prop as unknown as { sync?: string }).sync ?? 'discrete'
+        if (sync === 'continuous') continuousFieldSet.add(key)
+      }
+    } else {
+      valueFields.push(key)
+    }
   }
-  return { soaFields, valueFields }
+  return { soaFields, valueFields, continuousFieldSet }
 }
 
-const buildSoAStores = (schema: TSchema): Record<string, unknown> => {
+const buildSoAStores = (schema: TSchema, soaFields: readonly string[]): Record<string, unknown> => {
   const stores: Record<string, unknown> = {}
   if (schema.type !== 'object' || !schema.properties) return stores
+  const soaSet = new Set(soaFields)
   for (const key of Object.keys(schema.properties)) {
+    if (!soaSet.has(key)) continue
     const prop = (schema.properties as Record<string, TSchema>)[key]
     const kind = prop[Kind]
     if (kind === 'ArrayBuffer') {
@@ -237,12 +252,18 @@ const toShaclShape = (id: string, schema: TSchema): object => {
   if (schema.type === 'object' && schema.properties) {
     for (const [name, prop] of Object.entries(schema.properties as Record<string, TSchema>)) {
       const kind = prop[Kind]
-      properties.push({
+      const isSoA = kind === 'ArrayBuffer' || kind === 'SoAStore'
+      const entry: Record<string, unknown> = {
         '@id': `${SHACL_NS}${id}/${name}`,
         path: name,
         datatype: kind ?? prop.type ?? 'unknown',
-        soa: kind === 'ArrayBuffer' || kind === 'SoAStore'
-      })
+        soa: isSoA
+      }
+      if (isSoA) {
+        entry.sync = (prop as unknown as { sync?: string }).sync ?? 'discrete'
+        entry.sparse = (prop as unknown as { sparse?: boolean }).sparse ?? false
+      }
+      properties.push(entry)
     }
   }
   return {
@@ -279,7 +300,7 @@ export const defineComponent = <O extends ComponentOptions<TSchema>>(
   } = options as ComponentOptions<T> & Record<string, unknown>
   const existing = componentsById.get(id)
   if (existing) return existing as ComponentDefinition<T> & ComponentExtensions<O>
-  const { soaFields, valueFields } = classifyFields(schema)
+  const { soaFields, valueFields, continuousFieldSet } = classifyFields(schema, sync)
 
   const $defaults = buildDefaults(schema)
   const $ref: bitecs.ComponentRef = { __ce: id } as bitecs.ComponentRef
@@ -290,7 +311,7 @@ export const defineComponent = <O extends ComponentOptions<TSchema>>(
     shaclShape: toShaclShape(id, schema)
   }
 
-  const soaStores = buildSoAStores(schema)
+  const soaStores = buildSoAStores(schema, soaFields)
 
   const meta: ComponentDefinitionMeta<T> = {
     $id: id,
@@ -301,7 +322,8 @@ export const defineComponent = <O extends ComponentOptions<TSchema>>(
     $defaults,
     $ref,
     $soaFields: soaFields,
-    $valueFields: valueFields
+    $valueFields: valueFields,
+    $continuousFieldSet: continuousFieldSet
   }
 
   const definition = { ...meta, ...soaStores, ...extensions } as unknown as ComponentDefinition<T> &
@@ -437,12 +459,14 @@ export const setComponent = <T extends TSchema>(
   }
 
   if (origin === 'local' && component.$sync) {
-    if (hasSyncedSoA(component)) markRuntimeDirty(world, entity, component.$id)
+    if (hasContinuousFields(component)) markRuntimeDirty(world, entity, component.$id)
     // Two occasions author. The first is the creation of the component. The
-    // second is any write that names a discrete field. A write that only moves
-    // SoA fields on a component that already exists is the per-tick case, and
-    // it rides the binary channel alone.
-    const touchesDiscrete = component.$valueFields.some((f) => f in (value as Record<string, unknown>))
+    // second is any write that names a field NOT in the continuous set. A write
+    // that only touches continuous fields on an existing component rides the
+    // binary channel alone.
+    const touchesDiscrete = Object.keys(value as Record<string, unknown>).some(
+      (f) => !component.$continuousFieldSet.has(f)
+    )
     if (!wasPresent || touchesDiscrete) {
       world.authoredQueue.push({
         entity,
@@ -573,7 +597,7 @@ export const removeComponent = <T extends TSchema>(
   bitecs.removeComponent(world.engine.bitECS, entity, component.$ref)
   delete stores.store[entity]
   delete stores.views[entity]
-  if (hasSyncedSoA(component)) clearRuntimeDirty(world, entity, component.$id)
+  if (hasContinuousFields(component)) clearRuntimeDirty(world, entity, component.$id)
   // Removal is causal, so it always authors. It emits one event, which carries
   // whichever halves the component held.
   if (origin === 'local' && component.$sync) {

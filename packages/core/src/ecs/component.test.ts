@@ -7,8 +7,9 @@ import {
   defineComponent,
   drainRuntimeDirty,
   getComponent,
+  getInstanceStore,
   hasComponent,
-  hasSyncedSoA,
+  hasContinuousFields,
   removeComponent,
   setComponent
 } from './component'
@@ -24,8 +25,8 @@ const Health = defineComponent({
 const Transform = defineComponent({
   id: 'Transform',
   schema: Schema.Object({
-    position: Schema.Vec3(),
-    rotation: Schema.Quat()
+    position: Schema.Vec3({ sync: 'continuous' }),
+    rotation: Schema.Quat({ sync: 'continuous' })
   })
 })
 
@@ -37,7 +38,7 @@ const Transform = defineComponent({
 const Mixed = defineComponent({
   id: 'Mixed',
   schema: Schema.Object({
-    position: Schema.Vec3(),
+    position: Schema.Vec3({ sync: 'continuous' }),
     label: Schema.String({ default: '' })
   })
 })
@@ -51,21 +52,21 @@ const Debug = defineComponent({
 })
 
 describe('defineComponent — replication contract', () => {
-  it('hasSyncedSoA marks exactly the components with continuous state', () => {
-    expect(hasSyncedSoA(Health)).toBe(false) // value fields only
-    expect(hasSyncedSoA(Transform)).toBe(true) // SoA only
-    expect(hasSyncedSoA(Mixed)).toBe(true) // both halves
-    expect(hasSyncedSoA(Debug)).toBe(false) // sync: false — never replicates
+  it('hasContinuousFields marks exactly the components with continuous state', () => {
+    expect(hasContinuousFields(Health)).toBe(false) // value fields only
+    expect(hasContinuousFields(Transform)).toBe(true) // continuous SoA
+    expect(hasContinuousFields(Mixed)).toBe(true) // continuous position + discrete label
+    expect(hasContinuousFields(Debug)).toBe(false) // sync: false — never replicates
   })
 
   it('a SoA-bearing schema is still opted out by `sync: false`', () => {
     const LocalPose = defineComponent({
       id: 'LocalPose',
       sync: false,
-      schema: Schema.Object({ position: Schema.Vec3() })
+      schema: Schema.Object({ position: Schema.Vec3({ sync: 'continuous' }) })
     })
     expect(LocalPose.$soaFields).toEqual(['position'])
-    expect(hasSyncedSoA(LocalPose)).toBe(false)
+    expect(hasContinuousFields(LocalPose)).toBe(false)
   })
 
   it('partitions fields by storage kind', () => {
@@ -373,6 +374,248 @@ describe('property invariants', () => {
       schema: Schema.Object({ current: Schema.Number({ default: 100 }), max: Schema.Number({ default: 100 }) })
     })
     expect(Health2).toBe(Health)
+    destroyWorld(world)
+  })
+})
+
+// ── Per-field sync / sparse (spec 08) ────────────────────────────────────────
+
+describe('Schema factory — per-field options', () => {
+  it('Schema.Vec3() defaults to sync discrete and sparse false', () => {
+    const schema = Schema.Vec3()
+    expect(schema.sync).toBe('discrete')
+    expect(schema.sparse).toBe(false)
+  })
+
+  it('Schema.Vec3({ sync: "continuous" }) sets sync on schema', () => {
+    const schema = Schema.Vec3({ sync: 'continuous' })
+    expect(schema.sync).toBe('continuous')
+    expect(schema.sparse).toBe(false)
+  })
+
+  it('Schema.Vec3({ sparse: true }) sets sparse on schema', () => {
+    const schema = Schema.Vec3({ sparse: true })
+    expect(schema.sync).toBe('discrete')
+    expect(schema.sparse).toBe(true)
+  })
+
+  it('Schema.Vec3({ sync: "continuous", sparse: true }) sets both', () => {
+    const schema = Schema.Vec3({ sync: 'continuous', sparse: true })
+    expect(schema.sync).toBe('continuous')
+    expect(schema.sparse).toBe(true)
+  })
+
+  it('Schema.Vec3({ sync: "continuous", type: Float64Array }) preserves type override', () => {
+    const schema = Schema.Vec3({ sync: 'continuous', type: Float64Array })
+    expect(schema.instanceOf).toBe(Float64Array)
+    expect(schema.sync).toBe('continuous')
+  })
+
+  it('Schema.Float32() defaults to sync discrete and sparse false', () => {
+    const schema = Schema.Float32()
+    expect(schema.sync).toBe('discrete')
+    expect(schema.sparse).toBe(false)
+  })
+
+  it('Schema.Float32({ sync: "continuous" }) sets sync', () => {
+    const schema = Schema.Float32({ sync: 'continuous' })
+    expect(schema.sync).toBe('continuous')
+  })
+
+  it('Schema.Float32({ sparse: true }) sets sparse', () => {
+    const schema = Schema.Float32({ sparse: true })
+    expect(schema.sparse).toBe(true)
+  })
+})
+
+describe('Field classification — per-field options', () => {
+  it('Vec3 with sparse: false goes into $soaFields', () => {
+    const C = defineComponent({
+      id: 'Cls.DenseVec3',
+      schema: Schema.Object({ position: Schema.Vec3() })
+    })
+    expect(C.$soaFields).toContain('position')
+    expect(C.$valueFields).not.toContain('position')
+  })
+
+  it('Vec3 with sparse: true goes into $valueFields', () => {
+    const C = defineComponent({
+      id: 'Cls.SparseVec3',
+      schema: Schema.Object({ position: Schema.Vec3({ sparse: true }) })
+    })
+    expect(C.$valueFields).toContain('position')
+    expect(C.$soaFields).not.toContain('position')
+  })
+
+  it('Vec3 with sync: "continuous" appears in $continuousFieldSet', () => {
+    const C = defineComponent({
+      id: 'Cls.ContVec3',
+      schema: Schema.Object({ position: Schema.Vec3({ sync: 'continuous' }) })
+    })
+    expect(C.$continuousFieldSet.has('position')).toBe(true)
+  })
+
+  it('Vec3 with sync: "discrete" does not appear in $continuousFieldSet', () => {
+    const C = defineComponent({
+      id: 'Cls.DiscVec3',
+      schema: Schema.Object({ position: Schema.Vec3() })
+    })
+    expect(C.$continuousFieldSet.has('position')).toBe(false)
+  })
+
+  it('String field never appears in $continuousFieldSet', () => {
+    expect(Mixed.$continuousFieldSet.has('label')).toBe(false)
+  })
+
+  it('mixed component classifies each field independently', () => {
+    expect(Mixed.$continuousFieldSet.has('position')).toBe(true)
+    expect(Mixed.$continuousFieldSet.has('label')).toBe(false)
+    expect(Mixed.$soaFields).toContain('position')
+    expect(Mixed.$valueFields).toContain('label')
+  })
+
+  it('component-level sync: false empties $continuousFieldSet', () => {
+    const C = defineComponent({
+      id: 'Cls.NoSync',
+      sync: false,
+      schema: Schema.Object({ position: Schema.Vec3({ sync: 'continuous' }) })
+    })
+    expect(C.$continuousFieldSet.size).toBe(0)
+  })
+})
+
+describe('Storage — sparse vs dense', () => {
+  it('sparse: false Vec3 allocates SoA typed arrays', () => {
+    const C = defineComponent({
+      id: 'Stor.Dense',
+      schema: Schema.Object({ position: Schema.Vec3({ sync: 'continuous' }) })
+    })
+    expect(C.position).toBeDefined()
+    expect(C.position.x).toBeDefined()
+  })
+
+  it('sparse: true Vec3 allocates no SoA store', () => {
+    const C = defineComponent({
+      id: 'Stor.Sparse',
+      schema: Schema.Object({ position: Schema.Vec3({ sparse: true }) })
+    })
+    expect((C as Record<string, unknown>).position).toBeUndefined()
+  })
+
+  it('sparse: true Vec3 stores in instance store', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const C = defineComponent({
+      id: 'Stor.SparseInst',
+      schema: Schema.Object({ position: Schema.Vec3({ sparse: true }) })
+    })
+    const e = createEntity(world)
+    setComponent(world, e, C, { position: [1, 2, 3] })
+    const stores = getInstanceStore(world, C as any)
+    expect(stores[e]).toBeDefined()
+    expect(stores[e].position).toEqual([1, 2, 3])
+    destroyWorld(world)
+  })
+
+  it('sparse: false Vec3 stores in SoA arrays', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const e = createEntity(world)
+    setComponent(world, e, Transform, { position: [7, 8, 9] })
+    expect(Transform.position.x[e]).toBeCloseTo(7)
+    expect(Transform.position.y[e]).toBeCloseTo(8)
+    expect(Transform.position.z[e]).toBeCloseTo(9)
+    destroyWorld(world)
+  })
+})
+
+describe('Accessors — sparse vs dense', () => {
+  it('getComponent for SoA Vec3 returns live view', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const e = createEntity(world)
+    setComponent(world, e, Transform, { position: [1, 2, 3], rotation: [0, 0, 0, 1] })
+    const t = getComponent(world, e, Transform)!
+    expect(t.position.x).toBeCloseTo(1)
+    t.position.x = 99
+    expect(Transform.position.x[e]).toBeCloseTo(99)
+    destroyWorld(world)
+  })
+
+  it('getComponent for sparse Vec3 returns plain value', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const C = defineComponent({
+      id: 'Acc.SparseView',
+      schema: Schema.Object({ position: Schema.Vec3({ sparse: true }) })
+    })
+    const e = createEntity(world)
+    setComponent(world, e, C, { position: [1, 2, 3] })
+    const v = getComponent(world, e, C)
+    expect(v?.position).toEqual([1, 2, 3])
+    destroyWorld(world)
+  })
+})
+
+describe('Mutation pipeline — per-field sync', () => {
+  it('discrete Vec3: setComponent authors on creation', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const C = defineComponent({
+      id: 'Mut.DiscCreate',
+      schema: Schema.Object({ position: Schema.Vec3() })
+    })
+    const e = createEntity(world)
+    setComponent(world, e, C, { position: [1, 2, 3] })
+    expect(world.authoredQueue).toHaveLength(1)
+    destroyWorld(world)
+  })
+
+  it('discrete Vec3: setComponent authors on value change', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const C = defineComponent({
+      id: 'Mut.DiscChange',
+      schema: Schema.Object({ position: Schema.Vec3() })
+    })
+    const e = createEntity(world)
+    setComponent(world, e, C, { position: [1, 2, 3] })
+    world.authoredQueue.length = 0
+    setComponent(world, e, C, { position: [4, 5, 6] })
+    expect(world.authoredQueue).toHaveLength(1)
+    destroyWorld(world)
+  })
+
+  it('continuous Vec3: setComponent does not author after creation', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const e = createEntity(world)
+    setComponent(world, e, Transform, { position: [1, 2, 3] })
+    world.authoredQueue.length = 0
+    setComponent(world, e, Transform, { position: [4, 5, 6] })
+    expect(world.authoredQueue).toHaveLength(0)
+    expect(world.runtimeDirty.get('Transform')?.has(e)).toBe(true)
+    destroyWorld(world)
+  })
+
+  it('continuous Vec3: creation still authors', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const e = createEntity(world)
+    setComponent(world, e, Transform, { position: [1, 2, 3] })
+    expect(world.authoredQueue).toHaveLength(1)
+    destroyWorld(world)
+  })
+
+  it('continuous field marks runtime dirty', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const e = createEntity(world)
+    setComponent(world, e, Transform, { position: [0, 0, 0] })
+    expect(world.runtimeDirty.get('Transform')?.has(e)).toBe(true)
+    destroyWorld(world)
+  })
+
+  it('discrete field does not mark runtime dirty', () => {
+    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const C = defineComponent({
+      id: 'Mut.DiscDirty',
+      schema: Schema.Object({ position: Schema.Vec3() })
+    })
+    const e = createEntity(world)
+    setComponent(world, e, C, { position: [1, 2, 3] })
+    expect(world.runtimeDirty.has('Mut.DiscDirty')).toBe(false)
     destroyWorld(world)
   })
 })

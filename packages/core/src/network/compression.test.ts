@@ -77,7 +77,10 @@ describe('createBinaryPipeline — compression integration', () => {
   it('Transform with compressed position + rotation shrinks payload', () => {
     const Transform = defineComponent({
       id: 'Cmp.Transform',
-      schema: Schema.Object({ position: Schema.Vec3(), rotation: Schema.Quat() })
+      schema: Schema.Object({
+        position: Schema.Vec3({ sync: 'continuous' }),
+        rotation: Schema.Quat({ sync: 'continuous' })
+      })
     })
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent('cmp') })
     const e = createEntity(world)
@@ -105,7 +108,10 @@ describe('createBinaryPipeline — compression integration', () => {
     const { getComponent } = await import('../ecs/component')
     const Transform = defineComponent({
       id: 'Cmp.Round',
-      schema: Schema.Object({ position: Schema.Vec3(), rotation: Schema.Quat() })
+      schema: Schema.Object({
+        position: Schema.Vec3({ sync: 'continuous' }),
+        rotation: Schema.Quat({ sync: 'continuous' })
+      })
     })
     const source = createWorld({ engine: createEngine(), agent: createAnonAgent('cmp-src') })
     const target = createWorld({ engine: createEngine(), agent: createAnonAgent('cmp-tgt') })

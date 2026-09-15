@@ -48,7 +48,7 @@ const Health = defineComponent({
 
 const Pose = defineComponent({
   id: 'RegPose',
-  schema: Schema.Object({ position: Schema.Vec3() })
+  schema: Schema.Object({ position: Schema.Vec3({ sync: 'continuous' }) })
 })
 
 // ── Test constraint kinds ────────────────────────────────────────────────────-

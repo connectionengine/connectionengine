@@ -12,8 +12,8 @@ import { Schema, defineComponent } from '@connectionengine/core'
 const Transform = defineComponent({
   id: 'Transform',
   schema: Schema.Object({
-    position: Schema.Vec3(),
-    rotation: Schema.Quat()
+    position: Schema.Vec3({ sync: 'continuous' }),
+    rotation: Schema.Quat({ sync: 'continuous' })
   })
 })
 
@@ -32,7 +32,7 @@ Three facts control everything else about `defineComponent`:
 
 2. **SoA storage lives on the definition.** SoA-tagged fields (`Schema.Vec3`, `Schema.Quat`, `Schema.ArrayBuffer`, `Schema.SoAStore`) become properties on the returned definition. `Transform.position` is a `Vec3SoA` — the same object that a bitECS-style `defineComponent({ position: { x: f32, y: f32, z: f32 } })` returns. There is no separate "stores" lookup. The definition *is* the store.
 
-3. **The schema decides the wire.** SoA fields travel the binary `continuous` channel. Value-typed fields travel the authored `event` channel. A component that holds both sends each half over its own channel. The contents of your schema decide which channels it uses.
+3. **The schema decides the wire.** Each SoA-typed field carries per-field `sync` and `sparse` options. Fields with `sync: 'continuous'` travel the binary delta channel. Fields with `sync: 'discrete'` (the default) travel the authored event channel. Fields with `sparse: true` store as per-entity objects instead of SoA typed arrays. Value-typed fields always travel the authored channel.
 
 ## Replication channels
 
@@ -43,19 +43,19 @@ nothing about it. One rule covers every component:
 
 | What happens                                     | Where it goes                                        | Governed |
 |--------------------------------------------------|------------------------------------------------------|----------|
-| Created, removed, or a value-typed field written | Authored event, carrying the **whole** component     | Yes      |
-| Only SoA fields written                          | Binary delta, per-field change mask, per-peer shadow | No       |
-| `sync: false`                                    | Nowhere                                              | n/a      |
+| Created, removed, or a discrete field written    | Authored event, carrying the **whole** component     | Yes      |
+| Only continuous fields written                   | Binary delta, per-field change mask, per-peer shadow | No       |
+| Component-level `sync: false`                    | Nowhere                                              | n/a      |
 
 *Every* synced component therefore authors. Creation is causal, whatever the
 schema holds. A field-less tag component authors too, because its presence is
 the data. The schema decides one thing only: whether the component *also* holds
-continuous state. `hasSyncedSoA` answers that question:
+continuous state. `hasContinuousFields` answers that question:
 
 ```ts
-hasSyncedSoA(Transform) // true  — SoA fields, and replicated
-hasSyncedSoA(Health)    // false — value fields only
-hasSyncedSoA(LocalPose) // false — SoA fields, but sync: false
+hasContinuousFields(Transform) // true  — continuous fields, and replicated
+hasContinuousFields(Health)    // false — value fields only
+hasContinuousFields(LocalPose) // false — continuous fields, but sync: false
 ```
 
 That leads to the rule you most need to remember: **a binary delta may only
@@ -90,7 +90,8 @@ All metadata on the definition uses a `$` prefix. The bare keys stay reserved fo
 - `Score.$schema`          — the TypeBox schema you passed in
 - `Score.$sync`            — `true` unless you opt out
 - `Score.$componentSchema` — the shareable replication-metadata blob (jsonSchema + shaclShape)
-- `Score.$soaFields` / `Score.$valueFields` — field-name partitions that the mutation pipeline uses
+- `Score.$soaFields` / `Score.$valueFields` — field-name partitions by storage
+- `Score.$continuousFieldSet` — fields that ride the binary delta channel
 
 For `Transform`:
 
@@ -111,8 +112,8 @@ A component may hold both kinds of field:
 const Body = defineComponent({
   id: 'Body',
   schema: Schema.Object({
-    position: Schema.Vec3(),                 // SoA     → continuous half
-    label:    Schema.String({ default: '' }) // value   → discrete half
+    position: Schema.Vec3({ sync: 'continuous' }), // SoA + binary
+    label:    Schema.String({ default: '' })        // value + authored
   })
 })
 Body.$soaFields   // ['position']

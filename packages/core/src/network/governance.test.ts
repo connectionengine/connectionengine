@@ -142,3 +142,123 @@ describe('validateEvent', () => {
     destroyWorld(world)
   })
 })
+
+// ── Spec 08: governance interaction with per-field sync/sparse ──────────────
+
+import { defineComponent, getComponent, hasComponent, setComponent } from '../ecs/component'
+import { spawnPrefab } from './prefab'
+import { createPeerPair } from '../../tests/test-utils/peer-pair'
+import { getEntityByUID } from '../ecs/entity'
+
+const SpawnPointGov = defineComponent({
+  id: 'Gov.SpawnPoint',
+  schema: Schema.Object({
+    position: Schema.Vec3({ sparse: true })
+  })
+})
+
+const ContinuousOnly = defineComponent({
+  id: 'Gov.ContinuousOnly',
+  schema: Schema.Object({
+    velocity: Schema.Vec3({ sync: 'continuous' })
+  })
+})
+
+defineConstraint({
+  kind: 'block-spawnpoint',
+  id: 'Gov.BlockSpawnPoint',
+  schema: Schema.Object({}),
+  validate({ event, violations }) {
+    if (event.predicate === SpawnPointGov.$id) {
+      violations.push({ kind: 'block-spawnpoint', reason: 'no spawn points allowed' })
+    }
+  }
+})
+
+describe('Spec 08 — governance validates discrete Vec3 component', () => {
+  it('a constraint blocks a discrete sparse Vec3 write', () => {
+    const world = mkWorld()
+    const scene = named(world, 'scene:gov-disc')
+    addConstraint(world, scene, 'block-spawnpoint', {})
+    named(world, 'sp', scene)
+
+    const event = mkEvent(SpawnPointGov.$id, { position: [1, 2, 3] }, ['scene:gov-disc', 'sp'])
+    const result = validateEvent(world, event)
+    expect(result.allowed).toBe(false)
+    expect(result.violations[0].kind).toBe('block-spawnpoint')
+    destroyWorld(world)
+  })
+
+  it('blocked discrete Vec3 never lands on the receiving peer', async () => {
+    const peers = await createPeerPair({ names: ['gov-a', 'gov-b'] })
+    const { a, b } = peers
+    const scene = spawnPrefab(a.world, 'scene:gov-disc2')
+    addConstraint(a.world, scene, 'block-spawnpoint', {})
+    const sp = createEntity(a.world)
+    setUID(a.world, sp, 'sp', { parent: scene })
+    await peers.tick()
+
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:gov-disc2')!
+    const bSp = getEntityByUID(b.world, bScene, 'sp')!
+    setComponent(b.world, bSp, SpawnPointGov, { position: [1, 2, 3] })
+    await peers.tick()
+
+    expect(hasComponent(a.world, sp, SpawnPointGov)).toBe(false)
+    peers.dispose()
+  })
+})
+
+describe('Spec 08 — governance does not run on continuous-only writes', () => {
+  it('writing only continuous fields produces no authored event for governance to validate', async () => {
+    const peers = await createPeerPair({ names: ['gov-cont-a', 'gov-cont-b'] })
+    const { a, b } = peers
+    const scene = spawnPrefab(a.world, 'scene:gov-cont')
+    const e = createEntity(a.world)
+    setUID(a.world, e, 'mover', { parent: scene })
+    setComponent(a.world, e, ContinuousOnly, { velocity: [0, 0, 0] })
+    await peers.tick()
+
+    const queueBefore = a.world.authoredQueue.length
+
+    ContinuousOnly.velocity.x[e] = 50
+    ContinuousOnly.velocity.y[e] = 100
+    a.world.runtimeDirty.get(ContinuousOnly.$id)?.add(e)
+    await peers.tick()
+
+    expect(a.world.authoredQueue.length).toBe(queueBefore)
+
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:gov-cont')!
+    const bE = getEntityByUID(b.world, bScene, 'mover')!
+    const bVal = getComponent(b.world, bE, ContinuousOnly)
+    expect(bVal?.velocity.x).toBeCloseTo(50)
+    expect(bVal?.velocity.y).toBeCloseTo(100)
+    peers.dispose()
+  })
+})
+
+describe('Spec 08 — binary delta cannot create a component', () => {
+  it('a binary delta on a missing component discards to slot 0', async () => {
+    const peers = await createPeerPair({ names: ['gov-create-a', 'gov-create-b'] })
+    const { a, b } = peers
+    const scene = spawnPrefab(a.world, 'scene:gov-create')
+    const e = createEntity(a.world)
+    setUID(a.world, e, 'target', { parent: scene })
+    setComponent(a.world, e, ContinuousOnly, { velocity: [0, 0, 0] })
+    await peers.tick()
+
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:gov-create')!
+    const bE = getEntityByUID(b.world, bScene, 'target')!
+    expect(hasComponent(b.world, bE, ContinuousOnly)).toBe(true)
+
+    const { removeComponent } = await import('../ecs/component')
+    removeComponent(b.world, bE, ContinuousOnly)
+    await peers.tick()
+
+    ContinuousOnly.velocity.x[e] = 99
+    a.world.runtimeDirty.get(ContinuousOnly.$id)?.add(e)
+    await peers.tick()
+
+    expect(hasComponent(b.world, bE, ContinuousOnly)).toBe(false)
+    peers.dispose()
+  })
+})

@@ -36,10 +36,12 @@
  * sub-tick frequency and its payload is dominated by strings.
  */
 
-import type { TypedArray } from '../maths/common'
+import { resizableArray, type TypedArray } from '../maths/common'
 import type { ComponentDefinition } from '../ecs/component'
-import { hasComponent } from '../ecs/component'
-import type { World } from '../ecs/world'
+import { getInstanceStore, hasComponent } from '../ecs/component'
+import type { Entity, World } from '../ecs/world'
+import { Kind, type TSchema } from '@sinclair/typebox'
+import type { ArrayBufferKind, SoAStoreKind } from '../schema/kinds'
 import {
   type ViewCursor,
   checkBitflag,
@@ -77,17 +79,88 @@ import {
  * A logical wire slot for one component. It holds either one typed array, or a
  * grouped and compressed multi-axis field, such as a Vec3 or a Quat. A change
  * mask indexes by Prop position, not by the underlying typed array.
+ *
+ * `sparse-raw` serves sparse continuous fields. A staging TypedArray acts as
+ * the shadow-map key. `stage` copies the instance-store value into the staging
+ * array before write; `unstage` copies back after read.
  */
 type Prop =
   | { kind: 'raw'; array: TypedArray }
   | { kind: 'vec3-int16'; x: TypedArray; y: TypedArray; z: TypedArray; range: number }
   | { kind: 'quat-smallest3'; x: TypedArray; y: TypedArray; z: TypedArray; w: TypedArray }
+  | { kind: 'sparse-raw'; staging: TypedArray; stage: (entity: number) => void; unstage: (entity: number) => void }
 
 // ── flattenProps — per-world + per-compression-spec cache ────────────────────-
 
 const propsCache = new WeakMap<World, WeakMap<ComponentDefinition, Map<string, readonly Prop[]>>>()
 
 const cacheKey = (spec: Record<string, FieldCompressionSpec> | undefined): string => (spec ? JSON.stringify(spec) : '_')
+
+/**
+ * Build `sparse-raw` Props for a sparse continuous field. Each axis of the
+ * staging SoA store becomes one Prop whose `stage`/`unstage` callbacks bridge
+ * the instance store and the binary shadow map.
+ */
+const buildSparseProps = (out: Prop[], world: World, component: ComponentDefinition, fieldName: string): void => {
+  const instanceStore = getInstanceStore(world, component)
+  const schemaProp = (component.$schema as unknown as { properties: Record<string, TSchema> }).properties[fieldName]
+  const kind = schemaProp[Kind]
+
+  if (kind === 'SoAStore') {
+    const storeKind = schemaProp as unknown as SoAStoreKind<never, unknown, unknown>
+    const staging = new storeKind.construct(storeKind.instanceOf)
+    const axes: { array: TypedArray; index: number }[] = []
+    for (const k of Object.keys(staging as Record<string, unknown>)) {
+      if (k.startsWith('_')) continue
+      const child = (staging as Record<string, unknown>)[k]
+      if (typeof child === 'function') continue
+      if (ArrayBuffer.isView(child) && !(child instanceof DataView)) {
+        axes.push({ array: child as TypedArray, index: axes.length })
+      }
+    }
+    const totalAxes = axes.length
+    for (const axis of axes) {
+      const idx = axis.index
+      out.push({
+        kind: 'sparse-raw',
+        staging: axis.array,
+        stage(entity: number) {
+          const r = axis.array as TypedArray & { resize?: (n: number) => void }
+          if (typeof r.resize === 'function' && entity >= axis.array.length) r.resize(entity + 1)
+          const values = instanceStore[entity as Entity]?.[fieldName]
+          ;(axis.array as unknown as Record<number, number>)[entity] =
+            Array.isArray(values) || ArrayBuffer.isView(values) ? ((values as ArrayLike<number>)[idx] ?? 0) : 0
+        },
+        unstage(entity: number) {
+          const instance = instanceStore[entity as Entity] ?? (instanceStore[entity as Entity] = {})
+          let values = instance[fieldName] as number[] | undefined
+          if (!Array.isArray(values)) {
+            values = new Array(totalAxes).fill(0)
+            instance[fieldName] = values
+          }
+          values[idx] = (axis.array as unknown as Record<number, number>)[entity]
+        }
+      })
+    }
+  } else if (kind === 'ArrayBuffer') {
+    const arrayKind = schemaProp as unknown as ArrayBufferKind<unknown>
+    const staging = resizableArray(arrayKind.instanceOf) as unknown as TypedArray
+    out.push({
+      kind: 'sparse-raw',
+      staging,
+      stage(entity: number) {
+        const r = staging as TypedArray & { resize?: (n: number) => void }
+        if (typeof r.resize === 'function' && entity >= staging.length) r.resize(entity + 1)
+        ;(staging as unknown as Record<number, number>)[entity] =
+          (instanceStore[entity as Entity]?.[fieldName] as number) ?? 0
+      },
+      unstage(entity: number) {
+        const instance = instanceStore[entity as Entity] ?? (instanceStore[entity as Entity] = {})
+        instance[fieldName] = (staging as unknown as Record<number, number>)[entity]
+      }
+    })
+  }
+}
 
 const flattenProps = (
   world: World,
@@ -108,6 +181,7 @@ const flattenProps = (
   const cached = perComponent.get(key)
   if (cached) return cached
   const out: Prop[] = []
+  const soaFieldSet = new Set(component.$soaFields)
   const append = (node: unknown): void => {
     if (node === null || typeof node !== 'object') return
     if (ArrayBuffer.isView(node) && !(node instanceof DataView)) {
@@ -121,24 +195,28 @@ const flattenProps = (
       append(child)
     }
   }
-  for (const fieldName of component.$soaFields) {
-    const field = component[fieldName]
-    const spec = compressionForComponent?.[fieldName]
-    if (spec && isVec3SoA(field)) {
-      out.push({
-        kind: 'vec3-int16',
-        x: field.x,
-        y: field.y,
-        z: field.z,
-        range: (spec as { range: number }).range
-      })
-      continue
+  for (const fieldName of component.$continuousFieldSet) {
+    if (soaFieldSet.has(fieldName)) {
+      const field = component[fieldName]
+      const spec = compressionForComponent?.[fieldName]
+      if (spec && isVec3SoA(field)) {
+        out.push({
+          kind: 'vec3-int16',
+          x: field.x,
+          y: field.y,
+          z: field.z,
+          range: (spec as { range: number }).range
+        })
+        continue
+      }
+      if (spec && isQuatSoA(field)) {
+        out.push({ kind: 'quat-smallest3', x: field.x, y: field.y, z: field.z, w: field.w })
+        continue
+      }
+      append(field)
+    } else {
+      buildSparseProps(out, world, component, fieldName)
     }
-    if (spec && isQuatSoA(field)) {
-      out.push({ kind: 'quat-smallest3', x: field.x, y: field.y, z: field.z, w: field.w })
-      continue
-    }
-    append(field)
   }
   Object.freeze(out)
   perComponent.set(key, out)
@@ -183,6 +261,10 @@ const readMaskOf = (width: 1 | 2 | 4) => (width === 1 ? readUint8 : width === 2 
  * packed payload, and commits the shadow for every axis.
  */
 const writeProp = (view: ViewCursor, prop: Prop, entity: number, forceFullSync: boolean): boolean => {
+  if (prop.kind === 'sparse-raw') {
+    prop.stage(entity)
+    return writePropIfChanged(view, prop.staging, entity, forceFullSync)
+  }
   if (prop.kind === 'raw') return writePropIfChanged(view, prop.array, entity, forceFullSync)
   if (prop.kind === 'vec3-int16') {
     const changed =
@@ -226,6 +308,11 @@ const readArray = (array: TypedArray, entity: number, fallback: number): number 
 }
 
 const readProp = (view: ViewCursor, prop: Prop, entity: number): void => {
+  if (prop.kind === 'sparse-raw') {
+    readPropInto(view, prop.staging, entity)
+    prop.unstage(entity)
+    return
+  }
   if (prop.kind === 'raw') {
     readPropInto(view, prop.array, entity)
     return

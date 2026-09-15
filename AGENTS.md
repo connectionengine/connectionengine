@@ -4,7 +4,7 @@
 
 ## Source of truth for design
 
-The canonical engine design lives in `.specs/planning/ecs-network-exploration.md`. Per-tier specs in `.specs/01-..06-*.md` derive from that document. The current status lives in `.specs/planning/implementation-status.md`.
+The canonical engine design lives in `.specs/planning/ecs-network-exploration.md`. Per-tier specs in `.specs/01-..08-*.md` derive from that document. The current status lives in `.specs/planning/implementation-status.md`.
 
 `.gitignore` excludes `.specs/`, so a fresh clone does not contain these files. Ask the maintainer for them when you need them.
 
@@ -144,6 +144,7 @@ The outputs land in `.codegraph/`, which `.gitignore` excludes. After `map` runs
 
 ## Things easy to miss
 
+- **Per-field `sync` and `sparse` on SoA schema types (spec 08).** Every SoA-typed field (`Schema.Vec3`, `Schema.Quat`, `Schema.Float32`, etc.) accepts `{ sync: 'continuous' | 'discrete', sparse: boolean }`. Defaults: `sync: 'discrete'`, `sparse: false`. The field type no longer decides the transport channel. `sync: 'continuous'` puts the field on the binary delta channel. `sync: 'discrete'` (default) puts it on the authored event channel. `sparse: true` stores the field in the per-entity instance store (AoS) instead of SoA typed arrays. Component-level `sync: false` overrides all per-field sync — nothing replicates. `$continuousFieldSet` on `ComponentDefinitionMeta` lists the fields that ride the binary channel. `hasContinuousFields(component)` answers whether the component has any continuous fields and replicates. The binary pipeline handles sparse continuous fields through a staging mechanism (`sparse-raw` Prop kind) that bridges instance-store values into the shadow-map change detection.
 - **Component and relation definitions are global. Storage is per-engine.** `defineComponent({ id })` returns the same definition for the same id, in every engine. The SoA typed arrays live on the definition itself. The per-entity instance records and view bags live on the engine, in `engine.componentStores`.
 - **Entity IDs belong to the engine, not to the world.** Two worlds that share an engine share one bitECS ID space. Two worlds with separate engines get independent ID spaces.
 - **Systems belong to the engine, not to the world.** `defineSystem(engine, ...)`, `runSystems(engine, ...)`, `removeSystem(engine, ...)` — all take an `Engine`. The execute callback receives `(engine, deltaTime)`. Worlds come and go; systems outlive them and tick every world that shares the engine. `destroyEngine` drains `engine.disposers`, which disposes every system reactor. Call it after destroying the worlds.

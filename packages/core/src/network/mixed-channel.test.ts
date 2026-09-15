@@ -38,7 +38,7 @@ defineConstraint({
 const Body = defineComponent({
   id: 'MX.Body',
   schema: Schema.Object({
-    position: Schema.Vec3(),
+    position: Schema.Vec3({ sync: 'continuous' }),
     label: Schema.String({ default: '' })
   })
 })
@@ -46,7 +46,7 @@ const Body = defineComponent({
 /** Pure-continuous control — governed on existence, free on value. */
 const Velocity = defineComponent({
   id: 'MX.Velocity',
-  schema: Schema.Object({ linear: Schema.Vec3() })
+  schema: Schema.Object({ linear: Schema.Vec3({ sync: 'continuous' }) })
 })
 
 const mkWorld = (name: string): World => createWorld({ engine: createEngine(), agent: createAnonAgent(name) })

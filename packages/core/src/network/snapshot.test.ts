@@ -158,6 +158,55 @@ describe('Snapshot', () => {
   })
 })
 
+// ── Spec 08: discrete sparse Vec3 in snapshot ─────────────────────────────-
+
+const SpawnPoint = defineComponent({
+  id: 'SpawnPoint-snap',
+  schema: Schema.Object({
+    position: Schema.Vec3({ sparse: true })
+  })
+})
+
+describe('Spec 08 — discrete sparse Vec3 round-trips through snapshot', () => {
+  it('createSnapshot captures sparse Vec3 and applySnapshot restores it', () => {
+    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-snap-src') })
+    const scene = named(source, 'scene:s08snap')
+    const e = named(source, 'sp', scene)
+    setComponent(source, e, SpawnPoint, { position: [7, 14, 21] })
+
+    const snap = createSnapshot(source)
+
+    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-snap-tgt') })
+    applySnapshot(target, snap)
+
+    const tScene = getEntityByUID(target, target.worldRoot, 'scene:s08snap')!
+    const tE = getEntityByUID(target, tScene, 'sp')!
+    const val = getComponent(target, tE, SpawnPoint)
+    expect(val?.position).toEqual([7, 14, 21])
+
+    destroyWorld(source)
+    destroyWorld(target)
+  })
+
+  it('discrete sparse Vec3 survives JSON.parse(JSON.stringify(snapshot))', () => {
+    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-json-src') })
+    const e = named(source, 'sp-json')
+    setComponent(source, e, SpawnPoint, { position: [3, 6, 9] })
+
+    const snap = createSnapshot(source)
+    const roundTripped = JSON.parse(JSON.stringify(snap))
+
+    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-json-tgt') })
+    applySnapshot(target, roundTripped)
+
+    const tE = getEntityByUID(target, target.worldRoot, 'sp-json')!
+    expect(getComponent(target, tE, SpawnPoint)?.position).toEqual([3, 6, 9])
+
+    destroyWorld(source)
+    destroyWorld(target)
+  })
+})
+
 describe('applySnapshot — governance', () => {
   /**
    * A snapshot arriving over the wire carries the same authority as any other

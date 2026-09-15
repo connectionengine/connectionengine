@@ -7,23 +7,38 @@ import { Quat, QuatSoA } from '../maths/quat'
 import { Quat2, Quat2SoA } from '../maths/quat2'
 import { TypedArrayConstructor } from '../maths/common'
 
+export interface SoAScalarOptions {
+  sync?: 'continuous' | 'discrete'
+  sparse?: boolean
+}
+
+export interface SoAMathOptions<T extends TypedArrayConstructor = TypedArrayConstructor> {
+  type?: T
+  sync?: 'continuous' | 'discrete'
+  sparse?: boolean
+}
+
 export const createSoASchema =
   <T extends TypedArrayConstructor>(type: T) =>
-  () =>
+  (options?: SoAScalarOptions) =>
     Type.Unsafe<ArrayBufferKind<InstanceType<T>>>({
       [Kind]: 'ArrayBuffer',
       type: '',
-      instanceOf: type
+      instanceOf: type,
+      sync: options?.sync ?? 'discrete',
+      sparse: options?.sparse ?? false
     }) as ArrayBufferKind<InstanceType<T>>
 
 export const createSoAMathSchema =
   <T extends TypedArrayConstructor, S, C>(construct: new (type: T) => C, defaultType: T) =>
-  (type?: T) =>
+  (options?: SoAMathOptions<T>) =>
     Type.Unsafe<SoAStoreKind<T, S, C>>({
       [Kind]: 'SoAStore',
       type: 'object',
-      instanceOf: type ?? defaultType,
-      construct: construct
+      instanceOf: options?.type ?? defaultType,
+      construct: construct,
+      sync: options?.sync ?? 'discrete',
+      sparse: options?.sparse ?? false
     }) as unknown as SoAStoreKind<T, S, C>
 
 export const SoA = {

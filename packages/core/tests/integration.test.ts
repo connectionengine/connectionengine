@@ -40,8 +40,8 @@ const Health = defineComponent({
 const Transform = defineComponent({
   id: 'Int.Transform',
   schema: Schema.Object({
-    position: Schema.Vec3(),
-    rotation: Schema.Quat()
+    position: Schema.Vec3({ sync: 'continuous' }),
+    rotation: Schema.Quat({ sync: 'continuous' })
   })
 })
 

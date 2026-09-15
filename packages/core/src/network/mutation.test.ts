@@ -19,8 +19,8 @@ const Health = defineComponent({
 const Transform = defineComponent({
   id: 'Transform',
   schema: Schema.Object({
-    position: Schema.Vec3(),
-    rotation: Schema.Quat()
+    position: Schema.Vec3({ sync: 'continuous' }),
+    rotation: Schema.Quat({ sync: 'continuous' })
   })
 })
 
@@ -176,6 +176,129 @@ describe('Property invariants — pipeline', () => {
     const beforeQueueLen = b.world.authoredQueue.length
     await peers.tick()
     expect(b.world.authoredQueue.length).toBe(beforeQueueLen)
+    peers.dispose()
+  })
+})
+
+// ── Spec 08: per-field sync/sparse in the mutation pipeline ──────────────────
+
+const SparseDiscreteVec3 = defineComponent({
+  id: 'Mut.SparseDisc',
+  schema: Schema.Object({
+    anchor: Schema.Vec3({ sparse: true })
+  })
+})
+
+const SparseContinuousVec3 = defineComponent({
+  id: 'Mut.SparseCont',
+  schema: Schema.Object({
+    offset: Schema.Vec3({ sync: 'continuous', sparse: true })
+  })
+})
+
+const MixedChannels = defineComponent({
+  id: 'Mut.MixedCh',
+  schema: Schema.Object({
+    position: Schema.Vec3({ sync: 'continuous' }),
+    label: Schema.String({ default: '' })
+  })
+})
+
+describe('Spec 08 — discrete sparse Vec3 replicates via authored envelope', () => {
+  it('sparse discrete Vec3 round-trips through the authored channel', async () => {
+    const peers = await createPeerPair()
+    const { a, b } = peers
+    const scene = spawnPrefab(a.world, 'scene:s08-disc')
+    const e = createEntity(a.world)
+    setUID(a.world, e, 'anchor-ent', { parent: scene })
+    setComponent(a.world, e, SparseDiscreteVec3, { anchor: [7, 14, 21] })
+
+    await peers.tick()
+
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:s08-disc')!
+    const bE = getEntityByUID(b.world, bScene, 'anchor-ent')!
+    const bVal = getComponent(b.world, bE, SparseDiscreteVec3)
+    expect(bVal?.anchor).toEqual([7, 14, 21])
+    peers.dispose()
+  })
+
+  it('subsequent set of sparse discrete Vec3 replicates the update', async () => {
+    const peers = await createPeerPair()
+    const { a, b } = peers
+    const scene = spawnPrefab(a.world, 'scene:s08-disc2')
+    const e = createEntity(a.world)
+    setUID(a.world, e, 'anchor2', { parent: scene })
+    setComponent(a.world, e, SparseDiscreteVec3, { anchor: [1, 1, 1] })
+    await peers.tick()
+
+    setComponent(a.world, e, SparseDiscreteVec3, { anchor: [2, 4, 8] })
+    await peers.tick()
+
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:s08-disc2')!
+    const bE = getEntityByUID(b.world, bScene, 'anchor2')!
+    expect(getComponent(b.world, bE, SparseDiscreteVec3)?.anchor).toEqual([2, 4, 8])
+    peers.dispose()
+  })
+})
+
+describe('Spec 08 — continuous sparse Vec3 replicates via binary channel', () => {
+  it('sparse continuous Vec3 round-trips through the runtime binary pipeline', async () => {
+    const peers = await createPeerPair()
+    const { a, b } = peers
+    const scene = spawnPrefab(a.world, 'scene:s08-cont')
+    const e = createEntity(a.world)
+    setUID(a.world, e, 'offset-ent', { parent: scene })
+    setComponent(a.world, e, SparseContinuousVec3, { offset: [5, 10, 15] })
+
+    await peers.tick()
+
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:s08-cont')!
+    const bE = getEntityByUID(b.world, bScene, 'offset-ent')!
+    const bVal = getComponent(b.world, bE, SparseContinuousVec3)
+    expect(bVal?.offset).toBeDefined()
+    const offArr = bVal!.offset as unknown as number[]
+    expect(offArr[0]).toBeCloseTo(5)
+    expect(offArr[1]).toBeCloseTo(10)
+    expect(offArr[2]).toBeCloseTo(15)
+    peers.dispose()
+  })
+})
+
+describe('Spec 08 — mixed continuous+discrete only authors on discrete write', () => {
+  it('writing only the continuous field does not grow the authored queue', async () => {
+    const peers = await createPeerPair()
+    const { a } = peers
+    const scene = spawnPrefab(a.world, 'scene:s08-mix')
+    const e = createEntity(a.world)
+    setUID(a.world, e, 'mixed-ent', { parent: scene })
+    setComponent(a.world, e, MixedChannels, { position: [1, 0, 0], label: 'init' })
+    await peers.tick()
+
+    const queueBefore = a.world.authoredQueue.length
+
+    MixedChannels.position.x[e] = 99
+    a.world.runtimeDirty.get(MixedChannels.$id)?.add(e)
+    await peers.tick()
+
+    expect(a.world.authoredQueue.length).toBe(queueBefore)
+    peers.dispose()
+  })
+
+  it('writing the discrete field authors an event even when continuous fields also change', async () => {
+    const peers = await createPeerPair()
+    const { a, b } = peers
+    const scene = spawnPrefab(a.world, 'scene:s08-mix2')
+    const e = createEntity(a.world)
+    setUID(a.world, e, 'mixed-ent2', { parent: scene })
+    setComponent(a.world, e, MixedChannels, { position: [0, 0, 0], label: 'hello' })
+    await peers.tick()
+
+    setComponent(a.world, e, MixedChannels, { label: 'updated' })
+    await peers.tick()
+
+    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:s08-mix2')!
+    const bE = getEntityByUID(b.world, bScene, 'mixed-ent2')!
+    expect(getComponent(b.world, bE, MixedChannels)?.label).toBe('updated')
     peers.dispose()
   })
 })

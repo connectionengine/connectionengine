@@ -29,7 +29,7 @@
 
 import type { AuthoredEnvelope, AuthoredEvent, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
-import { allComponents, getComponent, hasSyncedSoA, setComponent } from '../../ecs/component'
+import { allComponents, getComponent, hasContinuousFields, setComponent } from '../../ecs/component'
 import { ensureEntityPath, getEntityPath } from '../../ecs/entity'
 import { addRelation } from '../../ecs/relation'
 import { applyAuthoredEnvelope, flushAuthored, isAuthoredEnvelope } from '../mutation'
@@ -298,7 +298,7 @@ export const attachRuntimeChannel = (
   const components =
     options.components ??
     allComponents()
-      .filter(hasSyncedSoA)
+      .filter(hasContinuousFields)
       .sort((a, b) => (a.$id < b.$id ? -1 : a.$id > b.$id ? 1 : 0))
   if (components.length === 0) return undefined
   const channel = createBinaryChannel(world, connection, { components, configs: options.configs })

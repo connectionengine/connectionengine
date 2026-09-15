@@ -3,15 +3,20 @@
  *
  * One recursive surface for schema authoring. A value-typed primitive maps
  * directly to TypeBox. An SoA-typed value (Vec3, Quat, Float32, ...) carries
- * the SoAStore kind tag. `defineComponent` walks the schema. It materialises an
- * SoA store for each tagged field, and an instance store for the rest. It also
- * derives the replication channel from the composition of the field types.
+ * the SoAStore kind tag and accepts per-field `sync` and `sparse` options.
+ *
+ * `defineComponent` walks the schema. For each SoA-tagged field it reads
+ * `sparse` to decide storage (SoA typed arrays vs instance store) and `sync`
+ * to decide transport (continuous binary delta vs discrete authored event).
+ *
+ * Defaults: `sync: 'discrete'`, `sparse: false`.
  *
  * Usage:
  *   Schema.Object({
- *     position: Schema.Vec3(),
- *     rotation: Schema.Quat(),
+ *     position: Schema.Vec3({ sync: 'continuous' }),
+ *     rotation: Schema.Quat({ sync: 'continuous' }),
  *     visible:  Schema.Boolean({ default: true }),
+ *     spawnPos: Schema.Vec3({ sparse: true }),
  *   })
  */
 
@@ -36,7 +41,7 @@ export const Schema = {
   Unknown: Type.Unknown.bind(Type),
   Enum: Type.Enum.bind(Type),
 
-  // SoA-typed. These use typed arrays, and the runtime transport by default.
+  // SoA-typed. Accept per-field { sync, sparse } options. Default: discrete + dense.
   Uint8: SoA.Uint8,
   Int8: SoA.Int8,
   Uint16: SoA.Uint16,

@@ -33,7 +33,7 @@
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
-import { getComponentById, hasSyncedSoA, removeComponent, setComponent } from '../ecs/component'
+import { getComponentById, hasContinuousFields, removeComponent, setComponent } from '../ecs/component'
 import { addRelation, getRelationByName, removeRelation } from '../ecs/relation'
 import { getEntityPath, removeEntity, resolveEntityPath, ensureEntityPath } from '../ecs/entity'
 import { checkAuthorityChangeStanding, OwnedBy } from './authority'
@@ -186,7 +186,7 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
   for (const [componentId, entities] of world.runtimeDirty) {
     if (entities.size === 0) continue
     const def = getComponentById(componentId)
-    if (!def || !hasSyncedSoA(def)) {
+    if (!def || !hasContinuousFields(def)) {
       entities.clear()
       continue
     }
