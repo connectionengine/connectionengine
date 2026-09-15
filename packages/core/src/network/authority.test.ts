@@ -2,14 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createEngine } from '../ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { createPeer, createUser } from './peer'
-import {
-  AuthoritativeFor,
-  OwnedBy,
-  canRequestAuthority,
-  recoverAuthority,
-  requestAuthority,
-  transferAuthority
-} from './authority'
+import { AuthoritativeFor, OwnedBy, canRequestAuthority, recoverAuthority, requestAuthority } from './authority'
 import { spawnPrefab } from './prefab'
 
 const mkWorld = () => {
@@ -67,10 +60,10 @@ describe('Authority', () => {
     destroyWorld(world)
   })
 
-  it('transferAuthority replaces current holder when sender has standing', () => {
+  it('requestAuthority replaces current holder when sender has standing', () => {
     const { world, peerB } = mkWorld()
     const e = spawnPrefab(world, 'thing-4') // authority=peerA (localPeer)
-    transferAuthority(world, e, peerB)
+    requestAuthority(world, e, peerB)
     expect(AuthoritativeFor.get(world, e)).toBe(peerB)
     destroyWorld(world)
   })
@@ -85,7 +78,7 @@ describe('Authority', () => {
   it("canChangeAuthority is true when local peer is one of owner's peers", () => {
     const { world, peerB } = mkWorld()
     const e = spawnPrefab(world, 'thing-7')
-    transferAuthority(world, e, peerB)
+    requestAuthority(world, e, peerB)
     // localPeer is peerA, peerB now holds authority. peerA is still owner's peer.
     expect(canRequestAuthority(world, e)).toBe(true)
     destroyWorld(world)
@@ -111,7 +104,7 @@ describe('Authority', () => {
     const { world, peerB } = mkWorld()
     const e = spawnPrefab(world, 'thing-8')
     expect(canRequestAuthority(world, e)).toBe(true)
-    transferAuthority(world, e, peerB)
+    requestAuthority(world, e, peerB)
     expect(AuthoritativeFor.get(world, e)).toBe(peerB)
     destroyWorld(world)
   })
@@ -124,14 +117,14 @@ describe('Authority', () => {
     // one of its owner's peers.
     const e = spawnPrefab(world, 'thing-9', { owner: otherUser, authority: roguePeer })
     expect(canRequestAuthority(world, e)).toBe(false)
-    expect(transferAuthority(world, e, peerA).granted).toBe(false)
+    expect(requestAuthority(world, e, peerA).granted).toBe(false)
     destroyWorld(world)
   })
 
   it("recoverAuthority hands over to owner's lowest-id remaining peer on disconnect", () => {
     const { world, peerA, peerB } = mkWorld()
     const e = spawnPrefab(world, 'thing-10') // authority=peerA (localPeer)
-    transferAuthority(world, e, peerB)
+    requestAuthority(world, e, peerB)
     recoverAuthority(world, e, peerB)
     expect(AuthoritativeFor.get(world, e)).toBe(peerA)
     destroyWorld(world)

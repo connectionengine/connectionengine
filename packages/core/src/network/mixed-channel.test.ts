@@ -20,8 +20,22 @@ import { createEntity, getEntityByUID, setUID } from '../ecs/entity'
 import { defineComponent, getComponent, hasComponent, removeComponent, setComponent } from '../ecs/component'
 import { createBinaryPipeline } from './binary'
 import { applyAuthoredEnvelope, flushAuthored } from './mutation'
-import { ensureDefaultNetwork } from './network'
 import { applySnapshot, createSnapshot } from './snapshot'
+import { addConstraint, registerConstraintKind } from './governance'
+
+const MxBlockPredicate = defineComponent({
+  id: 'test:mx:BlockPredicate',
+  schema: Schema.Object({ blocked: Schema.String({ default: '' }) })
+})
+registerConstraintKind({
+  kind: 'mx:block-predicate',
+  component: MxBlockPredicate,
+  validate({ event, data, violations }) {
+    if ((data as { blocked: string }).blocked === event.predicate) {
+      violations.push({ kind: 'mx:block-predicate', reason: `blocked: ${event.predicate}` })
+    }
+  }
+})
 
 /** Governed existence + discrete `label`, ungoverned continuous `position`. */
 const Body = defineComponent({
@@ -216,17 +230,13 @@ describe('mixed-channel — a delta may not create a governed component', () => 
 describe('mixed-channel — governance holds', () => {
   it('a refused creation cannot be resurrected by a delta', () => {
     const source = mkWorld('mx-gov-src')
-    const target = mkWorld('mx-gov-tgt')
-
-    // Target refuses every write to MX.Body.
-    const network = ensureDefaultNetwork(target, {
-      onValidateAuthored: (_w, _n, event) => event.predicate !== 'MX.Body'
-    })
+    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('mx-gov-tgt') })
+    addConstraint(target, target.worldRoot, 'mx:block-predicate', { blocked: 'MX.Body' })
 
     const e = createEntity(source)
     setUID(source, e, 'rock')
     setComponent(source, e, Body, { position: [1, 2, 3], label: 'contraband' })
-    applyAuthoredEnvelope(target, flushAuthored(source)!, network)
+    applyAuthoredEnvelope(target, flushAuthored(source)!)
 
     const te = named(target, 'rock')
     expect(hasComponent(target, te, Body)).toBe(false)

@@ -1,5 +1,5 @@
 /**
- * Peer connection lifecycle — joinWorld / leaveWorld / late-join via event-log
+ * Peer connection lifecycle — joinNetwork / leaveNetwork / late-join via event-log
  * replay / owner-user sweep on last disconnect.
  *
  * These tests exercise the formal session protocol end-to-end. The simpler
@@ -29,8 +29,8 @@ import {
   getEntityByUID,
   getNetwork,
   hasComponent,
-  joinWorld,
-  leaveWorld,
+  joinNetwork,
+  leaveNetwork,
   publishAuthored,
   Schema,
   grantAuthority,
@@ -75,7 +75,7 @@ const bootstrap = (world: ReturnType<typeof createWorld>, name: string) => {
   createPeer(world, { user, peerId: `${name}-p`, asLocal: true })
 }
 
-describe('joinWorld — handshake + event-log replay', () => {
+describe('joinNetwork — handshake + event-log replay', () => {
   it('joiner catches up by replaying host event log', async () => {
     // Host builds state first
     const host = machine('host')
@@ -99,8 +99,8 @@ describe('joinWorld — handshake + event-log replay', () => {
     // Wire transport + initiate join from BOTH sides
     const link = createMemoryTransport()
     const [hostResult, joinerResult] = await Promise.all([
-      joinWorld(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
-      joinWorld(joiner, { endpoint: link.b, knownEventCount: 0 })
+      joinNetwork(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
+      joinNetwork(joiner, { endpoint: link.b, knownEventCount: 0 })
     ])
     void hostResult
 
@@ -133,7 +133,7 @@ describe('joinWorld — handshake + event-log replay', () => {
     const joiner = machine('joiner2')
 
     const link1 = createMemoryTransport()
-    await Promise.all([joinWorld(host, { endpoint: link1.a }), joinWorld(joiner, { endpoint: link1.b })])
+    await Promise.all([joinNetwork(host, { endpoint: link1.a }), joinNetwork(joiner, { endpoint: link1.b })])
     const afterFirst = joiner.eventLog.length
     link1.close()
 
@@ -141,8 +141,8 @@ describe('joinWorld — handshake + event-log replay', () => {
     // so host should send 0 new events.
     const link2 = createMemoryTransport()
     const [, joinerR] = await Promise.all([
-      joinWorld(host, { endpoint: link2.a, knownEventCount: host.eventLog.length }),
-      joinWorld(joiner, { endpoint: link2.b, knownEventCount: joiner.eventLog.length })
+      joinNetwork(host, { endpoint: link2.a, knownEventCount: host.eventLog.length }),
+      joinNetwork(joiner, { endpoint: link2.b, knownEventCount: joiner.eventLog.length })
     ])
     expect(joinerR.replayedEventCount).toBe(0)
     expect(joiner.eventLog.length).toBe(afterFirst)
@@ -163,11 +163,11 @@ describe('joinWorld — handshake + event-log replay', () => {
     const joiner = machine('live-joiner')
 
     const link = createMemoryTransport()
-    await Promise.all([joinWorld(host, { endpoint: link.a }), joinWorld(joiner, { endpoint: link.b })])
+    await Promise.all([joinNetwork(host, { endpoint: link.a }), joinNetwork(joiner, { endpoint: link.b })])
 
     // After the join, the host writes state. The joiner must receive it live.
     setComponent(host, e, Health, { current: 99 })
-    // Emulate a flush by publishing straight onto the network that joinWorld
+    // Emulate a flush by publishing straight onto the network that joinNetwork
     // built. The default outbound path fans across its connections.
     publishAuthored(host, getNetwork(host, 'default')!, {
       fromPeer: host.localAgent.did,
@@ -195,7 +195,7 @@ describe('joinWorld — handshake + event-log replay', () => {
   })
 })
 
-describe('joinWorld — continuous-channel bootstrap via state snapshot', () => {
+describe('joinNetwork — continuous-channel bootstrap via state snapshot', () => {
   /**
    * Replay carries a continuous component's *existence* and the pose it was
    * created with — that write is authored. What it cannot carry is any
@@ -229,8 +229,8 @@ describe('joinWorld — continuous-channel bootstrap via state snapshot', () => 
 
     const link = createMemoryTransport()
     const [, joinerResult] = await Promise.all([
-      joinWorld(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
-      joinWorld(joiner, { endpoint: link.b, knownEventCount: 0 })
+      joinNetwork(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
+      joinNetwork(joiner, { endpoint: link.b, knownEventCount: 0 })
     ])
 
     expect(joinerResult.snapshotEntityCount).toBeGreaterThan(0)
@@ -254,8 +254,8 @@ describe('joinWorld — continuous-channel bootstrap via state snapshot', () => 
 
     const link = createMemoryTransport()
     const [, joinerResult] = await Promise.all([
-      joinWorld(host, { endpoint: link.a, knownEventCount: host.eventLog.length, sendStateSnapshot: false }),
-      joinWorld(joiner, { endpoint: link.b, knownEventCount: 0, sendStateSnapshot: false })
+      joinNetwork(host, { endpoint: link.a, knownEventCount: host.eventLog.length, sendStateSnapshot: false }),
+      joinNetwork(joiner, { endpoint: link.b, knownEventCount: 0, sendStateSnapshot: false })
     ])
 
     expect(joinerResult.snapshotEntityCount).toBe(0)
@@ -279,8 +279,8 @@ describe('joinWorld — continuous-channel bootstrap via state snapshot', () => 
 
     const link = createMemoryTransport()
     await Promise.all([
-      joinWorld(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
-      joinWorld(joiner, { endpoint: link.b, knownEventCount: 0 })
+      joinNetwork(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
+      joinNetwork(joiner, { endpoint: link.b, knownEventCount: 0 })
     ])
 
     // The snapshot applies with origin='network', so nothing echoes back to the
@@ -296,7 +296,7 @@ describe('joinWorld — continuous-channel bootstrap via state snapshot', () => 
   })
 })
 
-describe('leaveWorld — graceful disconnect + owner-user sweep', () => {
+describe('leaveNetwork — graceful disconnect + owner-user sweep', () => {
   it('removes every entity owned by the leaving user when no peers remain', async () => {
     const host = machine('cleanup-host')
     const hostUser = createUser(host, { did: host.localAgent.did, asLocal: true })
@@ -320,15 +320,15 @@ describe('leaveWorld — graceful disconnect + owner-user sweep', () => {
     // Connect
     const link = createMemoryTransport()
     const [{ connection: hostConn }] = await Promise.all([
-      joinWorld(host, { endpoint: link.a }),
-      joinWorld(joiner, { endpoint: link.b })
+      joinNetwork(host, { endpoint: link.a }),
+      joinNetwork(joiner, { endpoint: link.b })
     ])
 
     // Pre-leave: avatar exists on host
     expect(entityExists(host, avatar)).toBe(true)
 
     // Joiner leaves
-    await leaveWorld(joiner, getNetwork(joiner, 'default')!.connections.values().next().value!)
+    await leaveNetwork(joiner, getNetwork(joiner, 'default')!.connections.values().next().value!)
     await flushAsync()
 
     // Host received the leave signal → swept everything the joiner-user owned
@@ -362,18 +362,18 @@ describe('leaveWorld — graceful disconnect + owner-user sweep', () => {
 
     const link1 = createMemoryTransport()
     const link2 = createMemoryTransport()
-    await Promise.all([joinWorld(host, { endpoint: link1.a }), joinWorld(joinerA, { endpoint: link1.b })])
-    await Promise.all([joinWorld(host, { endpoint: link2.a }), joinWorld(joinerB, { endpoint: link2.b })])
+    await Promise.all([joinNetwork(host, { endpoint: link1.a }), joinNetwork(joinerA, { endpoint: link1.b })])
+    await Promise.all([joinNetwork(host, { endpoint: link2.a }), joinNetwork(joinerB, { endpoint: link2.b })])
 
     // Joiner A leaves
-    await leaveWorld(joinerA, getNetwork(joinerA, 'default')!.connections.values().next().value!)
+    await leaveNetwork(joinerA, getNetwork(joinerA, 'default')!.connections.values().next().value!)
     await flushAsync()
 
     // Avatar should SURVIVE because joiner B still connected for the same user
     expect(entityExists(host, avatar)).toBe(true)
 
     // Now joiner B leaves too
-    await leaveWorld(joinerB, getNetwork(joinerB, 'default')!.connections.values().next().value!)
+    await leaveNetwork(joinerB, getNetwork(joinerB, 'default')!.connections.values().next().value!)
     await flushAsync()
 
     // Now the avatar is swept
@@ -462,7 +462,7 @@ describe('Authority — auto-recovery on disconnect', () => {
 
     // Connect — HELLO materialises remote user+peer entities on each side.
     const link = createMemoryTransport()
-    await Promise.all([joinWorld(host, { endpoint: link.a }), joinWorld(joiner, { endpoint: link.b })])
+    await Promise.all([joinNetwork(host, { endpoint: link.a }), joinNetwork(joiner, { endpoint: link.b })])
     await flushAsync()
 
     // On the host, find the materialised joiner peer entity.
@@ -478,7 +478,7 @@ describe('Authority — auto-recovery on disconnect', () => {
     expect(AuthoritativeFor.get(host, e)).toBe(hostJoinerPeer)
 
     // Joiner disconnects
-    await leaveWorld(joiner, getNetwork(joiner, 'default')!.connections.values().next().value!)
+    await leaveNetwork(joiner, getNetwork(joiner, 'default')!.connections.values().next().value!)
     await flushAsync()
 
     // Sweep should have moved authority off the disconnected peer.
@@ -497,7 +497,7 @@ describe('Sanity: applyAuthoredEnvelope works alongside lifecycle', () => {
     const host = machine('sanity')
     const peer = machine('sanity-peer')
     const link = createMemoryTransport()
-    await Promise.all([joinWorld(host, { endpoint: link.a }), joinWorld(peer, { endpoint: link.b })])
+    await Promise.all([joinNetwork(host, { endpoint: link.a }), joinNetwork(peer, { endpoint: link.b })])
 
     applyAuthoredEnvelope(host, {
       fromPeer: 'did:test:direct',

@@ -21,8 +21,8 @@
  * Receive paths:
  *   `event`      — applyAuthoredEnvelope, in this file. The runtime mode
  *                  verifies and unwraps the envelope before it calls that
- *                  function. The per-network governance gate filters the
- *                  events. The standing check of the authority module,
+ *                  function. Engine-internal governance filters the events.
+ *                  The standing check of the authority module,
  *                  `checkAuthorityChangeStanding`, runs inline for every
  *                  `AuthoritativeFor` event.
  *   `continuous` — the binary pipeline reads straight into the SoA stores. It
@@ -38,7 +38,7 @@ import { addRelation, getRelationByName, removeRelation } from '../ecs/relation'
 import { getEntityPath, removeEntity, resolveEntityPath, ensureEntityPath } from '../ecs/entity'
 import { checkAuthorityChangeStanding, OwnedBy } from './authority'
 import type { Network } from './network'
-import { getNetwork, getNetworks, publishAuthored, publishRuntime, reportRejected, validateAuthored } from './network'
+import { getNetwork, getNetworks, publishAuthored, publishRuntime, validateAuthored } from './network'
 
 /**
  * Routing strategy. It answers one question: which networks receive a mutation
@@ -146,29 +146,28 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
   world.authoredQueue.length = 0
   if (events.length === 0) return undefined
 
-  const networks = Array.from(getNetworks(world).values())
-  if (networks.length === 0) return { events, fromPeer: author }
-
   const envelope: AuthoredEnvelope = { events, fromPeer: author }
+
+  const networks = Array.from(getNetworks(world).values())
   if (networks.length === 1) {
     // One network: every event routes to it, so skip the grouping map.
     publishAuthored(world, networks[0], envelope)
-    return envelope
-  }
-
-  const perNetwork = new Map<string, AuthoredEvent[]>()
-  for (const { entity, event } of eventsByEntity) {
-    for (const network of routeNetworks(world, entity)) {
-      const bucket = perNetwork.get(network.id)
-      if (bucket) bucket.push(event)
-      else perNetwork.set(network.id, [event])
+  } else if (networks.length > 1) {
+    const perNetwork = new Map<string, AuthoredEvent[]>()
+    for (const { entity, event } of eventsByEntity) {
+      for (const network of routeNetworks(world, entity)) {
+        const bucket = perNetwork.get(network.id)
+        if (bucket) bucket.push(event)
+        else perNetwork.set(network.id, [event])
+      }
+    }
+    for (const [networkId, networkEvents] of perNetwork) {
+      const network = getNetwork(world, networkId)
+      if (!network) continue
+      publishAuthored(world, network, { events: networkEvents, fromPeer: author })
     }
   }
-  for (const [networkId, networkEvents] of perNetwork) {
-    const network = getNetwork(world, networkId)
-    if (!network) continue
-    publishAuthored(world, network, { events: networkEvents, fromPeer: author })
-  }
+
   return envelope
 }
 
@@ -238,33 +237,22 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
 /**
  * Apply an authored envelope that arrived over a network. The runtime mode must
  * verify the signatures and unwrap the envelope before it calls this function.
- * When the caller supplies `network`, the `validateAuthored` gate of that
- * network runs for each event.
+ * Engine-internal governance (`validateEvent`) runs for each event.
  *
  * The return value lists the events this peer accepted and logged, in arrival
  * order. `rebroadcastAuthored` relays exactly that list. A peer therefore
- * forwards what it accepted, and never forwards what its own gates refused.
- *
- * Each drop reports through `reportRejected`, so a caller that built the
- * network with an `onRejected` behaviour sees why an event failed to land
- * instead of watching it disappear.
+ * forwards what it accepted, and never forwards what governance refused.
  */
-export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope, network?: Network): AuthoredEvent[] => {
+export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope): AuthoredEvent[] => {
   const accepted: AuthoredEvent[] = []
   for (const event of envelope.events) {
-    if (network && !validateAuthored(world, network, event)) {
-      reportRejected(world, network, event, 'governance')
-      continue
-    }
+    if (!validateAuthored(world, event)) continue
     // An authority transfer must come from a peer that holds standing. That
     // means a peer of the owner-user, or the current authority holder. This is
     // a direct call into the authority module. Both modules live in network/,
     // so it needs no cross-layer plumbing.
     const standing = checkAuthorityChangeStanding(world, event)
-    if (standing !== undefined) {
-      if (network) reportRejected(world, network, event, `authority: ${standing}`)
-      continue
-    }
+    if (standing !== undefined) continue
     // Already in the log. Not an error — a mesh delivers the same event by
     // several paths — so it reports nothing.
     if (!appendEventLog(world, event)) continue

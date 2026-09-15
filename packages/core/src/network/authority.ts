@@ -17,10 +17,10 @@
  *                                  peer that writes the state of this entity
  *                                  now.
  *
- * Taking authority is always a **request**. `requestAuthority` asks, and
- * `transferAuthority` asks on behalf of another peer. Neither assigns: every
- * peer judges the resulting event for itself, so a request the network would
- * refuse is refused locally too, and the world never diverges.
+ * Taking authority is always a **request**. `requestAuthority` asks on behalf
+ * of any peer — the caller's own or another's. It never assigns directly:
+ * every peer judges the resulting event for itself, so a request the network
+ * would refuse is refused locally too, and the world never diverges.
  *
  * The same standing rule applies on both sides:
  *   - **Requester**: the local peer must already hold the authority, or belong
@@ -129,12 +129,6 @@ export const requestAuthority = (world: World, entity: Entity, peer: Entity): Au
   grantAuthority(world, entity, peer)
   return { granted: true }
 }
-
-/** Ask to hand the authority for `entity` to `newPeer`. An alias for
- *  `requestAuthority`, for the case where the local peer is passing it on
- *  rather than taking it. */
-export const transferAuthority = (world: World, entity: Entity, newPeer: Entity): AuthorityRequestResult =>
-  requestAuthority(world, entity, newPeer)
 
 /**
  * Write the authority relation with no standing check.

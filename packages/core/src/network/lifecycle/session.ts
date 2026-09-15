@@ -86,7 +86,7 @@ type ControlMessage = HelloMessage | LeaveMessage | ReplayChunkMessage | ReplayE
 const isControl = (payload: unknown): payload is ControlMessage =>
   !!payload && typeof payload === 'object' && typeof (payload as { type?: unknown }).type === 'string'
 
-// ── joinNetwork / joinWorld ─────────────────────────────────────────────────-
+// ── joinNetwork ─────────────────────────────────────────────────────────────-
 
 export interface JoinNetworkOptions {
   endpoint: TransportEndpoint
@@ -127,14 +127,11 @@ export interface JoinResult {
  * Bring the local world up to date with the remote peer over `endpoint`. The
  * connection joins the `network` that the caller names. It defaults to the
  * `'default'` network of the world, which the engine creates on the first call.
- * The promise resolves after the replay phase completes. Live envelopes then
- * flow over the same endpoint, with no further setup.
  *
- * The replay chunks of the peer precede its bootstrap snapshot on the ordered
- * events channel, and the replay-end marker follows both. The receiver has
- * therefore applied the snapshot by the time this promise resolves. With
- * `replayEventLog: false` there is nothing to await, and the snapshot lands
- * some time after the returned promise resolves.
+ * The promise resolves after the full handshake completes: both peers have
+ * exchanged HELLOs, replayed their event logs (when enabled), streamed state
+ * snapshots (when enabled), and confirmed readiness. Live envelopes then flow
+ * over the same endpoint, with no further setup.
  */
 export const joinNetwork = async (world: World, options: JoinNetworkOptions): Promise<JoinResult> => {
   const { endpoint } = options
@@ -158,12 +155,10 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
 
   let replayedEventCount = 0
   let snapshotEntityCount = 0
-  let resolveReplay: (() => void) | undefined
-  const replayPromise = wantReplay
-    ? new Promise<void>((r) => {
-        resolveReplay = r
-      })
-    : undefined
+  let resolveHandshake: () => void
+  const handshakePromise = new Promise<void>((r) => {
+    resolveHandshake = r
+  })
 
   endpoint.events.onMessage((payload) => {
     if (isControl(payload)) {
@@ -199,17 +194,19 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
             streamEventLog(world, endpoint, payload.knownEventCount, chunkSize, payload.cursorFingerprint)
           }
           if (wantSnapshot) streamStateSnapshot(world, endpoint)
-          if (wantReplay) endReplay(world, endpoint)
+          // Always send replay-end so the remote side resolves its handshake
+          // promise, even when neither replay nor snapshot was requested.
+          endReplay(world, endpoint)
           break
         }
         case 'snapshot':
-          snapshotEntityCount += applyStateSnapshot(world, payload.snapshot, connection.remoteDID!, network)
+          snapshotEntityCount += applyStateSnapshot(world, payload.snapshot, connection.remoteDID!)
           break
         case 'replay-chunk':
-          replayedEventCount += applyReplayChunk(world, connection.remoteDID!, payload.events, network)
+          replayedEventCount += applyReplayChunk(world, connection.remoteDID!, payload.events)
           break
         case 'replay-end':
-          resolveReplay?.()
+          resolveHandshake!()
           break
         case 'leave':
           connection.close()
@@ -226,7 +223,7 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
       // Apply first, then relay what the apply accepted. Relaying the raw
       // envelope instead would forward the events this peer rejected and drop
       // the ones it took.
-      const accepted = applyAuthoredEnvelope(world, envelope, network)
+      const accepted = applyAuthoredEnvelope(world, envelope)
       rebroadcastAuthored(network, connection, envelope.fromPeer, accepted)
       return
     }
@@ -257,21 +254,16 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
     bindings: localBindings
   } satisfies HelloMessage)
 
-  if (replayPromise) await replayPromise
+  await handshakePromise
 
   return { connection, network, remoteDID: connection.remoteDID!, replayedEventCount, snapshotEntityCount }
 }
-
-/** Backward-compatible alias. `joinWorld` calls `joinNetwork` over the default
- *  network. */
-export const joinWorld = joinNetwork
-export type JoinWorldOptions = JoinNetworkOptions
 
 /**
  * Leave a network. The function tells the peer, then closes the endpoint.
  * Closing drops `ConnectedTo`, and the disconnect cleanup follows from that.
  */
-export const leaveWorld = async (world: World, connection: Connection): Promise<void> => {
+export const leaveNetwork = async (world: World, connection: Connection): Promise<void> => {
   try {
     connection.events.send({ type: 'leave', agentDID: world.localAgent.did } satisfies LeaveMessage)
   } catch {
@@ -352,7 +344,7 @@ export const rebroadcastAuthored = (
  * Put a connection on a network, and register its teardown in the same breath.
  *
  * The two halves belong together. `connection.onClose` fires however the
- * connection ends — a graceful `leave`, a dropped transport, `leaveWorld`, or
+ * connection ends — a graceful `leave`, a dropped transport, `leaveNetwork`, or
  * a closed in-memory link — so one registration at the point of setup covers
  * every route. A caller that attaches a connection cannot forget to detach it,
  * because attaching registers the detach.

@@ -75,7 +75,7 @@ const sweepOwnerIfLastPeer = (world: World, peer: Entity): void => {
 /**
  * Undo what a connection established. `attachConnection` registers this on
  * `connection.onClose`, so it runs however the connection ends: a graceful
- * `leave`, a dropped transport, `leaveWorld`, or a closed in-memory link.
+ * `leave`, a dropped transport, `leaveNetwork`, or a closed in-memory link.
  *
  * The function tolerates a second call. Dropping `ConnectedTo` first means a
  * repeat finds nothing connected and stops, which matters because a transport

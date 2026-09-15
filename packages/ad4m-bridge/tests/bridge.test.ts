@@ -17,15 +17,21 @@ import {
   applyAuthoredEnvelope,
   type AuthoredEvent,
   createEngine,
+  createUser,
+  DEFAULT_NETWORK_ID,
   defineComponent,
   destroyWorld,
+  flushAuthored,
   getComponent,
   getEntityByUID,
   getNetwork,
-  publishAuthored,
-  Schema
+  Schema,
+  setComponent,
+  setUID,
+  spawnPrefab,
+  createEntity
 } from '@connectionengine/core'
-import { AD4M_NETWORK_ID, createAd4mAgent, eventToLink, linkExpressionToEvent } from '../src'
+import { createAd4mAgent, eventToLink, linkExpressionToEvent } from '../src'
 import { createAd4mRuntime } from '../src/runtime'
 
 const Health = defineComponent({
@@ -131,33 +137,30 @@ describe('expression encoding', () => {
 })
 
 describe('connectAd4m — outbound', () => {
-  it('publishAuthored calls perspective.addLinks with encoded events', async () => {
+  it('flushAuthored dispatches through the network connection, which calls perspective.addLinks', async () => {
     const client = mockClient('did:ad4m:alice')
     const { proxy, added } = mockPerspective()
     const { world } = await createAd4mRuntime(client, proxy, { engine: createEngine() })
 
-    const network = getNetwork(world, AD4M_NETWORK_ID)
-    if (!network) throw new Error('expected the ad4m network')
-    publishAuthored(world, network, {
-      fromPeer: 'did:ad4m:alice',
-      events: [
-        {
-          entityPath: ['scene:x', 'thing'],
-          predicate: 'B.Health',
-          op: 'set',
-          value: { current: 50, max: 100 },
-          author: 'did:ad4m:alice',
-          timestamp: 0,
-          seq: 0
-        }
-      ]
-    })
+    // The connection sits on the default network.
+    const network = getNetwork(world, DEFAULT_NETWORK_ID)
+    expect(network).toBeDefined()
+    expect(network!.connections.size).toBe(1)
+
+    // Queue an authored event through the normal mutation pipeline.
+    createUser(world, { did: 'did:ad4m:alice', asLocal: true })
+    const scene = spawnPrefab(world, 'scene:x')
+    const e = createEntity(world)
+    setUID(world, e, 'thing', { parent: scene })
+    setComponent(world, e, Health, { current: 50, max: 100 })
+    flushAuthored(world)
 
     await Promise.resolve()
     expect(added).toHaveBeenCalledTimes(1)
     const links = added.mock.calls[0][0] as Link[]
     expect(links[0]).toBeInstanceOf(Link)
-    expect(links[0].predicate).toMatch(/^set:\d+:B\.Health$/)
+    // The flush stamps the events, so the predicate carries the seq.
+    expect(links.some((l) => l.predicate?.includes('B.Health'))).toBe(true)
 
     destroyWorld(world)
   })
@@ -212,15 +215,16 @@ describe('connectAd4m — inbound', () => {
 })
 
 describe('Ad4mTransportHandle.close', () => {
-  it('detaches the listener and removes the ad4m network', async () => {
+  it('detaches the listener and removes the connection from the network', async () => {
     const client = mockClient('did:ad4m:bob')
     const { proxy, listeners } = mockPerspective()
     const { world, transport } = await createAd4mRuntime(client, proxy, { engine: createEngine() })
+    const network = getNetwork(world, DEFAULT_NETWORK_ID)!
     expect(listeners.size).toBe(1)
-    expect(getNetwork(world, AD4M_NETWORK_ID)).toBeDefined()
+    expect(network.connections.size).toBe(1)
     await transport.close()
     expect(listeners.size).toBe(0)
-    expect(getNetwork(world, AD4M_NETWORK_ID)).toBeUndefined()
+    expect(network.connections.size).toBe(0)
     destroyWorld(world)
   })
 })

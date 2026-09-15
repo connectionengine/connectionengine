@@ -21,7 +21,7 @@ This makes governance composable. You can govern a scene, an inventory, or a sin
 
 ## Core defines no constraint kinds
 
-Which writes a world admits is an application question, so the engine takes no position on it. Core supplies the registry, the scope walk, and the gate. You supply the kinds.
+Which writes a world admits is an application question, so the engine takes no position on it. Core supplies the registry, the scope walk, and the enforcement. You supply the kinds.
 
 ```ts
 import { defineComponent, registerConstraintKind, Schema } from '@connectionengine/core'
@@ -56,24 +56,13 @@ That signature is the point. Every peer holds the same constraint data and runs 
 
 When a rule needs a notion of "now", use `event.timestamp`. The author stamps it, so it reads the same on every peer.
 
-## The gate
+## Engine-internal enforcement
 
-A network carries its gate as `onValidateAuthored`. Supply it when the network is built. Each network on a world holds its own gate, so different networks can enforce different rules:
+Governance runs engine-internally. The mutation pipeline calls `validateEvent` directly — no pluggable callback, no gate field on the world:
 
-```ts
-import { ensureDefaultNetwork, validateEvent } from '@connectionengine/core'
+`validateEvent` walks the scope hierarchy from the entity of the event, collects every applicable constraint, runs each kind, and returns `{ allowed, violations }`. Inbound `applyAuthoredEnvelope` calls it before it applies an event. A refused event neither applies nor enters the event log.
 
-const network = ensureDefaultNetwork(world, {
-  onValidateAuthored: (world, network, event) => validateEvent(world, event).allowed,
-  onRejected: (world, network, event, reason) => console.warn('refused', event.predicate, reason)
-})
-```
-
-The gate is a readonly field, so nothing can swap it later. A network that behaved one way at frame 100 and another at frame 200 would make "what does this network admit?" a question with no fixed answer. To run a different gate, build a different network with `addNetwork`.
-
-`validateEvent` walks the scope hierarchy from the entity of the event, collects every applicable constraint, runs each kind, and returns `{ allowed, violations }`. Inbound `applyAuthoredEnvelope` consults the gate before it applies an event. A refused event neither applies nor enters the event log, and `onRejected` reports why.
-
-The gate runs on **received** events. Local writes pass through the authored queue and go out optimistically. Call `validateEvent` yourself before `setComponent` if you want to check a local write first.
+Governance runs on **received** events. Local writes pass through the authored queue and go out optimistically. Call `validateEvent` yourself before `setComponent` if you want to check a local write first.
 
 ## Resolving constraints
 
@@ -92,4 +81,4 @@ Use it to answer "what governs this entity?" while debugging, or to show a user 
 - It is not transport-level auth. Whether a peer may *connect* is a separate concern, and the transport handles it. Governance starts once a peer is already in the session.
 - It is not authority enforcement. See [Authority & Ownership](/authority-and-ownership). Runtime authority is structural, and carries no signature.
 
-Governance gates **authored events on apply**, and nowhere else.
+Governance checks **authored events on apply**, and nowhere else.

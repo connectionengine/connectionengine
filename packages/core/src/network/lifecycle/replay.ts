@@ -24,7 +24,6 @@
 
 import type { AuthoredEvent, World } from '../../ecs/world'
 import type { TransportEndpoint } from '../transport'
-import type { Network } from '../network'
 import { applyAuthoredEnvelope, eventSignature } from '../mutation'
 import { applySnapshot, createSnapshot, type Snapshot } from '../snapshot'
 
@@ -90,8 +89,8 @@ export const endReplay = (world: World, endpoint: TransportEndpoint): void => {
  * and never clears the local state. It admits each write through the same gates
  * that an authored event from that peer must pass.
  */
-export const applyStateSnapshot = (world: World, snapshot: Snapshot, fromPeer: string, network?: Network): number => {
-  applySnapshot(world, snapshot, { from: { author: fromPeer, network } })
+export const applyStateSnapshot = (world: World, snapshot: Snapshot, fromPeer: string): number => {
+  applySnapshot(world, snapshot, { from: { author: fromPeer } })
   return snapshot.entities.length
 }
 
@@ -128,13 +127,8 @@ export const streamEventLog = (
 
 /** Apply one replay chunk to the world. The function returns the number of
  *  events that it applied for the first time. */
-export const applyReplayChunk = (
-  world: World,
-  fromPeer: string,
-  events: readonly AuthoredEvent[],
-  network?: Network
-): number => {
+export const applyReplayChunk = (world: World, fromPeer: string, events: readonly AuthoredEvent[]): number => {
   const before = world.eventLog.length
-  applyAuthoredEnvelope(world, { fromPeer, events: events.slice() }, network)
+  applyAuthoredEnvelope(world, { fromPeer, events: events.slice() })
   return world.eventLog.length - before
 }

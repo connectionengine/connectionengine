@@ -4,11 +4,11 @@
  * This module registers a `capability` kind with the constraint registry of
  * core. After that registration, the `validateEvent` function of core enforces
  * the ZCAP capabilities beside the engine-level kinds: credential, temporal,
- * and content. No separate validator is needed. `capabilityGate` only names
- * `core.validateEvent` as the inbound gate of a network.
+ * and content. No separate validator or pluggable gate exists — importing this
+ * module adds the kind to the global registry, and the engine walks it.
  */
 
-import type { AuthoredEvent, ValidateAuthored, World } from '@connectionengine/core'
+import type { AuthoredEvent, World } from '@connectionengine/core'
 import {
   Schema,
   addRelation,
@@ -89,17 +89,7 @@ registerConstraintKind({
   }
 })
 
-/** Run the `validateEvent` function of core. The capability kind is already in
- *  the registry, so this runs every kind. */
+/** Run the `validateEvent` function of core. The capability kind sits in the
+ *  registry, so this runs every kind — including capability. */
 export const validateLocalEvent = (world: World, event: AuthoredEvent): CapabilityValidationResult =>
   coreValidateEvent(world, event)
-
-/**
- * The capability-aware inbound gate. Supply it when the network is built:
- *
- *   ensureDefaultNetwork(world, { onValidateAuthored: capabilityGate })
- *
- * The `capability` kind already sits in the constraint registry of core, so
- * `coreValidateEvent` runs every kind. This value only names it as the gate.
- */
-export const capabilityGate: ValidateAuthored = (world, _network, event) => coreValidateEvent(world, event).allowed

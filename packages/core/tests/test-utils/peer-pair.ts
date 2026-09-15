@@ -7,7 +7,7 @@
  * harness for tests that need real Ed25519 signatures + ZCAP capabilities.
  *
  * Almost every interesting bug in this system lives at the seam between
- * peers, so the harness is the single most-used fixture in the codebase.
+ * peers, so the harness stands as the single most-used fixture in the codebase.
  */
 
 import { createManualClock, type ManualClock } from '../../src/ecs/clock'
@@ -50,7 +50,7 @@ export interface PeerPair {
 
 export interface CreatePeerPairOptions {
   /** Passed straight to `connectInMemory`: latency, runtime components, and
-   *  the network behaviours each side is built with. */
+   *  the network behaviours each side gets built with. */
   transport?: ConnectInMemoryOptions
   /** Names — also used as deterministic seeds for the anonymous agents. */
   names?: [string, string]
@@ -58,7 +58,7 @@ export interface CreatePeerPairOptions {
   startTime?: number
 }
 
-export const createPeerPair = (options: CreatePeerPairOptions = {}): PeerPair => {
+export const createPeerPair = async (options: CreatePeerPairOptions = {}): Promise<PeerPair> => {
   const [nameA, nameB] = options.names ?? ['alice', 'bob']
   const start = options.startTime ?? 0
   // Each peer gets its own engine — clocks, time, and bitECS storage are
@@ -73,7 +73,7 @@ export const createPeerPair = (options: CreatePeerPairOptions = {}): PeerPair =>
   const worldB = createWorld({ engine: engineB, agent: createAnonAgent(nameB) })
   bootstrapIdentity(worldA, nameA)
   bootstrapIdentity(worldB, nameB)
-  const link = connectInMemory(worldA, worldB, options.transport)
+  const link = await connectInMemory(worldA, worldB, options.transport)
 
   return {
     a: { name: nameA, world: worldA, clock: clockA },
@@ -112,7 +112,7 @@ export interface PeerMesh {
   dispose(): void
 }
 
-export const createPeerMesh = (n: number, options: CreatePeerPairOptions = {}): PeerMesh => {
+export const createPeerMesh = async (n: number, options: CreatePeerPairOptions = {}): Promise<PeerMesh> => {
   const peers: PeerHandle[] = []
   const start = options.startTime ?? 0
   // Each peer gets its own engine — see createPeerPair for the rationale.
@@ -127,7 +127,7 @@ export const createPeerMesh = (n: number, options: CreatePeerPairOptions = {}): 
   const links: MemoryConnectionPair[] = []
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
-      links.push(connectInMemory(peers[i].world, peers[j].world, options.transport))
+      links.push(await connectInMemory(peers[i].world, peers[j].world, options.transport))
     }
   }
   return {

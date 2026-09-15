@@ -56,7 +56,7 @@ Three forms this takes, in rough order of preference:
 
 Two supporting rules make those work:
 
-- **State lives with the thing it describes, and so do its accessors.** A relation's index lives on the relation (`OwnedBy.get`), per-world pipeline state lives on the world, and a network's behaviour lives on the network, fixed when it is built. A fact stored away from its subject drifts from it, and so does a `getX` free function.
+- **State lives with the thing it describes, and so do its accessors.** A relation's index lives on the relation (`OwnedBy.get`), per-world pipeline state lives on the world, and governance lives on the world, fixed when it gets built. A fact stored away from its subject drifts from it, and so does a `getX` free function.
 - **Capture before you mutate.** A reversal often needs facts the mutation destroys. `removeEntity` captures the path and the relation indexes _before_ the bitECS cascade, because neither survives, and because entity ids recycle immediately — a lookup deferred to flush time can answer for a different entity.
 
 What this forbids: global callback registries, watchers that reconstruct a cause from its symptom, mutable behaviour fields, and cleanup procedures that several call sites must each remember. Every one of those has already been tried in this codebase and removed.
@@ -103,22 +103,21 @@ Prefer this over both alternatives that came before it: a cleanup procedure seve
 
 ## Behaviour is fixed at construction — no mutable hooks on runtime objects
 
-A `Network` carries four behaviours: `onPublishAuthored`, `onPublishRuntime`, `onValidateAuthored`, `onRejected`. All four are **readonly**, supplied to `addNetwork` and never reassigned.
+Governance runs engine-internally. The mutation pipeline calls `validateEvent` directly — no pluggable gate, no diagnostic hook. A `World` carries no governance fields. A `Network` holds only its `id` and a `connections` set — pure sync topology, no governance. Outbound dispatch goes through direct fan-out — `publishAuthored` and `publishRuntime` iterate connections on the network.
 
-Callers never read those fields. They call the module-level dispatchers in `network/network.ts`:
+Callers never read governance internals directly. They call the module-level dispatchers in `network/network.ts`:
 
 ```ts
 publishAuthored(world, network, envelope)
 publishRuntime(world, network, dirty)
-validateAuthored(world, network, event) // → boolean
-reportRejected(world, network, event, reason)
+validateAuthored(world, event) // → boolean (calls validateEvent internally)
 ```
 
 Rules that follow from this:
 
 - **Never add a mutable hook field to a runtime object.** A field that any module may reassign makes the object's behaviour depend on call order, and the only way to find the answer is to grep for assignments.
-- **To change behaviour, build a different object.** `connectAd4m` adds its own `'ad4m'` network rather than overriding the default one, and removes it on close.
-- **`ensureDefaultNetwork(world, options)` applies its options only when it creates the network.** A second caller cannot re-teach an existing one. Where two entry points must agree — `createLocalRuntime` and `connectLocalInMemory` in `local/` — both pass the _same_ function values, so either creation order gives the same result.
+- **To change behaviour, build a different object.** `connectAd4m` adds a Connection to the default network, and removes it on close. To change governance, add or remove constraint entities.
+- **`ensureDefaultNetwork(world)` takes no options.** It creates a network with pure topology — id and connections only. Governance belongs on the world that holds the network.
 - **The same rule applies to the observer pattern.** Side effects that used to be procedures other code had to remember to call are now derived from component state: entity removal replicates from `onRemove(UIDComponent)` gated on ownership, and disconnect cleanup runs from `onRemove(ConnectedTo)`. Prefer an observer over a function four call sites must remember.
 
 **For type-only cycles inside one layer**, use an inline `import(...)` reference in the type position. Do not declare a forward interface. For example, `world.ts` refers to `ComponentSchema` as `Map<string, import('./component').ComponentSchema>`, and does not redeclare the interface, because the type belongs in `component.ts`. An inline import keeps the type definition in one place. It leaves no runtime import to join a cycle. It does not trigger `import/no-cycle`. Do not use the older pattern that duplicates an interface in a leaf module, because those copies drift.
@@ -149,7 +148,7 @@ The outputs land in `.codegraph/`, which `.gitignore` excludes. After `map` runs
 - **Entity IDs belong to the engine, not to the world.** Two worlds that share an engine share one bitECS ID space. Two worlds with separate engines get independent ID spaces.
 - **Systems belong to the engine, not to the world.** `defineSystem(engine, ...)`, `runSystems(engine, ...)`, `removeSystem(engine, ...)` — all take an `Engine`. The execute callback receives `(engine, deltaTime)`. Worlds come and go; systems outlive them and tick every world that shares the engine. `destroyEngine` drains `engine.disposers`, which disposes every system reactor. Call it after destroying the worlds.
 - **`ensureEntityPath` lives in `ecs/entity.ts`.** One canonical copy serves mutation, snapshot, session, and test code. It accepts an optional `decorate` callback, which fires only on a freshly created leaf entity. Do not duplicate it elsewhere.
-- **Remote peer materialisation lives inline.** Both `session.ts` (HELLO handler) and `connect-memory.ts` (`wireSide`) materialise remote user + peer entities directly with `ensureEntityPath` + decoration callbacks. No shared helper — the two call sites differ enough (session reads from a HelloMessage, connect-memory reads from a World) that a shared function obscured more than it simplified.
+- **Remote peer materialisation lives in `session.ts`.** The HELLO handler materialises remote user + peer entities with `ensureEntityPath` + decoration callbacks. `connectInMemory` calls `joinNetwork` on both sides, so the session protocol handles peer materialisation uniformly — no separate inline logic in the test helper.
 - **`isAuthoredEnvelope` lives in `network/mutation.ts`.** One type guard for authored envelopes on a transport channel. Both `session.ts` and `connect-memory.ts` import it.
 - **`NetworkId` lives as a component in `network/lifecycle/network-id.ts`.** `sync: false`, so it never enters snapshots or the authored path. `world.nextNetworkId` holds the allocation counter (starts at 1; 0 means unmapped). `ensureNetworkId(world, entity)` assigns or returns the id. `networkIdBindings(world)` snapshots the full (id → entityPath) table. The `RemoteBindingTable` stays per-connection (different peers can reuse the same id for different entities).
 - **`Connection.remoteDID` starts undefined.** It receives its value when the HELLO arrives. Code that reads it after the handshake uses a non-null assertion (`!`). The `JoinResult.remoteDID` field stays `string` — the protocol guarantees a value by the time `joinNetwork` resolves.

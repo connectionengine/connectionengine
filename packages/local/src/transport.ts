@@ -1,12 +1,16 @@
 /**
  * A local in-memory transport with Ed25519 signing.
  *
- * It wraps `connectInMemory` from core, and adds per-event signing on the
- * outbound path and signature verification on the inbound path. Runtime binary
- * packets travel unsigned. The ECS level checks their authority through
- * `AuthoritativeFor`, and one signature per packet at the simulation tick rate
- * costs too much. A flow that needs more security would add a per-packet HMAC
- * at a different layer.
+ * It wraps `connectInMemory` from core, adding a signing/verification layer on
+ * the transport endpoint. The memory transport creates paired endpoints; this
+ * module wraps each endpoint so that outbound authored envelopes get signed and
+ * inbound signed envelopes get verified and unwrapped before the session
+ * protocol handles them.
+ *
+ * Runtime binary packets travel unsigned. The ECS level checks their authority
+ * through `AuthoritativeFor`, and one signature per packet at the simulation
+ * tick rate costs too much. A flow that needs more security would add a
+ * per-packet HMAC at a different layer.
  *
  * Two-peer use:
  *
@@ -14,21 +18,24 @@
  *   const bobAgent   = createLocalAgent({ seed: 'bob' })
  *   const worldA = createWorld({ engine: createEngine(), agent: aliceAgent })
  *   const worldB = createWorld({ engine: createEngine(), agent: bobAgent })
- *   connectLocalInMemory(worldA, worldB)
+ *   await connectLocalInMemory(worldA, worldB)
  *
- * After that call, each setComponent on worldA is signed, delivered to worldB,
+ * After that call, each setComponent on worldA gets signed, delivered to worldB,
  * verified, and applied. A tampered event drops silently.
+ *
+ * Governance runs engine-internally. Add constraint entities to the world
+ * before connecting.
  */
 
 import type {
   AuthoredEnvelope,
   AuthoredEvent,
-  Connection,
   ConnectInMemoryOptions,
-  PublishAuthored,
+  TransportEndpoint,
   World
 } from '@connectionengine/core'
-import { applyAuthoredEnvelope, connectInMemory, getNetwork, type MemoryConnectionPair } from '@connectionengine/core'
+import { createMemoryTransport, ensureDefaultNetwork, isAuthoredEnvelope, joinNetwork } from '@connectionengine/core'
+import type { MemoryConnectionPair } from '@connectionengine/core'
 import { type KeyPair, fromHex, sign, stableStringify, toHex, verifyByDID } from './did'
 import type { LocalAgent } from './agent'
 
@@ -85,34 +92,45 @@ const verifyAndUnwrap = (signed: SignedAuthoredEnvelope): AuthoredEnvelope | nul
   return { events: valid, fromPeer: signed.fromPeer }
 }
 
+const isSignedAuthored = (payload: unknown): payload is SignedAuthoredEnvelope =>
+  !!payload && typeof payload === 'object' && Array.isArray((payload as { signedEvents?: unknown }).signedEvents)
+
+// ── Signing endpoint wrapper ─────────────────────────────────────────────────
+
+/**
+ * Wrap a transport endpoint with signing on the outbound path and verification
+ * on the inbound path. Control messages (hello, replay, leave) pass through
+ * unchanged. Only authored envelopes get signed/verified.
+ */
+const wrapWithSigning = (endpoint: TransportEndpoint, keyPair: KeyPair): TransportEndpoint => ({
+  events: {
+    send: (payload) => {
+      if (isAuthoredEnvelope(payload)) {
+        endpoint.events.send(signEnvelope(payload as AuthoredEnvelope, keyPair))
+      } else {
+        endpoint.events.send(payload)
+      }
+    },
+    onMessage: (handler) =>
+      endpoint.events.onMessage((payload) => {
+        if (isSignedAuthored(payload)) {
+          const unwrapped = verifyAndUnwrap(payload)
+          if (unwrapped) handler(unwrapped)
+          return
+        }
+        handler(payload)
+      })
+  },
+  stream: endpoint.stream,
+  onClose: (h) => endpoint.onClose(h),
+  close: () => endpoint.close()
+})
+
 // ── Connection pair ───────────────────────────────────────────────────────────
 
 export type LocalConnectionPair = MemoryConnectionPair
 
-/**
- * The signing publisher is what this transport is for, so it is not one of the
- * behaviours a caller may supply. Everything else passes through to
- * `connectInMemory`.
- */
-export type ConnectLocalOptions = Omit<ConnectInMemoryOptions, 'onPublishAuthored'>
-
-/**
- * The outbound authored path of this transport: sign every event with the
- * keypair of the local agent, then fan the signed envelope across the
- * connections of the network.
- *
- * It reads the keypair from the world it is handed, so one function serves
- * every world. Supply it when the network is built:
- *
- *   ensureDefaultNetwork(world, { onPublishAuthored: publishSigned })
- */
-export const publishSigned: PublishAuthored = (world, network, envelope) => {
-  const signed = signEnvelope(envelope, assertLocalAgent(world))
-  for (const conn of network.connections) conn.events.send(signed)
-}
-
-const isSignedAuthored = (payload: unknown): payload is SignedAuthoredEnvelope =>
-  !!payload && typeof payload === 'object' && Array.isArray((payload as { signedEvents?: unknown }).signedEvents)
+export type ConnectLocalOptions = ConnectInMemoryOptions
 
 /**
  * Link two worlds over an in-memory channel, with Ed25519 signing on the
@@ -121,41 +139,53 @@ const isSignedAuthored = (payload: unknown): payload is SignedAuthoredEnvelope =
  *
  * A `LocalAgent` must have created both worlds. See `createLocalAgent`. The
  * keypair of the agent signs each outbound authored envelope. Each inbound
- * envelope is verified against `event.author` before the apply step.
+ * envelope gets verified against `event.author` before the apply step.
+ *
+ * Governance runs engine-internally. Add constraint entities to the world
+ * before calling this function.
  */
-export const connectLocalInMemory = (
+export const connectLocalInMemory = async (
   worldA: World,
   worldB: World,
   options: ConnectLocalOptions = {}
-): LocalConnectionPair => {
+): Promise<LocalConnectionPair> => {
   // Fail early and by name when either side lacks a keypair, rather than on the
   // first publish.
-  assertLocalAgent(worldA)
-  assertLocalAgent(worldB)
+  const kpA = assertLocalAgent(worldA)
+  const kpB = assertLocalAgent(worldB)
 
-  // Core handles the runtime fanout, the memory transport, and the lifecycle.
-  // The signing publisher goes in as the outbound authored path of each side.
-  // A world from `createLocalRuntime` already has it, and supplies the same
-  // function, so either creation order gives the same behaviour.
-  const pair = connectInMemory(worldA, worldB, { ...options, onPublishAuthored: publishSigned })
+  const { latencyMs, runtimeComponents, runtimeConfigs } = options
+  const transport = createMemoryTransport({ latencyMs })
 
-  // Add a side-channel listener to each connection. It recognises a signed
-  // authored envelope, which is the only payload shape that connectInMemory
-  // does not already understand. The listener verifies the envelope, unwraps
-  // it, and applies it.
-  attachVerifier(worldA, pair.a)
-  attachVerifier(worldB, pair.b)
+  // Wrap each endpoint with signing/verification.
+  const wrappedA = wrapWithSigning(transport.a, kpA)
+  const wrappedB = wrapWithSigning(transport.b, kpB)
 
-  return pair
-}
+  // Each side gets its own default network — pure topology, no governance.
+  const networkA = ensureDefaultNetwork(worldA)
+  const networkB = ensureDefaultNetwork(worldB)
 
-const attachVerifier = (world: World, connection: Connection): void => {
-  const network = getNetwork(world, 'default')
-  connection.events.onMessage((payload) => {
-    if (!isSignedAuthored(payload)) return
-    const unwrapped = verifyAndUnwrap(payload)
-    if (unwrapped) applyAuthoredEnvelope(world, unwrapped, network)
-  })
+  // Both sides join simultaneously, same pattern as core's connectInMemory.
+  const [resultA, resultB] = await Promise.all([
+    joinNetwork(worldA, {
+      endpoint: wrappedA,
+      network: networkA,
+      runtimeComponents,
+      runtimeConfigs
+    }),
+    joinNetwork(worldB, {
+      endpoint: wrappedB,
+      network: networkB,
+      runtimeComponents,
+      runtimeConfigs
+    })
+  ])
+
+  return {
+    a: resultA.connection,
+    b: resultB.connection,
+    close: () => transport.close()
+  }
 }
 
 const assertLocalAgent = (world: World): KeyPair => {

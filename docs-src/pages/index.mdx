@@ -29,13 +29,13 @@ Once you accept that equivalence, four layers you would otherwise write collapse
 - **Two replication channels** that share one schema. One rule splits them — *existence is governed, values are governed only where they are discrete*:
   - **`event`** — reliable, event-sourced, governance-validated. Use it for spawns, deletes, ownership transfers, and anything causal.
   - **`continuous`** — binary, per-field delta encoding, per-peer shadow maps. Use it for transforms, velocities, and anything driven at the simulation tick rate.
-  - A component can hold both. Its existence is governed either way. Its continuous fields skip the gate, and systems constrain them instead.
+  - A component can hold both. Its existence is governed either way. Its continuous fields skip governance, and systems constrain them instead.
 - **Event-sourced late join** — a new peer replays the host's signed event log, which is idempotent on top of itself. A channel-agnostic state snapshot then advances continuous values from their creation pose to the present.
 - **Three runtime modes** that share the same core:
   - **Solo** — anonymous agent, no transport, runs offline.
   - **Local** — `@connectionengine/local` adds Ed25519 / ZCAP / `did:key` signing.
   - **AD4M** — `@connectionengine/ad4m-bridge` wraps a running [AD4M](https://github.com/coasys/ad4m) instance as the agent, the transport, and the persistence layer.
-- **Governance constraints as data** — a rule is an ECS entity that replicates like any other data, and each peer enforces it locally. Core supplies the registry and the gate. You register the kinds your application needs.
+- **Governance constraints as data** — a rule is an ECS entity that replicates like any other data, and each peer enforces it locally. Core supplies the registry and the enforcement. You register the kinds your application needs.
 
 ## What it is not (yet)
 

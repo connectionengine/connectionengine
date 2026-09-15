@@ -2,30 +2,31 @@
  * createLocalRuntime — a one-call setup for a world in fully local mode.
  *
  * This helper serves a solo app or a local-multiplayer app that does not want
- * to compose the agent, the engine, the world, the transport, and the
- * governance itself.
+ * to compose the agent, the engine, the world, and the transport itself.
  *
  *   const { world, agent } = createLocalRuntime({ seed: 'alice' })
- *   // ... use the world. The signing and the governance are already attached.
+ *   // ... use the world. Governance runs engine-internally from constraint
+ *   // entities — no pluggable gate needed.
  *
  * For a two-peer setup, link the runtimes with `connectLocalInMemory`:
  *
  *   const a = createLocalRuntime({ seed: 'alice' })
  *   const b = createLocalRuntime({ seed: 'bob' })
- *   connectLocalInMemory(a.world, b.world)
+ *   await connectLocalInMemory(a.world, b.world)
+ *
+ * Signing now happens at the transport level — `connectLocalInMemory` wraps
+ * each endpoint with Ed25519 signing/verification. Governance runs from the
+ * constraint entities in each world — no callback to pass.
+ *
+ * Importing this module also imports `./governance`, which registers the
+ * `capability` constraint kind with the global registry.
  */
 
-import {
-  createEngine,
-  createWorld,
-  ensureDefaultNetwork,
-  type Clock,
-  type Engine,
-  type World
-} from '@connectionengine/core'
+import { createEngine, createWorld, type Clock, type Engine, type World } from '@connectionengine/core'
 import { createLocalAgent, type LocalAgent } from './agent'
-import { capabilityGate } from './governance'
-import { publishSigned } from './transport'
+// Importing governance registers the capability constraint kind with the
+// global registry. The import itself is the side effect.
+import './governance'
 
 export interface CreateLocalRuntimeOptions {
   /** Seed for the Ed25519 keypair of the local agent. A seed makes the keypair
@@ -38,15 +39,12 @@ export interface CreateLocalRuntimeOptions {
    *  isolated from the other peers in the same process. */
   engine?: Engine
   /** Simulation tick rate of the engine. It applies only when this function
-   *  constructs a fresh engine, and it is ignored when the caller supplies
+   *  constructs a fresh engine, and gets ignored when the caller supplies
    *  `engine`. It defaults to 1/60. */
   fixedTimeStep?: number
-  /** Clock for the engine. It applies only to a fresh engine, and it defaults
+  /** Clock for the engine. It applies only to a fresh engine, and defaults
    *  to the wall clock. */
   clock?: Clock
-  /** Attach the capability governance gate. Defaults to true. Set the trusted
-   *  issuers with `setTrustedIssuers` before opening a session. */
-  governance?: boolean
 }
 
 export interface LocalRuntime {
@@ -58,12 +56,5 @@ export const createLocalRuntime = (options: CreateLocalRuntimeOptions = {}): Loc
   const agent = options.agent ?? createLocalAgent({ seed: options.seed })
   const engine = options.engine ?? createEngine({ fixedTimeStep: options.fixedTimeStep, clock: options.clock })
   const world = createWorld({ engine, agent })
-  // Build the default network with both behaviours of this runtime: sign
-  // outbound, gate inbound. They are fixed here because a network cannot be
-  // re-taught either one afterwards.
-  ensureDefaultNetwork(world, {
-    onPublishAuthored: publishSigned,
-    onValidateAuthored: options.governance === false ? undefined : capabilityGate
-  })
   return { world, agent }
 }

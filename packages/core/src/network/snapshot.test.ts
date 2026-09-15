@@ -7,10 +7,54 @@ import { createEngine } from '../ecs/engine'
 import { getEntityByUID, setUID } from '../ecs/entity'
 import { createEntity } from '../ecs/entity'
 import { applySnapshot, createSnapshot } from './snapshot'
-import { ensureDefaultNetwork } from './network'
 import { AuthoritativeFor } from './authority'
 import { createPeer, createUser } from './peer'
 import { spawnPrefab } from './prefab'
+import { addConstraint, registerConstraintKind } from './governance'
+
+// ── Test constraint kinds ────────────────────────────────────────────────────-
+
+const BlockPredicate = defineComponent({
+  id: 'test:snap:BlockPredicate',
+  schema: Schema.Object({ blocked: Schema.String({ default: '' }) })
+})
+registerConstraintKind({
+  kind: 'snap:block-predicate',
+  component: BlockPredicate,
+  validate({ event, data, violations }) {
+    if ((data as { blocked: string }).blocked === event.predicate) {
+      violations.push({ kind: 'snap:block-predicate', reason: `blocked: ${event.predicate}` })
+    }
+  }
+})
+
+const BlockAuthor = defineComponent({
+  id: 'test:snap:BlockAuthor',
+  schema: Schema.Object({ blocked: Schema.String({ default: '' }) })
+})
+registerConstraintKind({
+  kind: 'snap:block-author',
+  component: BlockAuthor,
+  validate({ event, data, violations }) {
+    if ((data as { blocked: string }).blocked === event.author) {
+      violations.push({ kind: 'snap:block-author', reason: `blocked author: ${event.author}` })
+    }
+  }
+})
+
+const SnapDenyAll = defineComponent({
+  id: 'test:snap:DenyAll',
+  schema: Schema.Object({})
+})
+registerConstraintKind({
+  kind: 'snap:deny-all',
+  component: SnapDenyAll,
+  validate({ violations }) {
+    violations.push({ kind: 'snap:deny-all', reason: 'denied' })
+  }
+})
+
+// ── Helpers ─────────────────────────────────────────────────────────────────-
 
 const named = (world: World, uid: string, parent?: Entity): Entity => {
   const e = createEntity(world)
@@ -127,22 +171,19 @@ describe('applySnapshot — governance', () => {
   /**
    * A snapshot arriving over the wire carries the same authority as any other
    * write from that peer — no more. Supplying `from` runs each component and
-   * relation through the gates an authored event would face, so the bootstrap
-   * path cannot admit state that the authored path would refuse.
+   * relation through the same governance that an authored event faces, so the
+   * bootstrap path cannot admit state that the authored path would refuse.
    */
-  it('skips writes the network gate refuses, keeping the rest', () => {
+  it('skips writes a constraint refuses, keeping the rest', () => {
     const source = createWorld({ engine: createEngine(), agent: createAnonAgent('gate-src') })
     const target = createWorld({ engine: createEngine(), agent: createAnonAgent('gate-tgt') })
+    addConstraint(target, target.worldRoot, 'snap:block-predicate', { blocked: Health.$id })
 
     const e = named(source, 'thing')
     setComponent(source, e, Health, { current: 42 })
     setComponent(source, e, Transform, { position: [1, 2, 3] })
 
-    const network = ensureDefaultNetwork(target, {
-      onValidateAuthored: (_w, _n, event) => event.predicate !== Health.$id
-    })
-
-    applySnapshot(target, createSnapshot(source), { from: { author: 'did:test:peer', network } })
+    applySnapshot(target, createSnapshot(source), { from: { author: 'did:test:peer' } })
 
     const te = getEntityByUID(target, target.worldRoot, 'thing')!
     expect(hasComponent(target, te, Health)).toBe(false)
@@ -152,25 +193,30 @@ describe('applySnapshot — governance', () => {
     destroyWorld(target)
   })
 
-  it('the gate sees the sending peer as author', () => {
+  it('constraint validators see the sending peer as author', () => {
     const source = createWorld({ engine: createEngine(), agent: createAnonAgent('author-src') })
     const target = createWorld({ engine: createEngine(), agent: createAnonAgent('author-tgt') })
+    // A constraint that blocks a specific author. If the admitter passes the
+    // correct author through, the constraint fires and Health never lands.
+    addConstraint(target, target.worldRoot, 'snap:block-author', { blocked: 'did:test:sender' })
+
     setComponent(source, named(source, 'thing'), Health, { current: 1 })
+    const snap = createSnapshot(source)
 
-    const authors: string[] = []
-    const network = ensureDefaultNetwork(target, {
-      onValidateAuthored: (_w, _n, event) => {
-        authors.push(event.author)
-        return true
-      }
-    })
-    applySnapshot(target, createSnapshot(source), { from: { author: 'did:test:sender', network } })
+    applySnapshot(target, snap, { from: { author: 'did:test:sender' } })
+    const te = getEntityByUID(target, target.worldRoot, 'thing')!
+    expect(hasComponent(target, te, Health)).toBe(false)
 
-    expect(authors.length).toBeGreaterThan(0)
-    expect(new Set(authors)).toEqual(new Set(['did:test:sender']))
+    // A different author does not match the constraint, so the write lands.
+    const target2 = createWorld({ engine: createEngine(), agent: createAnonAgent('author-tgt2') })
+    addConstraint(target2, target2.worldRoot, 'snap:block-author', { blocked: 'did:test:sender' })
+    applySnapshot(target2, snap, { from: { author: 'did:test:other' } })
+    const te2 = getEntityByUID(target2, target2.worldRoot, 'thing')!
+    expect(hasComponent(target2, te2, Health)).toBe(true)
 
     destroyWorld(source)
     destroyWorld(target)
+    destroyWorld(target2)
   })
 
   it('cannot hand the sender authority it has no standing to take', () => {
@@ -190,19 +236,20 @@ describe('applySnapshot — governance', () => {
 
     applySnapshot(host, forged, { from: { author: 'did:test:rogue' } })
 
-    // The standing check runs even with no network gate installed.
+    // The standing check runs even with no constraints installed.
     expect(AuthoritativeFor.get(host, thing)).toBe(hostPeer)
     destroyWorld(host)
   })
 
-  it('a local apply stays ungated — persistence and rollback are trusted', () => {
+  it('a local apply bypasses governance — persistence and rollback are trusted', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent('trusted') })
     setComponent(world, named(world, 'thing'), Health, { current: 7 })
     const snap = createSnapshot(world)
 
+    // A deny-all constraint that would reject everything through governance.
     const restored = createWorld({ engine: createEngine(), agent: createAnonAgent('restored') })
-    // A gate that would reject everything, if the local path consulted it.
-    ensureDefaultNetwork(restored, { onValidateAuthored: () => false })
+    addConstraint(restored, restored.worldRoot, 'snap:deny-all', {})
+    // No `from` → local apply → governance does not run.
     applySnapshot(restored, snap)
 
     const re = getEntityByUID(restored, restored.worldRoot, 'thing')!

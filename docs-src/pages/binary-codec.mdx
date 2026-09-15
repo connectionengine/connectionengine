@@ -120,7 +120,7 @@ These schemes are tools, not defaults. Do not compress until you have measured t
 Use this configuration for per-component throttling and full-sync scheduling:
 
 ```ts
-joinWorld(world, {
+joinNetwork(world, {
   endpoint,
   runtimeConfigs: [
     { componentIds: ['Transform'], rate: 60, fullSyncInterval: 300 },

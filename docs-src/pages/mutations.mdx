@@ -76,10 +76,10 @@ The behaviours are readonly, so no module can reassign one after the fact. That 
 ## Receive paths
 
 ```
-applyAuthoredEnvelope(world, envelope, network?)
+applyAuthoredEnvelope(world, envelope)
         │
         ├─ for each event:
-        │    governance gate via validateAuthored(world, network, event)
+        │    engine-internal governance via validateAuthored(world, event)
         │    if event.predicate === 'AuthoritativeFor':
         │        checkAuthorityChangeStanding(world, event)   ← inline call into network/authority
         │        (rejects with reason if author has no standing)
@@ -87,7 +87,7 @@ applyAuthoredEnvelope(world, envelope, network?)
         │        applyEvent — setComponent / addRelation / etc. with origin: 'network'
 ```
 
-Two gates run before the engine applies an event. The per-network `validateAuthored` carries the governance rules, and different networks can enforce different ones. It defaults to admitting everything. The authority-transfer standing check is unconditional. `network/mutation.ts` calls `checkAuthorityChangeStanding` in `network/authority.ts` directly. Both modules live in `network/`, so this is an ordinary named import.
+Two checks run before the engine applies an event. `validateAuthored` carries the governance rules, calling `validateEvent` internally. With no constraint entities, it admits everything. The authority-transfer standing check runs unconditionally. `network/mutation.ts` calls `checkAuthorityChangeStanding` in `network/authority.ts` directly. Both modules live in `network/`, so this stays an ordinary named import.
 
 For `continuous` state, **no separate "apply runtime envelope" function exists**. The binary pipeline (`network/binary.ts`) is the receive path. It reads packets and writes straight into SoA storage, and never calls `setComponent`.
 

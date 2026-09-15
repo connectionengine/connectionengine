@@ -9,16 +9,15 @@
  *   // persistence.
  *   await transport.close() // call this at shutdown
  *
- * By default the runtime attaches no application-level governance, which means
- * anything beyond the executor-level capabilities of AD4M. Pass
- * `onValidateAuthored` to gate inbound events. The gate is fixed when the
- * network is built, so it must arrive here rather than be assigned afterwards.
+ * By default the runtime attaches no application-level governance beyond the
+ * executor-level capabilities of AD4M. Add constraint entities to the world
+ * after creation to enforce governance rules engine-internally.
  */
 
 import type { Ad4mClient, PerspectiveProxy } from '@coasys/ad4m'
 import { createWorld, type Agent, type CreateWorldOptions, type World } from '@connectionengine/core'
 import { createAd4mAgent } from './agent'
-import { connectAd4m, type Ad4mTransportHandle, type Ad4mTransportOptions } from './transport'
+import { connectAd4m, type Ad4mTransportHandle } from './transport'
 
 export interface Ad4mRuntime {
   world: World
@@ -26,16 +25,15 @@ export interface Ad4mRuntime {
   transport: Ad4mTransportHandle
 }
 
-export type CreateAd4mRuntimeOptions = Omit<CreateWorldOptions, 'agent'> & Ad4mTransportOptions
+export type CreateAd4mRuntimeOptions = Omit<CreateWorldOptions, 'agent'>
 
 export const createAd4mRuntime = async (
   client: Ad4mClient,
   perspective: PerspectiveProxy,
   options: CreateAd4mRuntimeOptions
 ): Promise<Ad4mRuntime> => {
-  const { onValidateAuthored, onRejected, ...worldOptions } = options
   const agent = await createAd4mAgent(client)
-  const world = createWorld({ ...worldOptions, agent })
-  const transport = await connectAd4m(world, perspective, { onValidateAuthored, onRejected })
+  const world = createWorld({ ...options, agent })
+  const transport = await connectAd4m(world, perspective)
   return { world, agent, transport }
 }

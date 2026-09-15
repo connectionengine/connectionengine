@@ -67,15 +67,14 @@ Do not change `OwnedBy`. The engine sets it at creation, and it stays. Transfer 
 `AuthoritativeFor` records authority, and does move:
 
 ```ts
-import { createPeer, spawnPrefab, requestAuthority, transferAuthority } from '@connectionengine/core'
+import { createPeer, spawnPrefab, requestAuthority } from '@connectionengine/core'
 
 const aliceDesktop = createPeer(world, { user: alice, peerId: 'desktop', asLocal: true })
 const alicePhone   = createPeer(world, { user: alice, peerId: 'phone' })
 
 const vehicle = spawnPrefab(world, 'vehicle:1', { authority: aliceDesktop })
 
-// Hand it on. Both calls are the same request, named for their direction.
-transferAuthority(world, vehicle, alicePhone)   // pass it to another peer
+requestAuthority(world, vehicle, alicePhone)    // pass it to another peer
 requestAuthority(world, vehicle, aliceDesktop)  // take it back
 ```
 
@@ -112,14 +111,14 @@ Transfers pass a gate on **both sides**. The local check stops you from authorin
 
 A granted request emits exactly one authored event, the `set`. `AuthoritativeFor` is exclusive, so bitECS drops the previous holder when the new one lands, on the sender and on every receiver alike. Emitting an explicit `remove` first would break host migration: a receiver evaluates each event against current state, so it would accept the remove from the outgoing holder, leaving no authority at all, and then refuse the follow-up `set` because its author no longer matches the current authority.
 
-**Requester-side** (`requestAuthority` and `transferAuthority`) returns `{ granted: false, reason }` when the local peer lacks standing. Standing means it holds the current authority, or it belongs to the same user as the owner. A refused request changes nothing locally, so the requester never diverges from the peers that would have refused it.
+**Requester-side** (`requestAuthority`) returns `{ granted: false, reason }` when the local peer lacks standing. Standing means it holds the current authority, or it belongs to the same user as the owner. A refused request changes nothing locally, so the requester never diverges from the peers that would have refused it.
 
 **Receive-side** (`applyAuthoredEnvelope` in `network/mutation.ts`) calls the standing check in `network/authority.ts` inline, for every incoming `AuthoritativeFor` mutation. The `author` DID of the event must match one of two DIDs:
 
 - The DID of the owner-user. Any peer of the owner can authorise the transfer.
 - The user DID of the current authority. The running host can pass the torch, which is what host migration uses.
 
-If the DID matches neither, the engine drops the event. It neither applies the event nor appends it to the event log. The gate always runs, and a network cannot opt out of it.
+If the DID matches neither, the engine drops the event. It neither applies the event nor appends it to the event log. The standing check runs unconditionally — no world configuration can opt out of it.
 
 Mid-session handoff — a car handed to your phone, or host migration — runs in three steps:
 
@@ -149,4 +148,4 @@ The disconnect side must know which peer entity to recover from. That knowledge 
 
 `grantAuthority` writes the relation with no standing check. Only the bootstrap paths use it, where no authority exists yet to ask: the self-authority of `createPeer`, the remote-peer materialisation on the receive path, and `recoverAuthority` after a disconnect. Application code calls `requestAuthority`.
 
-A peer that wants authority held by *another user* has no standing, so its request is refused. Asking that user to hand it over is an application conversation, over your own channel, ending in their peer calling `transferAuthority`. Who deserves that is policy, and the engine takes no position on it.
+A peer that wants authority held by *another user* has no standing, so its request is refused. Asking that user to hand it over is an application conversation, over your own channel, ending in their peer calling `requestAuthority`. Who deserves that is policy, and the engine takes no position on it.

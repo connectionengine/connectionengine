@@ -11,8 +11,8 @@
  *                   sync
  */
 
-export type { JoinNetworkOptions, JoinResult, JoinWorldOptions } from './session'
-export { joinNetwork, joinWorld, leaveWorld } from './session'
+export type { JoinNetworkOptions, JoinResult } from './session'
+export { joinNetwork, leaveNetwork } from './session'
 // The pieces a transport implementation wires for itself when it does not use
 // the full `joinNetwork` handshake. `testing/connect-memory.ts` is the worked
 // example.

@@ -16,15 +16,17 @@ import { defineComponent, getComponent, setComponent } from '../src/ecs/componen
 import { createEntity } from '../src/ecs/entity'
 import { getEntityByUID, setUID } from '../src/ecs/entity'
 import { createPeer, createUser } from '../src/network/peer'
-import { AuthoritativeFor, grantAuthority, OwnedBy, transferAuthority } from '../src/network/authority'
+import { AuthoritativeFor, grantAuthority, OwnedBy, requestAuthority } from '../src/network/authority'
 import { spawnPrefab } from '../src/network/prefab'
-import { addConstraint, registerConstraintKind, validateEvent } from '../src/network/governance'
+import { addConstraint, registerConstraintKind } from '../src/network/governance'
 import { applySnapshot, createSnapshot } from '../src/network/snapshot'
 import { connectInMemory } from '../src/testing/connect-memory'
 import { flushAsync } from '../src/network/transport'
+import { flushAuthored, flushRuntime } from '../src/network/mutation'
+import { createManualClock } from '../src/ecs/clock'
 import { createPeerMesh, createPeerPair } from './test-utils/peer-pair'
 import { createEngine } from '../src/ecs/engine'
-import { createAnonAgent, createWorld, destroyWorld } from '../src/ecs/world'
+import { createAnonAgent, createWorld, destroyWorld, type World } from '../src/ecs/world'
 
 // Components used across scenarios — global definitions, per-world stores.
 const Health = defineComponent({
@@ -68,7 +70,7 @@ registerConstraintKind({
 
 describe('Scenario: spawn → replicate → mutate → converge', () => {
   it('two peers see identical world state after a sequence of operations', async () => {
-    const peers = createPeerPair({ names: ['alice', 'bob'] })
+    const peers = await createPeerPair({ names: ['alice', 'bob'] })
     const { a, b } = peers
 
     const scene = spawnPrefab(a.world, 'scene:arena')
@@ -110,28 +112,49 @@ describe('Scenario: spawn → replicate → mutate → converge', () => {
 })
 
 describe('Scenario: governance rejects unauthorised mutations', () => {
-  it('a write the gate refuses never lands on the other peer', async () => {
-    const peers = createPeerPair({
-      transport: { onValidateAuthored: (world, _network, event) => validateEvent(world, event).allowed }
-    })
-    const { a, b } = peers
-    const scene = spawnPrefab(a.world, 'scene:guarded')
-    addConstraint(a.world, scene, 'max-health', { max: 100 })
-    const ava = createEntity(a.world)
-    setUID(a.world, ava, 'ava', { parent: scene })
-    setComponent(a.world, ava, Health, { current: 50 })
-    await peers.tick()
+  it('a write a constraint refuses never lands on the other peer', async () => {
+    // Governance runs engine-internally. Both peers hold the same constraint
+    // entities, so they reach the same verdict on every event.
+    const clockA = createManualClock(0)
+    const clockB = createManualClock(0)
+    const worldA = createWorld({ engine: createEngine({ clock: clockA }), agent: createAnonAgent('gov-a') })
+    const worldB = createWorld({ engine: createEngine({ clock: clockB }), agent: createAnonAgent('gov-b') })
+    const bootstrapId = (w: World, n: string) => {
+      const u = createUser(w, { did: w.localAgent.did, asLocal: true })
+      createPeer(w, { user: u, peerId: `${n}-p`, asLocal: true })
+    }
+    bootstrapId(worldA, 'gov-a')
+    bootstrapId(worldB, 'gov-b')
+    const link = await connectInMemory(worldA, worldB)
+    const tick = async () => {
+      clockA.advance(1000 / 60)
+      clockB.advance(1000 / 60)
+      flushAuthored(worldA)
+      flushRuntime(worldA)
+      flushAuthored(worldB)
+      flushRuntime(worldB)
+      await flushAsync()
+    }
+
+    const scene = spawnPrefab(worldA, 'scene:guarded')
+    addConstraint(worldA, scene, 'max-health', { max: 100 })
+    const ava = createEntity(worldA)
+    setUID(worldA, ava, 'ava', { parent: scene })
+    setComponent(worldA, ava, Health, { current: 50 })
+    await tick()
 
     // The constraint replicated with the scene, so Bob's peer holds it too and
     // refuses the write locally as well as on arrival at Alice.
-    const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:guarded')!
-    const bAva = getEntityByUID(b.world, bScene, 'ava')!
-    expect(getComponent(b.world, bAva, Health)?.current).toBe(50)
+    const bScene = getEntityByUID(worldB, worldB.worldRoot, 'scene:guarded')!
+    const bAva = getEntityByUID(worldB, bScene, 'ava')!
+    expect(getComponent(worldB, bAva, Health)?.current).toBe(50)
 
-    setComponent(b.world, bAva, Health, { current: 9999 })
-    await peers.tick()
-    expect(getComponent(a.world, ava, Health)?.current).toBe(50)
-    peers.dispose()
+    setComponent(worldB, bAva, Health, { current: 9999 })
+    await tick()
+    expect(getComponent(worldA, ava, Health)?.current).toBe(50)
+    link.close()
+    destroyWorld(worldA)
+    destroyWorld(worldB)
   })
 })
 
@@ -147,7 +170,7 @@ describe('Scenario: authority transfer between peers', () => {
     OwnedBy.set(world, vehicle, user)
     grantAuthority(world, vehicle, desktopPeer)
 
-    transferAuthority(world, vehicle, phonePeer)
+    requestAuthority(world, vehicle, phonePeer)
     expect(AuthoritativeFor.get(world, vehicle)).toBe(phonePeer)
 
     destroyWorld(world)
@@ -156,7 +179,7 @@ describe('Scenario: authority transfer between peers', () => {
 
 describe('Scenario: snapshot bootstraps a late-joining peer', () => {
   it('peer C joins after A+B have built state; snapshot brings C in sync', async () => {
-    const peers = createPeerPair({ names: ['alice', 'bob'] })
+    const peers = await createPeerPair({ names: ['alice', 'bob'] })
     const { a, b } = peers
     const scene = spawnPrefab(a.world, 'scene:late')
     for (const name of ['one', 'two', 'three']) {
@@ -179,7 +202,7 @@ describe('Scenario: snapshot bootstraps a late-joining peer', () => {
       expect(getComponent(cWorld, e!, Health)?.current).toBe(50)
     }
 
-    const link = connectInMemory(a.world, cWorld)
+    const link = await connectInMemory(a.world, cWorld)
     setComponent(a.world, getEntityByUID(a.world, scene, 'one')!, Health, { current: 1 })
     await peers.tick()
     await flushAsync()
@@ -194,7 +217,7 @@ describe('Scenario: snapshot bootstraps a late-joining peer', () => {
 
 describe('Scenario: three-peer mesh convergence', () => {
   it('mutations from any peer reach all others', async () => {
-    const mesh = createPeerMesh(3)
+    const mesh = await createPeerMesh(3)
     const [alice, bob, carol] = mesh.peers
     const scene = spawnPrefab(alice.world, 'scene:mesh')
     const e = createEntity(alice.world)
@@ -227,7 +250,7 @@ describe('Scenario: three-peer mesh convergence', () => {
 
 describe('Property: origin tag suppresses re-broadcast indefinitely', () => {
   it('arbitrary ticks after replication produce no further authored writes from the receiver', async () => {
-    const peers = createPeerPair()
+    const peers = await createPeerPair()
     const { a, b } = peers
     const scene = spawnPrefab(a.world, 'scene:prop')
     const e = createEntity(a.world)

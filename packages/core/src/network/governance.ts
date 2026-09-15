@@ -1,16 +1,20 @@
 /**
- * Governance — the mechanism for refusing an inbound event, with no policy of
- * its own.
+ * Governance — engine-internal enforcement of replicated constraints.
  *
  * A constraint is an ECS entity: it carries a component holding the
  * configuration, and a `HasConstraint` relation pointing at the scope it
  * guards. Constraints therefore replicate like any other data, and every peer
  * enforces them locally. There is no config channel, and no privileged peer.
  *
- * Core defines no constraint kinds. Which writes a world admits is an
- * application question, so a kind is registered by whoever needs it —
- * `@connectionengine/local` registers ZCAP capabilities this way — and the
- * engine only walks the registry.
+ * The mutation pipeline calls `validateEvent` directly. No pluggable gate
+ * callback exists — the engine walks its own constraint data as an internal
+ * enforcement step. A world with no constraint entities admits everything.
+ *
+ * Core defines three constraint kinds: `credential`, `temporal`, and
+ * `content`. Their validators are stubs until there is engine content to
+ * govern. `@connectionengine/local` registers the `capability` kind (ZCAP-LD)
+ * through the same registry. Additional kinds compose through
+ * `registerConstraintKind`.
  *
  * Treat `validate` as a pure function. It receives the event, the constraint
  * configuration, and the guarded scope, and nothing else. Two peers holding the
@@ -21,6 +25,8 @@
  */
 
 import { getComponent, setComponent, type ComponentDefinition } from '../ecs/component'
+import { defineComponent } from '../ecs/component'
+import { Schema } from '../schema'
 import { defineRelation, addRelation, getRelationTargets } from '../ecs/relation'
 import { createEntity, entityExists, BelongsTo, resolveEntityPath } from '../ecs/entity'
 import { query } from '../ecs/query'
@@ -142,12 +148,7 @@ export interface ValidationResult {
 
 /**
  * Validate an incoming authored event against every constraint that guards it.
- * Supply it as the `onValidateAuthored` behaviour when a network is built:
- *
- *   addNetwork(world, {
- *     id,
- *     onValidateAuthored: (world, _network, event) => validateEvent(world, event).allowed
- *   })
+ * The mutation pipeline calls this directly — no pluggable gate exists.
  */
 export const validateEvent = (world: World, event: AuthoredEvent): ValidationResult => {
   const entity = resolveEntityPath(world, event.entityPath) ?? world.worldRoot
@@ -157,3 +158,77 @@ export const validateEvent = (world: World, event: AuthoredEvent): ValidationRes
   }
   return { allowed: violations.length === 0, violations }
 }
+
+// ── Built-in constraint kinds ────────────────────────────────────────────────-
+//
+// Core defines three kinds. Their validators are stubs — the component shapes
+// exist so that constraint entities replicate now, and enforcement logic lands
+// when there is engine content to govern.
+
+/** Require agents to hold a Verifiable Credential before performing spatial
+ *  operations. Anti-bot, moderator privileges, builder access. */
+export const CredentialConstraintComponent = defineComponent({
+  id: 'CredentialConstraint',
+  schema: Schema.Object({
+    requiredCredential: Schema.String({ default: '' }),
+    /** Comma-separated list: 'spawn', 'modify', 'delete'. */
+    operations: Schema.String({ default: 'spawn,modify,delete' })
+  })
+})
+
+registerConstraintKind({
+  kind: 'credential',
+  component: CredentialConstraintComponent,
+  validate() {
+    // Stub. Credential verification requires an external oracle that resolves
+    // Verifiable Credentials against the event author's DID. When implemented,
+    // this checks whether the author holds the named credential for the
+    // operation the event performs.
+  }
+})
+
+/** Rate limits on spatial operations — max spawns per minute, cooldown on
+ *  authority transfers, anti-cheat position update limits. */
+export const TemporalConstraintComponent = defineComponent({
+  id: 'TemporalConstraint',
+  schema: Schema.Object({
+    minIntervalMs: Schema.Number({ default: 0 }),
+    maxCountPerWindow: Schema.Number({ default: Infinity }),
+    windowMs: Schema.Number({ default: 60_000 }),
+    /** Comma-separated predicate list. */
+    appliesTo: Schema.String({ default: '' })
+  })
+})
+
+registerConstraintKind({
+  kind: 'temporal',
+  component: TemporalConstraintComponent,
+  validate() {
+    // Stub. Temporal rate-limiting scans the world's event log for the author's
+    // recent matching mutations. When implemented, this counts events within
+    // the configured window and rejects when the count or interval limit
+    // exceeds the constraint.
+  }
+})
+
+/** Value validation on component fields — max entity scale, allowed mesh
+ *  types, blocked text content, physics mass limits. */
+export const ContentConstraintComponent = defineComponent({
+  id: 'ContentConstraint',
+  schema: Schema.Object({
+    /** The component predicate this constraint applies to. */
+    componentType: Schema.String({ default: '' }),
+    /** JSON-encoded field constraints: { field: { min?, max?, pattern?, blocklist? } }. */
+    fieldConstraints: Schema.String({ default: '{}' })
+  })
+})
+
+registerConstraintKind({
+  kind: 'content',
+  component: ContentConstraintComponent,
+  validate() {
+    // Stub. Content validation compares the event's value fields against the
+    // constraint's min/max/pattern/blocklist rules. When implemented, this
+    // parses fieldConstraints and checks each named field of the event value.
+  }
+})

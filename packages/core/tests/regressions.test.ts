@@ -26,11 +26,12 @@ import { createPeer, createUser } from '../src/network/peer'
 import { isPeerConnected } from '../src/network/agents'
 import { getRelationTargets, removeRelation } from '../src/ecs/relation'
 import '../src/network/presence'
-import { applyAuthoredEnvelope, flushAuthored, flushRuntime } from '../src/network/mutation'
-import { addNetwork, ensureDefaultNetwork, validateAuthored } from '../src/network/network'
+import { flushAuthored, flushRuntime } from '../src/network/mutation'
+import { addNetwork, validateAuthored } from '../src/network/network'
+import { addConstraint, registerConstraintKind } from '../src/network/governance'
 import { connectInMemory } from '../src/testing/connect-memory'
 import { createMemoryTransport, flushAsync } from '../src/network/transport'
-import { joinWorld } from '../src/network/lifecycle/session'
+import { joinNetwork } from '../src/network/lifecycle/session'
 import {
   AuthoritativeFor,
   OwnedBy,
@@ -48,6 +49,34 @@ const Health = defineComponent({
 const Pose = defineComponent({
   id: 'RegPose',
   schema: Schema.Object({ position: Schema.Vec3() })
+})
+
+// ── Test constraint kinds ────────────────────────────────────────────────────-
+
+const RegBlockPredicate = defineComponent({
+  id: 'test:reg:BlockPredicate',
+  schema: Schema.Object({ blocked: Schema.String({ default: '' }) })
+})
+registerConstraintKind({
+  kind: 'reg:block-predicate',
+  component: RegBlockPredicate,
+  validate({ event, data, violations }) {
+    if ((data as { blocked: string }).blocked === event.predicate) {
+      violations.push({ kind: 'reg:block-predicate', reason: `blocked: ${event.predicate}` })
+    }
+  }
+})
+
+const RegDenyAll = defineComponent({
+  id: 'test:reg:DenyAll',
+  schema: Schema.Object({})
+})
+registerConstraintKind({
+  kind: 'reg:deny-all',
+  component: RegDenyAll,
+  validate({ violations }) {
+    violations.push({ kind: 'reg:deny-all', reason: 'denied' })
+  }
 })
 
 const machine = (name: string): World =>
@@ -82,7 +111,7 @@ const bootstrap = (world: World, name: string): void => {
 
 describe('same-tick writes that return to a previous value', () => {
   it('replicates the final value when a field goes 50 -> 60 -> 50 in one tick', async () => {
-    const p = createPeerPair()
+    const p = await createPeerPair()
     const e = spawnPrefab(p.a.world, 'thing')
     await p.tick()
 
@@ -128,8 +157,8 @@ describe('relayed topologies', () => {
       bootstrap(w, n)
 
     // A chain, not a mesh: A talks to B, B talks to C, A never talks to C.
-    connectInMemory(a, b)
-    connectInMemory(b, c)
+    await connectInMemory(a, b)
+    await connectInMemory(b, c)
 
     const tick = async () => {
       for (const w of [a, b, c]) {
@@ -148,9 +177,11 @@ describe('relayed topologies', () => {
     for (const w of [a, b, c]) destroyWorld(w)
   })
 
-  it('does not relay an event its own gate refused', async () => {
+  it('does not relay an event its own constraints refused', async () => {
     const a = machine('ga')
+    // B refuses anything carrying Health via a constraint on its world root.
     const b = machine('gb')
+    addConstraint(b, b.worldRoot, 'reg:block-predicate', { blocked: Health.$id })
     const c = machine('gc')
     for (const [w, n] of [
       [a, 'ga'],
@@ -159,11 +190,8 @@ describe('relayed topologies', () => {
     ] as const)
       bootstrap(w, n)
 
-    // B refuses anything carrying Health, so C must never learn about it. The
-    // gate goes in with the first connection that builds B's network, because
-    // behaviour is fixed at construction.
-    connectInMemory(a, b, { onValidateAuthored: (_w, _n, ev) => ev.predicate !== Health.$id })
-    connectInMemory(b, c)
+    await connectInMemory(a, b)
+    await connectInMemory(b, c)
 
     const tick = async () => {
       for (const w of [a, b, c]) {
@@ -182,25 +210,6 @@ describe('relayed topologies', () => {
     expect(onC).toBeDefined()
     expect(getComponent(c, onC!, Health)).toBeUndefined()
     for (const w of [a, b, c]) destroyWorld(w)
-  })
-
-  it('reports a rejected event through onRejected', async () => {
-    const rejected: Array<{ event: AuthoredEvent; reason: string }> = []
-    const p = createPeerPair({
-      transport: {
-        onValidateAuthored: (_w, _n, ev) => ev.predicate !== Health.$id,
-        onRejected: (_w, _n, event, reason) => rejected.push({ event, reason })
-      }
-    })
-
-    const e = spawnPrefab(p.a.world, 'watched')
-    setComponent(p.a.world, e, Health, { current: 3 })
-    await p.tick()
-
-    expect(rejected).toHaveLength(1)
-    expect(rejected[0].event.predicate).toBe(Health.$id)
-    expect(rejected[0].reason).toBe('governance')
-    p.dispose()
   })
 })
 
@@ -281,7 +290,7 @@ describe('authority transfer', () => {
 
 describe('entity destruction', () => {
   it('replicates plain removeEntity, with no networked twin to call', async () => {
-    const p = createPeerPair()
+    const p = await createPeerPair()
     const e = spawnPrefab(p.a.world, 'doomed')
     await p.tick()
     expect(getEntityByUID(p.b.world, p.b.world.worldRoot, 'doomed')).toBeDefined()
@@ -294,7 +303,7 @@ describe('entity destruction', () => {
   })
 
   it('does not echo a received destroy back out', async () => {
-    const p = createPeerPair()
+    const p = await createPeerPair()
     const e = spawnPrefab(p.a.world, 'doomed2')
     await p.tick()
     removeEntity(p.a.world, e)
@@ -317,7 +326,7 @@ describe('entity destruction', () => {
   })
 
   it('does not author when a disconnect sweep removes owned entities', async () => {
-    const p = createPeerPair()
+    const p = await createPeerPair()
     spawnPrefab(p.a.world, 'owned-thing')
     await p.tick()
     const before = p.b.world.eventLog.length
@@ -351,8 +360,8 @@ describe('replay cursor', () => {
 
     const link = createMemoryTransport()
     await Promise.all([
-      joinWorld(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
-      joinWorld(joiner, { endpoint: link.b, knownEventCount: joiner.eventLog.length })
+      joinNetwork(host, { endpoint: link.a, knownEventCount: host.eventLog.length }),
+      joinNetwork(joiner, { endpoint: link.b, knownEventCount: joiner.eventLog.length })
     ])
 
     const scene = getEntityByUID(joiner, joiner.worldRoot, 'scene')
@@ -371,7 +380,7 @@ describe('runtime throttling', () => {
     bootstrap(a, 'thr-a')
     bootstrap(b, 'thr-b')
     // One publish every four ticks, against a 60 Hz simulation.
-    const link = connectInMemory(a, b, {
+    const link = await connectInMemory(a, b, {
       runtimeComponents: [Pose],
       runtimeConfigs: [{ componentIds: [Pose.$id], rate: 15 }]
     })
@@ -402,7 +411,7 @@ describe('runtime throttling', () => {
 
 describe('ownership gates outbound removal', () => {
   it('a peer does not announce the removal of an entity it does not own', async () => {
-    const p = createPeerPair()
+    const p = await createPeerPair()
     spawnPrefab(p.a.world, 'alices-thing')
     await p.tick()
 
@@ -418,7 +427,7 @@ describe('ownership gates outbound removal', () => {
   })
 
   it('a disconnect sweep does not author the removals it performs', async () => {
-    const p = createPeerPair()
+    const p = await createPeerPair()
     spawnPrefab(p.a.world, 'owned-thing')
     await p.tick()
     const before = p.b.world.eventLog.length
@@ -436,7 +445,7 @@ describe('ownership gates outbound removal', () => {
 
 describe('presence derives disconnect cleanup', () => {
   it('sweeps the entities of a departed user without anyone calling a sweep', async () => {
-    const p = createPeerPair()
+    const p = await createPeerPair()
     spawnPrefab(p.a.world, 'alices-thing')
     await p.tick()
     expect(getEntityByUID(p.b.world, p.b.world.worldRoot, 'alices-thing')).toBeDefined()
@@ -451,7 +460,7 @@ describe('presence derives disconnect cleanup', () => {
   })
 
   it('marks a peer connected while the link is open and disconnected after', async () => {
-    const p = createPeerPair()
+    const p = await createPeerPair()
     await p.tick()
     const alicePeerOnB = p.link.b.peer
     expect(isPeerConnected(p.b.world, alicePeerOnB)).toBe(true)
@@ -463,7 +472,7 @@ describe('presence derives disconnect cleanup', () => {
   })
 
   it('recovers authority from the departed peer to one that remains', async () => {
-    const p = createPeerPair()
+    const p = await createPeerPair()
     const thing = spawnPrefab(p.b.world, 'bobs-thing')
     await p.tick()
 
@@ -484,7 +493,7 @@ describe('presence derives disconnect cleanup', () => {
   })
 
   it('survives the reentrancy of removals triggering further observers', async () => {
-    const p = createPeerPair()
+    const p = await createPeerPair()
     const parent = spawnPrefab(p.a.world, 'parent')
     spawnPrefab(p.a.world, 'child', { parent })
     spawnPrefab(p.a.world, 'sibling')
@@ -506,45 +515,19 @@ describe('presence derives disconnect cleanup', () => {
   })
 })
 
-describe('network behaviour is fixed at construction', () => {
-  it('ensureDefaultNetwork ignores behaviour options for a network that already exists', () => {
-    const world = machine('fixed')
-    bootstrap(world, 'fixed')
-
-    const first = ensureDefaultNetwork(world, { onValidateAuthored: () => false })
-    // A second caller must not be able to re-teach the network. If this ever
-    // starts applying, behaviour becomes a function of call order and the
-    // readonly fields buy nothing.
-    const second = ensureDefaultNetwork(world, { onValidateAuthored: () => true })
-
-    expect(second).toBe(first)
-    expect(validateAuthored(world, second, probeEvent())).toBe(false)
-    destroyWorld(world)
-  })
-
-  it('a network built with no gate admits everything', () => {
+describe('governance derives from constraint entities', () => {
+  it('a world with no constraints admits everything', () => {
     const world = machine('open')
     bootstrap(world, 'open')
-    const network = addNetwork(world, { id: 'open' })
-    expect(validateAuthored(world, network, probeEvent())).toBe(true)
+    expect(validateAuthored(world, probeEvent())).toBe(true)
     destroyWorld(world)
   })
 
-  it('a rejected event reaches the onRejected behaviour of its own network', () => {
-    const world = machine('reported')
-    bootstrap(world, 'reported')
-    const seen: string[] = []
-    const network = addNetwork(world, {
-      id: 'reported',
-      onValidateAuthored: () => false,
-      onRejected: (_w, _n, event, reason) => seen.push(`${event.predicate}:${reason}`)
-    })
-
-    const accepted = applyAuthoredEnvelope(world, { fromPeer: 'did:key:OTHER', events: [probeEvent()] }, network)
-
-    expect(accepted).toHaveLength(0)
-    expect(seen).toEqual([`${Health.$id}:governance`])
-    expect(world.eventLog).toHaveLength(0)
+  it('a constraint on the world root refuses matching events', () => {
+    const world = machine('constrained')
+    bootstrap(world, 'constrained')
+    addConstraint(world, world.worldRoot, 'reg:deny-all', {})
+    expect(validateAuthored(world, probeEvent())).toBe(false)
     destroyWorld(world)
   })
 })
@@ -559,7 +542,7 @@ describe('worlds with no continuous components', () => {
     bootstrap(a, 'nosoa-a')
     bootstrap(b, 'nosoa-b')
 
-    const link = connectInMemory(a, b, { runtimeComponents: [] })
+    const link = await connectInMemory(a, b, { runtimeComponents: [] })
     expect(link.a.channel).toBeUndefined()
     expect(link.b.channel).toBeUndefined()
 

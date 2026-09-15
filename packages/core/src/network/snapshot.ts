@@ -18,7 +18,6 @@ import { getEntityPath, uidOfFor, ensureEntityPath } from '../ecs/entity'
 import { addRelation, allRelations, getRelationByName, getRelationTargets } from '../ecs/relation'
 import { removeEntity } from '../ecs/entity'
 import { checkAuthorityChangeStanding } from './authority'
-import type { Network } from './network'
 import { validateAuthored } from './network'
 import type { AuthoredEvent, World } from '../ecs/world'
 
@@ -97,9 +96,9 @@ export interface ApplySnapshotOptions {
   /**
    * The sender of this snapshot. Supply it for anything that arrives over the
    * wire. Each component and relation then passes the same two gates that an
-   * authored event passes: the `validateAuthored` gate of the network, and the
-   * standing check that guards `AuthoritativeFor`. The apply path skips a
-   * rejected write instead of applying it.
+   * authored event passes: the engine-internal governance check (constraint
+   * entities), and the standing check that guards `AuthoritativeFor`. The
+   * apply path skips a rejected write instead of applying it.
    *
    * Omit it for a trusted local apply, as in persistence, rollback, or
    * hot-reload.
@@ -110,8 +109,6 @@ export interface ApplySnapshotOptions {
 export interface SnapshotOrigin {
   /** The DID credited as the author of the writes in the snapshot. */
   author: string
-  /** The network whose `validateAuthored` gate applies. */
-  network?: Network
 }
 
 export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySnapshotOptions = {}): void => {
@@ -162,10 +159,9 @@ const admitter = (
   from: SnapshotOrigin | undefined
 ): ((entityPath: string[], predicate: string, value: unknown) => boolean) => {
   if (!from) return () => true
-  const network = from.network
   return (entityPath, predicate, value) => {
-    // `seq` disambiguates events in the log. This one is a probe for the gates
-    // and never reaches the log, so any value works.
+    // `seq` disambiguates events in the log. This one acts as a probe for the
+    // gates and never reaches the log, so any value works.
     const event: AuthoredEvent = {
       entityPath,
       predicate,
@@ -175,7 +171,7 @@ const admitter = (
       timestamp: snapshot.metadata.timestamp,
       seq: 0
     }
-    if (network && !validateAuthored(world, network, event)) return false
+    if (!validateAuthored(world, event)) return false
     return checkAuthorityChangeStanding(world, event) === undefined
   }
 }

@@ -20,12 +20,11 @@ Engine (per-app ECS runtime container; createWorld({ engine, agent }) — always
     ├── eventLog (canonical history for this world — networks are sync topology, not data space)
     ├── authoredQueue / runtimeDirty (per-world mutation pipeline state)
     │
-    └── Networks (many per world — sync topology)
-        ├── connections (peer connections on this network)
-        └── behaviours, fixed at construction:
-            ├── onPublishAuthored / onPublishRuntime (outbound paths)
-            ├── onValidateAuthored (governance gate)
-            └── onRejected (diagnostic for a refused event)
+    ├── Networks (many per world — sync topology, no governance)
+    │   └── connections (peer connections on this network)
+    │
+    └── Adapters (external sync bridges — AD4M, persistence)
+        └── publish(world, envelope) — receives outbound authored envelopes
 ```
 
 Component and Relation **definitions** are module-level globals. `defineComponent({ id })` produces one `ComponentDefinition`, shared across every engine. Per-engine *storage* lives in `engine.componentStores`. The **identity indexes** sit on the definitions they describe: `BelongsTo` declares `index: true`, and `UIDComponent` carries `nameCache` and `uidOf` as typed extension properties. Each map keys on the Engine, so one global definition holds per-engine state.

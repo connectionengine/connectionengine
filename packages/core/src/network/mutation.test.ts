@@ -28,7 +28,7 @@ const ChildOf = defineRelation({ name: 'ChildOf', exclusive: true })
 
 describe('Two-peer authored replication', () => {
   it('peer A setComponent → peer B sees value', async () => {
-    const peers = createPeerPair()
+    const peers = await createPeerPair()
     const { a, b } = peers
 
     const scene = spawnPrefab(a.world, 'scene:main')
@@ -48,7 +48,7 @@ describe('Two-peer authored replication', () => {
   })
 
   it('removeComponent replicates as a remove triple', async () => {
-    const peers = createPeerPair()
+    const peers = await createPeerPair()
     const { a, b } = peers
     const scene = spawnPrefab(a.world, 'scene:main')
     const e = createEntity(a.world)
@@ -68,7 +68,7 @@ describe('Two-peer authored replication', () => {
   })
 
   it('relations replicate by walking path on receive', async () => {
-    const peers = createPeerPair()
+    const peers = await createPeerPair()
     const { a, b } = peers
     const scene = spawnPrefab(a.world, 'scene:main')
     const parent = createEntity(a.world)
@@ -89,7 +89,7 @@ describe('Two-peer authored replication', () => {
   })
 
   it('origin tag prevents re-broadcast (no infinite loop)', async () => {
-    const peers = createPeerPair()
+    const peers = await createPeerPair()
     const { a, b } = peers
     const scene = spawnPrefab(a.world, 'scene:loop')
     const e = createEntity(a.world)
@@ -109,7 +109,7 @@ describe('Two-peer authored replication', () => {
   })
 
   it('event log is append-only and ordered', async () => {
-    const peers = createPeerPair()
+    const peers = await createPeerPair()
     const { a, b } = peers
     const scene = spawnPrefab(a.world, 'scene:log')
     const e = createEntity(a.world)
@@ -129,7 +129,7 @@ describe('Two-peer authored replication', () => {
 
 describe('Two-peer runtime replication', () => {
   it('SoA values propagate via runtime packet', async () => {
-    const peers = createPeerPair()
+    const peers = await createPeerPair()
     const { a, b } = peers
     const scene = spawnPrefab(a.world, 'scene:rt')
     const e = createEntity(a.world)
@@ -148,7 +148,7 @@ describe('Two-peer runtime replication', () => {
   })
 
   it('runtime flush clears dirty set; subsequent ticks ship only new dirty entities', async () => {
-    const peers = createPeerPair()
+    const peers = await createPeerPair()
     const { a } = peers
     const scene = spawnPrefab(a.world, 'scene:rt')
     const e = createEntity(a.world)
@@ -166,7 +166,7 @@ describe('Two-peer runtime replication', () => {
 
 describe('Property invariants — pipeline', () => {
   it('round-trip: applyTriple does not re-emit', async () => {
-    const peers = createPeerPair()
+    const peers = await createPeerPair()
     const { a, b } = peers
     const scene = spawnPrefab(a.world, 'scene:x')
     const e = createEntity(a.world)
@@ -182,8 +182,8 @@ describe('Property invariants — pipeline', () => {
 
 // Sanity: re-export check
 describe('destroyWorld cleans up world after pipeline use', () => {
-  it('disposes cleanly', () => {
-    const peers = createPeerPair()
+  it('disposes cleanly', async () => {
+    const peers = await createPeerPair()
     peers.dispose()
     // destroyWorld is idempotent
     destroyWorld(peers.a.world)
