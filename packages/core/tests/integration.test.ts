@@ -18,7 +18,7 @@ import { getEntityByUID, setUID } from '../src/ecs/entity'
 import { createPeer, createUser } from '../src/network/peer'
 import { AuthoritativeFor, grantAuthority, OwnedBy, requestAuthority } from '../src/network/authority'
 import { spawnPrefab } from '../src/network/prefab'
-import { addConstraint, registerConstraintKind } from '../src/network/governance'
+import { addConstraint, defineConstraint } from '../src/network/governance'
 import { applySnapshot, createSnapshot } from '../src/network/snapshot'
 import { connectInMemory } from '../src/testing/connect-memory'
 import { flushAsync } from '../src/network/transport'
@@ -51,14 +51,10 @@ const Label = defineComponent({
 })
 
 // Core defines no constraint kinds, so a governance scenario brings its own.
-const MaxHealthConstraint = defineComponent({
-  id: 'Int.MaxHealthConstraint',
-  schema: Schema.Object({ max: Schema.Number({ default: 0 }) })
-})
-
-registerConstraintKind({
+defineConstraint({
   kind: 'max-health',
-  component: MaxHealthConstraint,
+  id: 'Int.MaxHealthConstraint',
+  schema: Schema.Object({ max: Schema.Number({ default: 0 }) }),
   validate({ event, data, violations }) {
     if (event.predicate !== Health.$id) return
     const current = (event.value as { current?: number } | null)?.current

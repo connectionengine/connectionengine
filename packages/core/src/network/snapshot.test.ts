@@ -10,17 +10,14 @@ import { applySnapshot, createSnapshot } from './snapshot'
 import { AuthoritativeFor } from './authority'
 import { createPeer, createUser } from './peer'
 import { spawnPrefab } from './prefab'
-import { addConstraint, registerConstraintKind } from './governance'
+import { addConstraint, defineConstraint } from './governance'
 
 // ── Test constraint kinds ────────────────────────────────────────────────────-
 
-const BlockPredicate = defineComponent({
-  id: 'test:snap:BlockPredicate',
-  schema: Schema.Object({ blocked: Schema.String({ default: '' }) })
-})
-registerConstraintKind({
+defineConstraint({
   kind: 'snap:block-predicate',
-  component: BlockPredicate,
+  id: 'test:snap:BlockPredicate',
+  schema: Schema.Object({ blocked: Schema.String({ default: '' }) }),
   validate({ event, data, violations }) {
     if ((data as { blocked: string }).blocked === event.predicate) {
       violations.push({ kind: 'snap:block-predicate', reason: `blocked: ${event.predicate}` })
@@ -28,13 +25,10 @@ registerConstraintKind({
   }
 })
 
-const BlockAuthor = defineComponent({
-  id: 'test:snap:BlockAuthor',
-  schema: Schema.Object({ blocked: Schema.String({ default: '' }) })
-})
-registerConstraintKind({
+defineConstraint({
   kind: 'snap:block-author',
-  component: BlockAuthor,
+  id: 'test:snap:BlockAuthor',
+  schema: Schema.Object({ blocked: Schema.String({ default: '' }) }),
   validate({ event, data, violations }) {
     if ((data as { blocked: string }).blocked === event.author) {
       violations.push({ kind: 'snap:block-author', reason: `blocked author: ${event.author}` })
@@ -42,13 +36,10 @@ registerConstraintKind({
   }
 })
 
-const SnapDenyAll = defineComponent({
-  id: 'test:snap:DenyAll',
-  schema: Schema.Object({})
-})
-registerConstraintKind({
+defineConstraint({
   kind: 'snap:deny-all',
-  component: SnapDenyAll,
+  id: 'test:snap:DenyAll',
+  schema: Schema.Object({}),
   validate({ violations }) {
     violations.push({ kind: 'snap:deny-all', reason: 'denied' })
   }

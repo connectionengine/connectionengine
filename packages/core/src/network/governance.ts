@@ -12,9 +12,9 @@
  *
  * Core defines three constraint kinds: `credential`, `temporal`, and
  * `content`. Their validators are stubs until there is engine content to
- * govern. `@connectionengine/local` registers the `capability` kind (ZCAP-LD)
+ * govern. `@connectionengine/local` defines the `capability` kind (ZCAP-LD)
  * through the same registry. Additional kinds compose through
- * `registerConstraintKind`.
+ * `defineConstraint`.
  *
  * Treat `validate` as a pure function. It receives the event, the constraint
  * configuration, and the guarded scope, and nothing else. Two peers holding the
@@ -69,6 +69,31 @@ export const registerConstraintKind = (entry: ConstraintKindEntry): void => {
 export const getConstraintKind = (kind: string): ConstraintKindEntry | undefined => kindRegistry.get(kind)
 
 export const listConstraintKinds = (): ConstraintKindEntry[] => Array.from(kindRegistry.values())
+
+// ── defineConstraint — single-call component + kind registration ────────────-
+
+export interface DefineConstraintOptions {
+  /** Stable name, as it appears on the wire. */
+  kind: string
+  /** Component id. Defaults to the kind name. */
+  id?: string
+  /** The schema that configures instances of this constraint. */
+  schema: ReturnType<typeof Schema.Object>
+  /** Decide whether one event satisfies one instance of this constraint, and
+   *  push every violation found. */
+  validate: ConstraintKindEntry['validate']
+}
+
+/**
+ * Define a constraint kind: create its component and register it in one call.
+ * Returns the component definition — useful for `addCapabilityConstraint`-style
+ * helpers that write to the component directly.
+ */
+export const defineConstraint = (options: DefineConstraintOptions): ComponentDefinition => {
+  const component = defineComponent({ id: options.id ?? options.kind, schema: options.schema })
+  registerConstraintKind({ kind: options.kind, component, validate: options.validate })
+  return component
+}
 
 // ── addConstraint ─────────────────────────────────────────────────────────────
 
@@ -167,18 +192,14 @@ export const validateEvent = (world: World, event: AuthoredEvent): ValidationRes
 
 /** Require agents to hold a Verifiable Credential before performing spatial
  *  operations. Anti-bot, moderator privileges, builder access. */
-export const CredentialConstraintComponent = defineComponent({
+export const CredentialConstraintComponent = defineConstraint({
+  kind: 'credential',
   id: 'CredentialConstraint',
   schema: Schema.Object({
     requiredCredential: Schema.String({ default: '' }),
     /** Comma-separated list: 'spawn', 'modify', 'delete'. */
     operations: Schema.String({ default: 'spawn,modify,delete' })
-  })
-})
-
-registerConstraintKind({
-  kind: 'credential',
-  component: CredentialConstraintComponent,
+  }),
   validate() {
     // Stub. Credential verification requires an external oracle that resolves
     // Verifiable Credentials against the event author's DID. When implemented,
@@ -189,7 +210,8 @@ registerConstraintKind({
 
 /** Rate limits on spatial operations — max spawns per minute, cooldown on
  *  authority transfers, anti-cheat position update limits. */
-export const TemporalConstraintComponent = defineComponent({
+export const TemporalConstraintComponent = defineConstraint({
+  kind: 'temporal',
   id: 'TemporalConstraint',
   schema: Schema.Object({
     minIntervalMs: Schema.Number({ default: 0 }),
@@ -197,12 +219,7 @@ export const TemporalConstraintComponent = defineComponent({
     windowMs: Schema.Number({ default: 60_000 }),
     /** Comma-separated predicate list. */
     appliesTo: Schema.String({ default: '' })
-  })
-})
-
-registerConstraintKind({
-  kind: 'temporal',
-  component: TemporalConstraintComponent,
+  }),
   validate() {
     // Stub. Temporal rate-limiting scans the world's event log for the author's
     // recent matching mutations. When implemented, this counts events within
@@ -213,19 +230,15 @@ registerConstraintKind({
 
 /** Value validation on component fields — max entity scale, allowed mesh
  *  types, blocked text content, physics mass limits. */
-export const ContentConstraintComponent = defineComponent({
+export const ContentConstraintComponent = defineConstraint({
+  kind: 'content',
   id: 'ContentConstraint',
   schema: Schema.Object({
     /** The component predicate this constraint applies to. */
     componentType: Schema.String({ default: '' }),
     /** JSON-encoded field constraints: { field: { min?, max?, pattern?, blocklist? } }. */
     fieldConstraints: Schema.String({ default: '{}' })
-  })
-})
-
-registerConstraintKind({
-  kind: 'content',
-  component: ContentConstraintComponent,
+  }),
   validate() {
     // Stub. Content validation compares the event's value fields against the
     // constraint's min/max/pattern/blocklist rules. When implemented, this

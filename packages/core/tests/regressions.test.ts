@@ -28,7 +28,7 @@ import { getRelationTargets, removeRelation } from '../src/ecs/relation'
 import '../src/network/presence'
 import { flushAuthored, flushRuntime } from '../src/network/mutation'
 import { addNetwork, validateAuthored } from '../src/network/network'
-import { addConstraint, registerConstraintKind } from '../src/network/governance'
+import { addConstraint, defineConstraint } from '../src/network/governance'
 import { connectInMemory } from '../src/testing/connect-memory'
 import { createMemoryTransport, flushAsync } from '../src/network/transport'
 import { joinNetwork } from '../src/network/lifecycle/session'
@@ -53,13 +53,10 @@ const Pose = defineComponent({
 
 // ── Test constraint kinds ────────────────────────────────────────────────────-
 
-const RegBlockPredicate = defineComponent({
-  id: 'test:reg:BlockPredicate',
-  schema: Schema.Object({ blocked: Schema.String({ default: '' }) })
-})
-registerConstraintKind({
+defineConstraint({
   kind: 'reg:block-predicate',
-  component: RegBlockPredicate,
+  id: 'test:reg:BlockPredicate',
+  schema: Schema.Object({ blocked: Schema.String({ default: '' }) }),
   validate({ event, data, violations }) {
     if ((data as { blocked: string }).blocked === event.predicate) {
       violations.push({ kind: 'reg:block-predicate', reason: `blocked: ${event.predicate}` })
@@ -67,13 +64,10 @@ registerConstraintKind({
   }
 })
 
-const RegDenyAll = defineComponent({
-  id: 'test:reg:DenyAll',
-  schema: Schema.Object({})
-})
-registerConstraintKind({
+defineConstraint({
   kind: 'reg:deny-all',
-  component: RegDenyAll,
+  id: 'test:reg:DenyAll',
+  schema: Schema.Object({}),
   validate({ violations }) {
     violations.push({ kind: 'reg:deny-all', reason: 'denied' })
   }

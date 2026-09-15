@@ -29,7 +29,7 @@ import {
   applyAuthoredEnvelope,
   validateAuthored,
   addConstraint,
-  registerConstraintKind,
+  defineConstraint,
   type AuthoredEvent,
   type World
 } from '@connectionengine/core'
@@ -49,13 +49,10 @@ import {
 
 // ── Test constraint kinds ────────────────────────────────────────────────────-
 
-const LocDenyAll = defineComponent({
-  id: 'test:loc:DenyAll',
-  schema: Schema.Object({})
-})
-registerConstraintKind({
+defineConstraint({
   kind: 'loc:deny-all',
-  component: LocDenyAll,
+  id: 'test:loc:DenyAll',
+  schema: Schema.Object({}),
   validate({ violations }) {
     violations.push({ kind: 'loc:deny-all', reason: 'denied' })
   }

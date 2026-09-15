@@ -24,16 +24,12 @@ This makes governance composable. You can govern a scene, an inventory, or a sin
 Which writes a world admits is an application question, so the engine takes no position on it. Core supplies the registry, the scope walk, and the enforcement. You supply the kinds.
 
 ```ts
-import { defineComponent, registerConstraintKind, Schema } from '@connectionengine/core'
+import { defineConstraint, Schema } from '@connectionengine/core'
 
-const MaxHealthConstraint = defineComponent({
-  id: 'MaxHealthConstraint',
-  schema: Schema.Object({ max: Schema.Number({ default: 0 }) })
-})
-
-registerConstraintKind({
+defineConstraint({
   kind: 'max-health',
-  component: MaxHealthConstraint,
+  id: 'MaxHealthConstraint',
+  schema: Schema.Object({ max: Schema.Number({ default: 0 }) }),
   validate({ event, data, violations }) {
     if (event.predicate !== 'Health') return
     const current = (event.value as { current?: number } | null)?.current
@@ -46,7 +42,7 @@ registerConstraintKind({
 
 `addConstraint(world, scope, 'max-health', { max: 100 })` now works. `resolveConstraints` collects the kind, and `validateEvent` runs it.
 
-`@connectionengine/local` registers a `capability` kind the same way, for ZCAP-LD authorisation. It needs no fork of core, and neither does yours.
+`@connectionengine/local` defines a `capability` kind the same way, for ZCAP-LD authorisation. It needs no fork of core, and neither does yours.
 
 ## Write `validate` as a pure function
 

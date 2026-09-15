@@ -21,15 +21,12 @@ import { defineComponent, getComponent, hasComponent, removeComponent, setCompon
 import { createBinaryPipeline } from './binary'
 import { applyAuthoredEnvelope, flushAuthored } from './mutation'
 import { applySnapshot, createSnapshot } from './snapshot'
-import { addConstraint, registerConstraintKind } from './governance'
+import { addConstraint, defineConstraint } from './governance'
 
-const MxBlockPredicate = defineComponent({
-  id: 'test:mx:BlockPredicate',
-  schema: Schema.Object({ blocked: Schema.String({ default: '' }) })
-})
-registerConstraintKind({
+defineConstraint({
   kind: 'mx:block-predicate',
-  component: MxBlockPredicate,
+  id: 'test:mx:BlockPredicate',
+  schema: Schema.Object({ blocked: Schema.String({ default: '' }) }),
   validate({ event, data, violations }) {
     if ((data as { blocked: string }).blocked === event.predicate) {
       violations.push({ kind: 'mx:block-predicate', reason: `blocked: ${event.predicate}` })

@@ -13,9 +13,8 @@ import {
   Schema,
   addRelation,
   createEntity,
-  defineComponent,
+  defineConstraint,
   HasConstraint,
-  registerConstraintKind,
   setComponent,
   validateEvent as coreValidateEvent,
   type Entity,
@@ -24,14 +23,36 @@ import {
 import type { DID } from './did'
 import { type Capability, capabilityAllows, verifyCapability } from './zcap'
 
-// ── Capability constraint component ──────────────────────────────────────────-
+// ── Capability constraint ────────────────────────────────────────────────────-
 
-export const CapabilityConstraintComponent = defineComponent({
+export const CapabilityConstraintComponent = defineConstraint({
+  kind: 'capability',
   id: 'CapabilityConstraint',
   schema: Schema.Object({
     /** Serialised capability JSON. Validation parses it. */
     capability: Schema.String({ default: '' })
-  })
+  }),
+  validate({ event, data, violations }) {
+    const raw = (data as { capability?: string }).capability
+    if (!raw) return
+    let cap: Capability
+    try {
+      cap = JSON.parse(raw) as Capability
+    } catch {
+      violations.push({ kind: 'capability', reason: 'malformed capability' })
+      return
+    }
+    // Expiry measures against the event timestamp, not a local clock. Two peers
+    // checking the same capability a moment apart must agree, and only the
+    // author's own stamp reads the same on both.
+    const ok =
+      cap.invoker === event.author &&
+      verifyCapability(cap, { now: event.timestamp, trustedIssuers }) &&
+      capabilityAllows(cap, event.predicate, event.entityPath)
+    if (!ok) {
+      violations.push({ kind: 'capability', reason: 'capability does not authorise this predicate' })
+    }
+  }
 })
 
 export const addCapabilityConstraint = (world: World, scope: Entity, capability: Capability): Entity => {
@@ -43,7 +64,7 @@ export const addCapabilityConstraint = (world: World, scope: Entity, capability:
   return entity
 }
 
-// ── Validation kind: capability ──────────────────────────────────────────────-
+// ── Validation ──────────────────────────────────────────────────────────────-
 
 export interface CapabilityValidationResult extends CoreValidationResult {}
 
@@ -62,32 +83,6 @@ export const setTrustedIssuers = (issuers: readonly DID[] | undefined): void => 
 }
 
 export const getTrustedIssuers = (): readonly DID[] | undefined => trustedIssuers
-
-registerConstraintKind({
-  kind: 'capability',
-  component: CapabilityConstraintComponent,
-  validate({ event, data, violations }) {
-    const raw = (data as { capability?: string }).capability
-    if (!raw) return
-    let cap: Capability
-    try {
-      cap = JSON.parse(raw) as Capability
-    } catch {
-      violations.push({ kind: 'capability', reason: 'malformed capability' })
-      return
-    }
-    // Expiry is measured against the timestamp of the event under test, not a
-    // local clock. Two peers checking the same capability a moment apart must
-    // agree, and only the author's own stamp is the same on both.
-    const ok =
-      cap.invoker === event.author &&
-      verifyCapability(cap, { now: event.timestamp, trustedIssuers }) &&
-      capabilityAllows(cap, event.predicate, event.entityPath)
-    if (!ok) {
-      violations.push({ kind: 'capability', reason: 'capability does not authorise this predicate' })
-    }
-  }
-})
 
 /** Run the `validateEvent` function of core. The capability kind sits in the
  *  registry, so this runs every kind — including capability. */

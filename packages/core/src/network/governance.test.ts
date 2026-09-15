@@ -9,18 +9,13 @@ import { Schema } from '../schema'
 import { createEngine } from '../ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld, type AuthoredEvent, type Entity, type World } from '../ecs/world'
 import { createEntity, setUID } from '../ecs/entity'
-import { defineComponent } from '../ecs/component'
-import { addConstraint, registerConstraintKind, resolveConstraints, validateEvent } from './governance'
+import { addConstraint, defineConstraint, resolveConstraints, validateEvent } from './governance'
 
 /** A kind that refuses a write when the value exceeds a configured maximum. */
-const MaxValueConstraint = defineComponent({
-  id: 'MaxValueConstraint',
-  schema: Schema.Object({ predicate: Schema.String({ default: '' }), max: Schema.Number({ default: 0 }) })
-})
-
-registerConstraintKind({
+defineConstraint({
   kind: 'max-value',
-  component: MaxValueConstraint,
+  id: 'MaxValueConstraint',
+  schema: Schema.Object({ predicate: Schema.String({ default: '' }), max: Schema.Number({ default: 0 }) }),
   validate({ event, data, violations }) {
     if (data.predicate !== event.predicate) return
     const current = (event.value as { current?: number } | null)?.current
@@ -31,14 +26,10 @@ registerConstraintKind({
 })
 
 /** A kind that refuses everything, for ordering checks. */
-const DenyAllConstraint = defineComponent({
-  id: 'DenyAllConstraint',
-  schema: Schema.Object({ note: Schema.String({ default: '' }) })
-})
-
-registerConstraintKind({
+defineConstraint({
   kind: 'deny-all',
-  component: DenyAllConstraint,
+  id: 'DenyAllConstraint',
+  schema: Schema.Object({ note: Schema.String({ default: '' }) }),
   validate({ violations }) {
     violations.push({ kind: 'deny-all', reason: 'denied' })
   }
