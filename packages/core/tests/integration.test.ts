@@ -244,7 +244,7 @@ describe('Scenario: three-peer mesh convergence', () => {
   })
 })
 
-describe('Property: origin tag suppresses re-broadcast indefinitely', () => {
+describe('Property: echo suppression prevents re-broadcast', () => {
   it('arbitrary ticks after replication produce no further authored writes from the receiver', async () => {
     const peers = await createPeerPair()
     const { a, b } = peers
@@ -256,9 +256,9 @@ describe('Property: origin tag suppresses re-broadcast indefinitely', () => {
     const startLog = b.world.eventLog.length
     for (let i = 0; i < 5; i++) await peers.tick()
     // After A's write replicated to B, further ticks must not grow B's log —
-    // B applied with origin='network' which is not re-enqueued for outbound.
+    // `applyEvent` runs inside `withoutAuthoring`, so nothing re-broadcasts.
     expect(b.world.eventLog.length).toBe(startLog)
-    expect(b.world.authoredQueue).toHaveLength(0)
+    expect(b.world.componentDirty.size).toBe(0)
     peers.dispose()
   })
 })

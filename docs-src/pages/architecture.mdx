@@ -18,7 +18,7 @@ Engine (per-app ECS runtime container; createWorld({ engine, agent }) — always
     ├── worldRoot (sentinel entity; anchors this world's BelongsTo subtree)
     ├── localAgent / localUser / localPeer (local identity for this scope)
     ├── eventLog (canonical history for this world — networks are sync topology, not data space)
-    ├── authoredQueue / runtimeDirty (per-world mutation pipeline state)
+    ├── componentDirty / relationQueue / destroyQueue / runtimeDirty (per-world mutation pipeline state)
     │
     ├── Networks (many per world — sync topology, no governance)
     │   └── connections (peer connections on this network)
@@ -32,7 +32,7 @@ Component and Relation **definitions** are module-level globals. `defineComponen
 Three rules govern the dependency graph:
 
 1. **`Engine` owns the ECS.** It holds bitECS storage, per-component storage, time, and systems. Every `createWorld` takes an explicit `engine`. One engine per app is the dominant production shape. Tests give each peer its own engine.
-2. **`World` is a virtual scope.** It holds a `worldRoot` entity that anchors a subtree, the per-world network state (event log, authored queue, runtime-dirty set, networks), and the local identity for that scope.
+2. **`World` is a virtual scope.** It holds a `worldRoot` entity that anchors a subtree, the per-world mutation pipeline state (event log, component/relation/destroy dirty sets, runtime-dirty set, networks), and the local identity for that scope.
 3. **`Network` is many per world.** A network is sync topology. Different networks carry the same events through different connections — for spatial segmentation, for voice and video, or for admin overlays.
 
 The on-disk layout follows the conceptual split:
@@ -111,7 +111,7 @@ History arrives before the present. A replayed creation event would otherwise ov
 
 Late join is **event-sourced for authored state**. The joiner replays signed events to catch up. Each event carries a composite signature, and `appendEventLog` is idempotent on that signature, so it drops a duplicate event silently.
 
-Continuous-channel components have no event-log representation, so replay cannot bootstrap them. The binary channel also carries only the entities that are currently dirty, which leaves an entity at rest permanently invisible to a late joiner. The SNAPSHOT step covers that gap with a channel-agnostic baseline. The joiner applies the baseline with `origin: 'network'`, so it never echoes back. See [Peers & Sessions](/networking).
+Continuous-channel components have no event-log representation, so replay cannot bootstrap them. The binary channel also carries only the entities that are currently dirty, which leaves an entity at rest permanently invisible to a late joiner. The SNAPSHOT step covers that gap with a channel-agnostic baseline. The joiner applies the baseline inside `withoutAuthoring`, so it never echoes back. See [Peers & Sessions](/networking).
 
 ## Identity is a path
 

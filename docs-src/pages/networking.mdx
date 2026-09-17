@@ -115,7 +115,7 @@ console.log(joinerResult.replayedEventCount) // number of events caught up
 
 **Replay cannot reconstruct motion.** A creating event carries the whole component, including its continuous fields, but every SoA write after that event stays deliberately unauthored ([Components](/components)). Replay therefore leaves a joiner holding the pose that each component was *created* with. The delta channel cannot close that gap, because it sends only the entities in the current dirty set. Anything at rest stays stale indefinitely, rather than until its next update.
 
-The SNAPSHOT step closes the gap. `createSnapshot` walks every named entity and serialises **all** of its components, whatever their channel. It reads the SoA fields straight out of the typed arrays as plain arrays. The receiver applies the snapshot with `origin: 'network'`, so nothing echoes back.
+The SNAPSHOT step closes the gap. `createSnapshot` walks every named entity and serialises **all** of its components, whatever their channel. It reads the SoA fields straight out of the typed arrays as plain arrays. The receiver applies the snapshot inside `withoutAuthoring`, so nothing echoes back.
 
 **Order matters: replay first, snapshot last.** History comes first, then the present. In the opposite order, a replayed creation event would overwrite the newer snapshot. Set `sendStateSnapshot: false` to opt out. The joiner then knows what exists, and stays stale about where it sits.
 

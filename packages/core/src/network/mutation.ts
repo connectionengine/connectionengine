@@ -7,12 +7,10 @@
  *
  * Two paths share one schema:
  *   `event` channel      — reliable, governance-validated, and event-sourced. A
- *                        local write queues { entity, predicate, op, value } in
- *                        world.authoredQueue. flushAuthored then resolves the
- *                        paths, stamps { author, timestamp }, appends to the
- *                        event log of the world, which is idempotent, and
- *                        dispatches the envelope across every network that
- *                        `routeNetworks` reaches from the entity.
+ *                        local write marks a dirty entry or pushes to a queue.
+ *                        flushAuthored serialises the current state, stamps
+ *                        { author, timestamp }, appends to the event log, and
+ *                        dispatches the envelope across every routed network.
  *   `continuous` channel — binary, and authority-checked. A local write sets a
  *                        dirty flag. flushRuntime drains the dirty map and
  *                        dispatches it to the publishRuntime hook of each
@@ -33,9 +31,16 @@
  */
 
 import type { AuthoredEnvelope, AuthoredEvent, Entity, World } from '../ecs/world'
-import { getComponentById, hasContinuousFields, removeComponent, setComponent } from '../ecs/component'
+import {
+  getComponentById,
+  hasComponent,
+  hasContinuousFields,
+  removeComponent,
+  serialiseComponentValue,
+  setComponent
+} from '../ecs/component'
 import { addRelation, getRelationByName, removeRelation } from '../ecs/relation'
-import { getEntityPath, removeEntity, resolveEntityPath, ensureEntityPath } from '../ecs/entity'
+import { DESTROY_PREDICATE, getEntityPath, removeEntity, resolveEntityPath, ensureEntityPath } from '../ecs/entity'
 import { checkAuthorityChangeStanding, OwnedBy } from './authority'
 import type { Network } from './network'
 import { getNetwork, getNetworks, publishAuthored, publishRuntime, validateAuthored } from './network'
@@ -87,54 +92,52 @@ export const hasEventBeenSeen = (world: World, event: AuthoredEvent): boolean =>
 // ── Flush ─────────────────────────────────────────────────────────────────────
 
 /**
- * Drain the authored queue. Resolve the paths. Stamp the author and the
- * timestamp. Append to the event log of the world. Dispatch the envelope across
- * every routed network. Call this function at the end of the tick.
- *
- * Network routing broadcasts to all networks today. See `routeNetworks`. That
- * hook exists so that spatial segmentation can later restrict the set per
- * entity.
+ * Drain the dirty set and queues. Serialise each pending mutation as an
+ * AuthoredEvent. Stamp the author and the timestamp. Append to the event log.
+ * Dispatch the envelope across every routed network. Call this function at
+ * the end of the tick.
  */
 export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
-  if (world.authoredQueue.length === 0) return undefined
+  if (world.componentDirty.size === 0 && world.relationQueue.length === 0 && world.destroyQueue.length === 0)
+    return undefined
   const events: AuthoredEvent[] = []
-  // Group the events by their per-entity routing decision, so that each network
-  // receives only the relevant ones. Routing broadcasts today, so the
-  // per-network grouping collapses: every event goes to every network.
   const eventsByEntity: Array<{ entity: Entity; event: AuthoredEvent }> = []
   const now = world.engine.clock.now()
   const author = world.localAgent.did
-  for (const queued of world.authoredQueue) {
-    if (queued.origin !== 'local') continue
-    // The ownership gate on entity removal. `removeEntity` queues every named
-    // removal and leaves the decision here, because who may announce a removal
-    // is a distribution question, not an ECS one.
-    //
-    // The same comparison does three jobs. It stops a peer announcing the
-    // removal of something it does not own. It suppresses the echo, because a
-    // received destroy names an entity owned by the remote user. And it keeps
-    // local cleanup local: the disconnect sweep removes entities owned by the
-    // departing user, never by this one, so nothing goes out.
-    // `undefined === undefined` would let a world with no local identity
-    // announce the removal of an unowned entity, so the local user has to
-    // exist before any destroy travels.
-    if (queued.op === 'destroy' && (world.localUser === undefined || queued.indexed?.get(OwnedBy) !== world.localUser))
-      continue
-    // A destroy carries the path captured before `removeEntity` cleared the
-    // identity caches. Everything else resolves its path now.
-    const path = queued.entityPath ?? getEntityPath(world, queued.entity)
-    if (path.length === 0) continue // anonymous entity. The wire cannot address it.
-    let value: unknown = queued.value
-    if (value && typeof value === 'object' && 'target' in value) {
-      const targetPath = getEntityPath(world, (value as { target: Entity }).target)
-      if (targetPath.length === 0) continue
-      value = { targetPath }
+
+  for (const [componentId, entities] of world.componentDirty) {
+    const component = getComponentById(componentId)
+    if (!component) continue
+    for (const entity of entities) {
+      const path = getEntityPath(world, entity)
+      if (path.length === 0) continue
+      const present = hasComponent(world, entity, component)
+      const event: AuthoredEvent = {
+        entityPath: path,
+        predicate: componentId,
+        op: present ? 'set' : 'remove',
+        value: present ? serialiseComponentValue(world, entity, component) : undefined,
+        author,
+        timestamp: now,
+        seq: world.authoredSeq++
+      }
+      if (!appendEventLog(world, event)) continue
+      events.push(event)
+      eventsByEntity.push({ entity, event })
     }
+  }
+  world.componentDirty.clear()
+
+  for (const queued of world.relationQueue) {
+    const path = getEntityPath(world, queued.entity)
+    if (path.length === 0) continue
+    const targetPath = getEntityPath(world, queued.target)
+    if (targetPath.length === 0) continue
     const event: AuthoredEvent = {
       entityPath: path,
       predicate: queued.predicate,
       op: queued.op,
-      value,
+      value: { targetPath },
       author,
       timestamp: now,
       seq: world.authoredSeq++
@@ -143,14 +146,31 @@ export const flushAuthored = (world: World): AuthoredEnvelope | undefined => {
     events.push(event)
     eventsByEntity.push({ entity: queued.entity, event })
   }
-  world.authoredQueue.length = 0
+  world.relationQueue.length = 0
+
+  for (const queued of world.destroyQueue) {
+    if (world.localUser === undefined || queued.indexed?.get(OwnedBy) !== world.localUser) continue
+    const event: AuthoredEvent = {
+      entityPath: queued.entityPath,
+      predicate: DESTROY_PREDICATE,
+      op: 'destroy',
+      value: undefined,
+      author,
+      timestamp: now,
+      seq: world.authoredSeq++
+    }
+    if (!appendEventLog(world, event)) continue
+    events.push(event)
+    eventsByEntity.push({ entity: queued.entity, event })
+  }
+  world.destroyQueue.length = 0
+
   if (events.length === 0) return undefined
 
   const envelope: AuthoredEnvelope = { events, fromPeer: author }
 
   const networks = Array.from(getNetworks(world).values())
   if (networks.length === 1) {
-    // One network: every event routes to it, so skip the grouping map.
     publishAuthored(world, networks[0], envelope)
   } else if (networks.length > 1) {
     const perNetwork = new Map<string, AuthoredEvent[]>()
@@ -232,6 +252,26 @@ export const flushRuntime = (world: World): Map<string, Set<Entity>> | undefined
   return snapshot
 }
 
+// ── Echo suppression ─────────────────────────────────────────────────────────
+
+/**
+ * Run a block of mutations without accumulating dirty entries. Save the
+ * dirty state before, run the callback, restore afterwards. Use this at
+ * receive boundaries that apply network state in bulk (snapshot apply,
+ * session handshake peer materialisation).
+ */
+export const withoutAuthoring = (world: World, fn: () => void): void => {
+  const savedComponentDirty = new Map([...world.componentDirty].map(([id, set]) => [id, new Set(set)] as const))
+  const savedRelationQueue = [...world.relationQueue]
+  const savedDestroyQueue = [...world.destroyQueue]
+  const savedRuntimeDirty = new Map([...world.runtimeDirty].map(([id, set]) => [id, new Set(set)] as const))
+  fn()
+  world.componentDirty = savedComponentDirty
+  world.relationQueue = savedRelationQueue
+  world.destroyQueue = savedDestroyQueue
+  world.runtimeDirty = savedRuntimeDirty
+}
+
 // ── Receive + apply ───────────────────────────────────────────────────────────
 
 /**
@@ -256,7 +296,7 @@ export const applyAuthoredEnvelope = (world: World, envelope: AuthoredEnvelope):
     // Already in the log. Not an error — a mesh delivers the same event by
     // several paths — so it reports nothing.
     if (!appendEventLog(world, event)) continue
-    applyEvent(world, event)
+    withoutAuthoring(world, () => applyEvent(world, event))
     accepted.push(event)
   }
   return accepted
@@ -277,9 +317,9 @@ const applyEvent = (world: World, event: AuthoredEvent): void => {
   const component = getComponentById(event.predicate)
   if (component) {
     if (event.op === 'set') {
-      setComponent(world, entity, component, (event.value ?? {}) as Record<string, unknown>, { origin: 'network' })
+      setComponent(world, entity, component, (event.value ?? {}) as Record<string, unknown>)
     } else if (event.op === 'remove') {
-      removeComponent(world, entity, component, { origin: 'network' })
+      removeComponent(world, entity, component)
     }
     return
   }
@@ -289,7 +329,7 @@ const applyEvent = (world: World, event: AuthoredEvent): void => {
     const targetPath = (event.value as { targetPath?: string[] } | null)?.targetPath
     if (!targetPath) return
     const target = ensureEntityPath(world, targetPath)
-    if (event.op === 'set') addRelation(world, entity, relation, target, { origin: 'network' })
-    else if (event.op === 'remove') removeRelation(world, entity, relation, target, { origin: 'network' })
+    if (event.op === 'set') addRelation(world, entity, relation, target)
+    else if (event.op === 'remove') removeRelation(world, entity, relation, target)
   }
 }

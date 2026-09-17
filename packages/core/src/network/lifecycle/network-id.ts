@@ -52,7 +52,7 @@ export const ensureNetworkId = (world: World, entity: Entity): number | undefine
   const path = getEntityPath(world, entity)
   if (path.length === 0) return undefined
   const id = world.nextNetworkId++
-  setComponent(world, entity, NetworkIdComponent, { id }, { origin: 'local' })
+  setComponent(world, entity, NetworkIdComponent, { id })
   return id
 }
 

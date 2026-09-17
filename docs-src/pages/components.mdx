@@ -216,18 +216,11 @@ Each channel backs this differently:
 
 **A write through the view works.** `t.position.x = 5` sets `Transform.position.x[entity] = 5`. The mutation pipeline does not detect that write on its own. For replicated state, call `setComponent`, or mark the entity dirty explicitly, so that the binary delta includes it.
 
-## The `{ origin }` option
+## Echo suppression
 
-Every mutating call accepts `{ origin: 'local' | 'network' }`:
+Every `setComponent` call marks dirty entries in the world (`componentDirty` and `runtimeDirty`). The mutation pipeline flushes those entries at end-of-frame and ships them to peers. When a peer receives an envelope, it applies each event through normal ECS verbs, which would mark dirty entries again — and without suppression, the peer would re-broadcast those writes forever.
 
-```ts
-setComponent(world, entity, Health, { current: 50 }, { origin: 'network' })
-```
-
-- `'local'` (the default) means "this came from local code, replicate it." The mutation pipeline collects it and ships it.
-- `'network'` means "this came from a received envelope, do NOT re-broadcast." Without the stamp, envelopes would echo between peers forever.
-
-You almost never write `origin: 'network'` yourself. The receive path (`applyAuthoredEnvelope` and the binary pipeline) writes it for you. The option stays public because it is central to the no-loop invariant: the receive side stamps `network`, and the dirty-flag and authored-queue path skips anything stamped `network`.
+The network layer handles this with `withoutAuthoring`. The receive path wraps each `applyEvent` in `withoutAuthoring(world, () => ...)`, which saves the dirty state, runs the apply, and restores the saved state. The ECS writes happen, but they never enter the outbound pipeline. Application code never calls `withoutAuthoring` directly. See [The Mutation Pipeline](/mutations) for the full picture.
 
 ## Defaults and `Value.Default`
 

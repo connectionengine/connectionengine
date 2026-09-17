@@ -18,6 +18,7 @@ import { getEntityPath, uidOfFor, ensureEntityPath } from '../ecs/entity'
 import { addRelation, allRelations, getRelationByName, getRelationTargets } from '../ecs/relation'
 import { removeEntity } from '../ecs/entity'
 import { checkAuthorityChangeStanding } from './authority'
+import { withoutAuthoring } from './mutation'
 import { validateAuthored } from './network'
 import type { AuthoredEvent, World } from '../ecs/world'
 
@@ -112,38 +113,33 @@ export interface SnapshotOrigin {
 }
 
 export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySnapshotOptions = {}): void => {
-  if (options.replace) {
-    const named = Array.from(uidOfFor(world.engine).keys())
-    for (const e of named) removeEntity(world, e)
-  }
-  const admit = admitter(world, snapshot, options.from)
-  // Pass 1: the entity graph. It holds every path, with its UID and its parent
-  // chain. This graph is the addressing substrate that the later passes resolve
-  // against, and that the networkId bindings of the binary channel resolve
-  // against. The pass therefore lays it down whole and ungated, exactly as an
-  // authored event materialises its own entity path.
-  for (const ent of snapshot.entities) ensureEntityPath(world, ent.path)
-  // Pass 2: components
-  for (const ent of snapshot.entities) {
-    const entity = ensureEntityPath(world, ent.path)
-    for (const [componentId, value] of Object.entries(ent.components)) {
-      const def = getComponentById(componentId)
-      if (!def || !admit(ent.path, componentId, value)) continue
-      setComponent(world, entity, def, value as Record<string, unknown>, { origin: 'network' })
+  withoutAuthoring(world, () => {
+    if (options.replace) {
+      const named = Array.from(uidOfFor(world.engine).keys())
+      for (const e of named) removeEntity(world, e)
     }
-  }
-  // Pass 3: relations. Every entity exists by now, so every target resolves.
-  for (const ent of snapshot.entities) {
-    const entity = ensureEntityPath(world, ent.path)
-    for (const [relName, targetPaths] of Object.entries(ent.relations)) {
-      const rel = getRelationByName(relName)
-      if (!rel) continue
-      for (const targetPath of targetPaths) {
-        if (!admit(ent.path, relName, { targetPath })) continue
-        addRelation(world, entity, rel, ensureEntityPath(world, targetPath), { origin: 'network' })
+    const admit = admitter(world, snapshot, options.from)
+    for (const ent of snapshot.entities) ensureEntityPath(world, ent.path)
+    for (const ent of snapshot.entities) {
+      const entity = ensureEntityPath(world, ent.path)
+      for (const [componentId, value] of Object.entries(ent.components)) {
+        const def = getComponentById(componentId)
+        if (!def || !admit(ent.path, componentId, value)) continue
+        setComponent(world, entity, def, value as Record<string, unknown>)
       }
     }
-  }
+    for (const ent of snapshot.entities) {
+      const entity = ensureEntityPath(world, ent.path)
+      for (const [relName, targetPaths] of Object.entries(ent.relations)) {
+        const rel = getRelationByName(relName)
+        if (!rel) continue
+        for (const targetPath of targetPaths) {
+          if (!admit(ent.path, relName, { targetPath })) continue
+          addRelation(world, entity, rel, ensureEntityPath(world, targetPath))
+        }
+      }
+    }
+  })
 }
 
 /**

@@ -89,15 +89,15 @@ describe('Relation', () => {
     destroyWorld(world)
   })
 
-  it('local-origin adds enqueue authored writes; network-origin does not', () => {
+  it('addRelation pushes to the relation queue for synced relations', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const child = createEntity(world)
     const parent = createEntity(world)
     addRelation(world, child, ChildOf, parent)
-    expect(world.authoredQueue).toHaveLength(1)
-    expect(world.authoredQueue[0].predicate).toBe('ChildOf')
-    addRelation(world, child, ChildOf, parent, { origin: 'network' })
-    expect(world.authoredQueue).toHaveLength(1)
+    expect(world.relationQueue).toHaveLength(1)
+    expect(world.relationQueue[0].predicate).toBe('ChildOf')
+    expect(world.relationQueue[0].entity).toBe(child)
+    expect(world.relationQueue[0].target).toBe(parent)
     destroyWorld(world)
   })
 

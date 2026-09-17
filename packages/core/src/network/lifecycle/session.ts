@@ -32,7 +32,7 @@ import type { ComponentDefinition } from '../../ecs/component'
 import { allComponents, getComponent, hasContinuousFields, setComponent } from '../../ecs/component'
 import { ensureEntityPath, getEntityPath } from '../../ecs/entity'
 import { addRelation } from '../../ecs/relation'
-import { applyAuthoredEnvelope, flushAuthored, isAuthoredEnvelope } from '../mutation'
+import { applyAuthoredEnvelope, flushAuthored, isAuthoredEnvelope, withoutAuthoring } from '../mutation'
 import { ConnectedTo, PeerComponent, UserComponent } from '../agents'
 import { AuthoritativeFor, OwnedBy } from '../authority'
 import { disconnectPeer } from '../presence'
@@ -170,20 +170,16 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
           // solo flow).
           const userPath = payload.userPath.length > 0 ? payload.userPath : [`user:${payload.agentDID}`]
           const peerPath = payload.peerPath.length > 0 ? payload.peerPath : [...userPath, `peer:${payload.peerId}`]
-          const remoteUser = ensureEntityPath(world, userPath, (entity) => {
-            setComponent(
-              world,
-              entity,
-              UserComponent,
-              { did: payload.agentDID, displayName: '' },
-              { origin: 'network' }
-            )
-            OwnedBy.set(world, entity, entity, { origin: 'network' })
-          })
-          connection.peer = ensureEntityPath(world, peerPath, (entity) => {
-            setComponent(world, entity, PeerComponent, { peerId: payload.peerId, latency: 0 }, { origin: 'network' })
-            OwnedBy.set(world, entity, remoteUser, { origin: 'network' })
-            addRelation(world, entity, AuthoritativeFor, entity, { origin: 'network' })
+          withoutAuthoring(world, () => {
+            const remoteUser = ensureEntityPath(world, userPath, (entity) => {
+              setComponent(world, entity, UserComponent, { did: payload.agentDID, displayName: '' })
+              OwnedBy.set(world, entity, entity)
+            })
+            connection.peer = ensureEntityPath(world, peerPath, (entity) => {
+              setComponent(world, entity, PeerComponent, { peerId: payload.peerId, latency: 0 })
+              OwnedBy.set(world, entity, remoteUser)
+              addRelation(world, entity, AuthoritativeFor, entity)
+            })
           })
           setComponent(world, connection.peer, ConnectedTo, { networkId: network.id })
           connection.channel?.registerBindings(payload.bindings)

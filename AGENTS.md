@@ -65,7 +65,7 @@ What this forbids: global callback registries, watchers that reconstruct a cause
 
 ## Every mutation verb authors its own reverse, inline
 
-`ecs/component.ts` and `ecs/relation.ts` push to `world.authoredQueue` at the point of the mutation, forward and reverse together:
+`ecs/component.ts` and `ecs/relation.ts` mark dirty entries (`world.componentDirty`, `world.relationQueue`) at the point of the mutation, forward and reverse together:
 
 | forward        | reverse           |
 | -------------- | ----------------- |
@@ -73,13 +73,13 @@ What this forbids: global callback registries, watchers that reconstruct a cause
 | `addRelation`  | `removeRelation`  |
 | `setUID`       | `removeEntity`    |
 
-So `ecs/` writing to the authored queue is deliberate and symmetric, not a leak. **Do not add a fifth authoring site anywhere else, and never recover a mutation from an observer.** Entity removal was the one exception for a while: it authored nothing, and `network/mutation.ts` reconstructed the event from an observer on `onRemove(UIDComponent)`, registered through a world hook. That cost three defects at once, all now covered by tests in `tests/regressions.test.ts`:
+So `ecs/` marking dirty entries at the point of mutation is deliberate and symmetric, not a leak. **Do not add a fifth authoring site anywhere else, and never recover a mutation from an observer.** Entity removal was the one exception for a while: it authored nothing, and `network/mutation.ts` reconstructed the event from an observer on `onRemove(UIDComponent)`, registered through a world hook. That cost three defects at once, all now covered by tests in `tests/regressions.test.ts`:
 
 - **N× fan-out.** `observe()` registers per _engine_, but the hook fired per _world_. One removal ran the handler once for each world sharing the engine, each time with a different `world` closed over.
 - **A leak.** `observe()` returns an unsubscribe. The registration discarded it, so a destroyed world kept reacting to every later removal in that engine.
 - **A tree-shaking hazard.** Registration happened in a side-effect-only import. A bundler dropping it dropped replication, silently.
 
-**Queueing is not sending.** `removeEntity` queues every named removal and `flushAuthored` applies the ownership gate, because who may announce a removal is a distribution question rather than an ECS one. Keep policy in the flush and mechanism in the verb.
+**Marking dirty is not sending.** `removeEntity` pushes every named removal to `world.destroyQueue` and `flushAuthored` applies the ownership gate, because who may announce a removal is a distribution question rather than an ECS one. Keep policy in the flush and mechanism in the verb.
 
 **Capture before you mutate.** `removeEntity` records the path and the relation indexes _before_ the bitECS removal: the cascade takes the relations and `cleanupIdentity` takes the path. The capture stays generic — `captureRelationIndexes` collects whatever the defined relations declare, so `ecs/` names no network concept — and `flushAuthored` reads the `OwnedBy` entry out of it.
 
@@ -91,7 +91,7 @@ So `ecs/` writing to the authored queue is deliberate and symmetric, not a leak.
 
 **Components take the same shape where it fits.** `UIDComponent.get(world, entity)` replaced `getUID`. The two UID indexes are shaped differently from a relation index — one maps to a string, the other nests two levels — so they stay typed extension properties with `uidOfFor` and `nameCacheFor` for map-level work. Do not add a generic `get` to `defineComponent`: bare keys on a component definition belong to its SoA stores, so a schema field named `get` would collide.
 
-**Tests assert on what travels, not on `authoredQueue`.** The queue is an intermediate that legitimately holds entries the flush drops. Use the `flushedDestroys` helper in `tests/regressions.test.ts`.
+**Tests assert on what travels, not on the dirty sets.** `componentDirty`, `relationQueue`, and `destroyQueue` hold intermediate entries that the flush may drop. Use the `flushedDestroys` helper in `tests/regressions.test.ts`.
 
 ## Pair a teardown with its setup, in one function
 
@@ -118,7 +118,7 @@ Rules that follow from this:
 - **Never add a mutable hook field to a runtime object.** A field that any module may reassign makes the object's behaviour depend on call order, and the only way to find the answer is to grep for assignments.
 - **To change behaviour, build a different object.** `connectAd4m` adds a Connection to the default network, and removes it on close. To change governance, add or remove constraint entities.
 - **`ensureDefaultNetwork(world)` takes no options.** It creates a network with pure topology — id and connections only. Governance belongs on the world that holds the network.
-- **The same rule applies to the observer pattern.** Side effects that used to be procedures other code had to remember to call are now derived from component state: entity removal replicates from `onRemove(UIDComponent)` gated on ownership, and disconnect cleanup runs from `onRemove(ConnectedTo)`. Prefer an observer over a function four call sites must remember.
+- **The same rule applies to teardown registration.** Side effects that used to be procedures other code had to remember to call are now derived from structure: entity removal pushes to `destroyQueue` at the point of the mutation, and disconnect cleanup runs from `connection.onClose` (registered by `attachConnection`). Prefer a registration at setup over a function four call sites must remember.
 
 **For type-only cycles inside one layer**, use an inline `import(...)` reference in the type position. Do not declare a forward interface. For example, `world.ts` refers to `ComponentSchema` as `Map<string, import('./component').ComponentSchema>`, and does not redeclare the interface, because the type belongs in `component.ts`. An inline import keeps the type definition in one place. It leaves no runtime import to join a cycle. It does not trigger `import/no-cycle`. Do not use the older pattern that duplicates an interface in a leaf module, because those copies drift.
 
@@ -155,7 +155,7 @@ The outputs land in `.codegraph/`, which `.gitignore` excludes. After `map` runs
 - **`Connection.remoteDID` starts undefined.** It receives its value when the HELLO arrives. Code that reads it after the handshake uses a non-null assertion (`!`). The `JoinResult.remoteDID` field stays `string` — the protocol guarantees a value by the time `joinNetwork` resolves.
 - **Entity IDs are runtime-local, and the engine never serialises them.** Identity on the wire uses BelongsTo and UID paths. See `getEntityPath` and `resolveEntityPath`.
 - **`AuthoredEvent` is unsigned.** The mutation pipeline in core produces and consumes plain events. Signing and verification are runtime-mode concerns. The `local/` package signs with Ed25519. The `ad4m-bridge/` package delegates to the AD4M executor.
-- **The `origin` tag prevents re-broadcast.** A mutation tagged `network`, which means the engine received it from a peer, does not re-enter the outbound queue. Break this and peers echo each other forever. The tests in `packages/core/tests/integration.test.ts` lock it in.
+- **`withoutAuthoring` prevents re-broadcast.** `applyEvent` runs inside `withoutAuthoring`, which saves and restores all dirty state around the apply. No received mutation re-enters the outbound pipeline. `disconnectPeer` also wraps its body in `withoutAuthoring`, because authority recovery and entity sweep produce writes that every peer runs independently. Break this and peers echo each other forever. The tests in `packages/core/tests/integration.test.ts` lock it in.
 - **Solid signals do not work under the default `node` export condition of Vitest.** Both `local/` and `ad4m-bridge/` hold a `vitest.config.ts` that aliases `solid-js` to its dev build. Copy that config into any new workspace package that pulls Solid in transitively.
 - **`pnpm run check` and `pnpm run test` can fail before they start.** pnpm refuses to run when a dependency has an unapproved build script, and reports `ERR_PNPM_IGNORED_BUILDS` instead of a compile error. Run `pnpm approve-builds` once, or pass `--config.verify-deps-before-run=false`.
 - **Re-export a module, never a hand-listed subset of its symbols.** `network/peer.ts` used to mirror a fixed list of names from `network/agents.ts`, and the list went stale — `ConnectedTo`, `isPeerConnected`, and `connectedPeers` never reached the public API, and nothing failed to signal it. The barrel in `src/index.ts` exports each module once. A symbol is public when its module is listed there.

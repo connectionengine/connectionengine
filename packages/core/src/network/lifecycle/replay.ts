@@ -4,10 +4,10 @@
  *
  * 1. **Event-log replay** (`streamEventLog`) — the authored events of the host,
  *    from the cursor of the joiner onwards, in ordered chunks. The receiver
- *    applies each event with `origin='network'`, through the standard
- *    `applyAuthoredEnvelope` path, which is itself idempotent through
- *    `appendEventLog`. This half reconstructs history: the existence of every
- *    component, and the state that it was created with.
+ *    applies each event through the standard `applyAuthoredEnvelope` path,
+ *    which deduplicates through `appendEventLog` and suppresses echo through
+ *    dirty-set clearing. This half reconstructs history: the existence of
+ *    every component, and the state that it was created with.
  * 2. **State snapshot** (`streamStateSnapshot`) — a point-in-time capture of
  *    every named entity, and of *all* of its components, whatever their
  *    channel. This half carries the *current* continuous state. Motion never
@@ -19,7 +19,7 @@
  * Replay goes first, and the snapshot goes last: history, then the present. The
  * opposite order would let a replayed creation event overwrite the newer
  * snapshot. Both halves apply idempotent sets, and neither one emits again,
- * because everything applies with `origin='network'`.
+ * because `applyAuthoredEnvelope` and `applySnapshot` suppress echo.
  */
 
 import type { AuthoredEvent, World } from '../../ecs/world'

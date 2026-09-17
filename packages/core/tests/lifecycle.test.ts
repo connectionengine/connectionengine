@@ -212,12 +212,13 @@ describe('joinNetwork — continuous-channel bootstrap via state snapshot', () =
     setUID(host, rock, 'rock', { parent: scene })
     setComponent(host, rock, Position, { position: [1, 2, 3] })
     setComponent(host, rock, Health, { current: 42 })
-    // Then it moves — this write authors nothing, it only marks dirty.
-    setComponent(host, rock, Position, { position: [9, 9, 9] })
-    // End of tick: authored writes land in the log, the runtime dirty set is
-    // drained with no connections attached. The rock is now at rest, and the
-    // event log's record of it is stale by one move.
+    // Flush creation writes — the creation pose [1,2,3] enters the event log.
     flushAuthored(host)
+    flushRuntime(host)
+    // Then it moves — this write authors nothing, it only marks runtimeDirty.
+    // The dirty-set flush reads the current value at flush time, so the move
+    // must happen after the creation flush to keep the event log at [1,2,3].
+    setComponent(host, rock, Position, { position: [9, 9, 9] })
     flushRuntime(host)
     expect(host.runtimeDirty.get('LC.Position')?.size ?? 0).toBe(0)
     return host
@@ -283,10 +284,8 @@ describe('joinNetwork — continuous-channel bootstrap via state snapshot', () =
       joinNetwork(joiner, { endpoint: link.b, knownEventCount: 0 })
     ])
 
-    // The snapshot applies with origin='network', so nothing echoes back to the
-    // host. A replacing apply removes the previous entities, which queues a
-    // destroy for each. Every one names an entity the host owns, so the
-    // ownership gate in `flushAuthored` drops them all.
+    // Snapshot and replay both apply inside `withoutAuthoring`, so nothing
+    // echoes back to the host.
     expect(flushAuthored(joiner)).toBeUndefined()
     expect(joiner.runtimeDirty.get('LC.Position')?.size ?? 0).toBe(0)
 

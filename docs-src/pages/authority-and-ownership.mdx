@@ -137,12 +137,12 @@ When a peer drops, `disconnectPeer` runs `recoverAuthority` for every entity who
 recoverAuthority(world, entity, departedPeer)
 //   → find the lowest-id peer where BelongsTo.get(world, peer) === ownerUser,
 //     and skip the peer that left
-//   → grantAuthority(world, entity, successor, { origin: 'network' })
+//   → grantAuthority(world, entity, successor)
 ```
 
 The disconnect side must know which peer entity to recover from. That knowledge comes from the HELLO handshake. Every connection carries the DID and the peerId of the remote engine, and the receiver materialises a local `User` entity and `Peer` entity. It uses the path that the sender encoded, so a later authored-event replay for those same identities deduplicates. The engine stores the materialised peer entity on `connection.peer`.
 
-`disconnectPeer` reads `connection.peer` to know which peer left. It then removes `ConnectedTo` and runs the cleanup. The component records presence for `connectedPeers` to query. It does not trigger the cleanup.
+`disconnectPeer` reads `connection.peer` to know which peer left. It then removes `ConnectedTo` and runs the cleanup. The entire body runs inside `withoutAuthoring`, because authority recovery writes `AuthoritativeFor` relations and the entity sweep writes destroy entries — all of which every peer runs independently. The component records presence for `connectedPeers` to query. It does not trigger the cleanup.
 
 ## Bootstrap writes
 

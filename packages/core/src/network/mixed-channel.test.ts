@@ -159,7 +159,7 @@ describe('mixed-channel — a delta may not create a governed component', () => 
     const buf = sourcePipe.write({ timestamp: 1 }, [{ networkId: 1, entity: e }])
 
     const te = createEntity(target)
-    setComponent(target, te, Velocity, {}, { origin: 'network' })
+    setComponent(target, te, Velocity, {})
     targetPipe.read(buf, () => te)
 
     // Body was skipped. Velocity still applied, which is only possible if the

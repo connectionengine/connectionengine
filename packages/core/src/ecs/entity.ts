@@ -33,7 +33,7 @@ import { Schema } from '../schema'
 import { defineComponent, getComponent, setComponent } from './component'
 import { captureRelationIndexes, clearRelationIndexes, defineRelation } from './relation'
 import type { Engine } from './engine'
-import type { Entity, Origin, World } from './world'
+import type { Entity, World } from './world'
 
 export type { Entity } from './world'
 
@@ -146,25 +146,14 @@ export const createEntity = (world: World): Entity => bitecs.addEntity(world.eng
 export const DESTROY_PREDICATE = '@destroy'
 
 export const removeEntity = (world: World, entity: Entity): void => {
-  // Capture before the removal. The bitECS cascade takes the relations, and
-  // `cleanupIdentity` takes the path, so neither survives to flush time. The
-  // capture stays generic: this function collects whatever indexes the defined
-  // relations declare, and names none of them.
   const entityPath = getEntityPath(world, entity)
   if (entityPath.length > 0) {
-    world.authoredQueue.push({
+    world.destroyQueue.push({
       entity,
-      predicate: DESTROY_PREDICATE,
-      op: 'destroy',
-      value: null,
-      origin: 'local',
       entityPath,
       indexed: captureRelationIndexes(world.engine, entity)
     })
   }
-  // bitECS removal cascades the component and relation cleanup, and through
-  // autoRemoveSubject it also removes the subjects of any relation targeting
-  // this entity.
   bitecs.removeEntity(world.engine.bitECS, entity)
   cleanupIdentity(world.engine, entity)
 }
@@ -219,9 +208,6 @@ const cleanupIdentity = (engine: Engine, entity: Entity): void => {
 export interface SetUIDOptions {
   /** Parent entity in the BelongsTo tree. Defaults to `world.worldRoot`. */
   parent?: Entity
-  /** Mutation origin tag. It defaults to 'local', which replicates. Pass
-   *  'network' from the receive path. */
-  origin?: Origin
 }
 
 /**
@@ -249,11 +235,11 @@ export const setUID = (world: World, entity: Entity, uid: string, options: SetUI
   const previousParent = parentMap.get(entity) ?? world.worldRoot
   if (previousUid !== undefined) unindexFromBucket(engine, previousParent, previousUid)
 
-  setComponent(world, entity, UIDComponent, { value: uid }, { origin: options.origin })
+  setComponent(world, entity, UIDComponent, { value: uid })
   uidMap.set(entity, uid)
 
   if (options.parent !== undefined) {
-    BelongsTo.set(world, entity, options.parent, { origin: options.origin })
+    BelongsTo.set(world, entity, options.parent)
   }
   // Then write the index directly, which is the one place that does. A
   // top-level entity carries no BelongsTo edge — nothing replicates, because
@@ -338,8 +324,8 @@ export const ensureEntityPath = (world: World, path: string[], decorate?: (entit
       freshLeaf = false
     } else {
       cursor = createEntity(world)
-      if (parent === world.worldRoot) setUID(world, cursor, uid, { origin: 'network' })
-      else setUID(world, cursor, uid, { parent, origin: 'network' })
+      if (parent === world.worldRoot) setUID(world, cursor, uid)
+      else setUID(world, cursor, uid, { parent })
       freshLeaf = i === path.length - 1
     }
     parent = cursor

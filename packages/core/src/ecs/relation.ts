@@ -8,7 +8,7 @@
  * This module builds on `createRelation` from bitECS. The wrapper adds two
  * things:
  *   - a stable name, which serves as the predicate URI
- *   - a push of each relation add and remove onto `world.authoredQueue`, which
+ *   - a push of each relation add and remove onto `world.relationQueue`, which
  *     the network-layer mutation pipeline drains at the end of the tick
  *
  * Two ways to put extra state on a definition:
@@ -23,7 +23,7 @@
 
 import * as bitecs from 'bitecs'
 import type { Engine } from './engine'
-import type { Entity, Origin, World } from './world'
+import type { Entity, World } from './world'
 
 export interface RelationOptions<T = void> {
   /** Predicate name. It serves as the relation URI in semantic triples. */
@@ -82,7 +82,7 @@ export interface IndexedRelation {
    * Point `subject` at `target`. The relation is exclusive, so this replaces
    * whatever it named before, and the index follows.
    */
-  set(world: World, subject: Entity, target: Entity, options?: RelationMutationOptions): void
+  set(world: World, subject: Entity, target: Entity): void
   /** The whole per-engine map. Use it to iterate. Use `get` for one subject. */
   indexFor(engine: Engine): Map<Entity, Entity>
 }
@@ -186,8 +186,8 @@ export const defineRelation = <T = void, O extends RelationOptions<T> = Relation
       $index,
       indexFor,
       get: (world: World, subject: Entity): Entity | undefined => indexFor(world.engine).get(subject),
-      set: (world: World, subject: Entity, target: Entity, mutation?: RelationMutationOptions): void =>
-        addRelation(world, subject, def as RelationDefinition<T>, target, mutation)
+      set: (world: World, subject: Entity, target: Entity): void =>
+        addRelation(world, subject, def as RelationDefinition<T>, target)
     } satisfies IndexedRelation & { $index: typeof $index })
   }
 
@@ -253,30 +253,16 @@ export const clearRelationIndexes = (engine: Engine, subject: Entity): void => {
 
 // ── add / remove pair ────────────────────────────────────────────────────────-
 
-export interface RelationMutationOptions {
-  origin?: Origin
-}
-
 export const addRelation = <T>(
   world: World,
   subject: Entity,
   relation: RelationDefinition<T>,
-  target: Entity,
-  options: RelationMutationOptions = {}
+  target: Entity
 ): void => {
-  const origin: Origin = options.origin ?? 'local'
   bitecs.addComponent(world.engine.bitECS, subject, relation.$relation(target))
-  // An exclusive relation replaces its previous target, so the write is enough
-  // to keep the index current.
   indexOf(world.engine, relation)?.set(subject, target)
-  if (origin === 'local' && relation.sync) {
-    world.authoredQueue.push({
-      entity: subject,
-      predicate: relation.name,
-      op: 'set',
-      value: { target },
-      origin
-    })
+  if (relation.sync) {
+    world.relationQueue.push({ entity: subject, predicate: relation.name, op: 'set', target })
   }
 }
 
@@ -284,23 +270,13 @@ export const removeRelation = <T>(
   world: World,
   subject: Entity,
   relation: RelationDefinition<T>,
-  target: Entity,
-  options: RelationMutationOptions = {}
+  target: Entity
 ): void => {
-  const origin: Origin = options.origin ?? 'local'
   bitecs.removeComponent(world.engine.bitECS, subject, relation.$relation(target))
-  // Only when this call removed the target the index names. Removing some other
-  // target of the same relation leaves the current one standing.
   const index = indexOf(world.engine, relation)
   if (index?.get(subject) === target) index.delete(subject)
-  if (origin === 'local' && relation.sync) {
-    world.authoredQueue.push({
-      entity: subject,
-      predicate: relation.name,
-      op: 'remove',
-      value: { target },
-      origin
-    })
+  if (relation.sync) {
+    world.relationQueue.push({ entity: subject, predicate: relation.name, op: 'remove', target })
   }
 }
 

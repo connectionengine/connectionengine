@@ -123,7 +123,7 @@ describe('same-tick writes that return to a previous value', () => {
     p.dispose()
   })
 
-  it('gives two writes of the same value in one tick distinct signatures', () => {
+  it('collapses same-tick writes to one entity+component into a single event', () => {
     const world = machine('sig')
     bootstrap(world, 'sig')
     const e = spawnPrefab(world, 'thing')
@@ -132,8 +132,8 @@ describe('same-tick writes that return to a previous value', () => {
     setComponent(world, e, Health, { current: 7 })
     const envelope = flushAuthored(world)!
     const healthWrites = envelope.events.filter((ev) => ev.predicate === Health.$id)
-    expect(healthWrites).toHaveLength(3)
-    expect(new Set(healthWrites.map((ev) => ev.seq)).size).toBe(3)
+    expect(healthWrites).toHaveLength(1)
+    expect((healthWrites[0].value as { current: number }).current).toBe(7)
     destroyWorld(world)
   })
 })
@@ -315,7 +315,7 @@ describe('entity destruction', () => {
     flushAuthored(world)
     const e = createEntity(world)
     removeEntity(world, e)
-    expect(world.authoredQueue).toHaveLength(0)
+    expect(world.destroyQueue).toHaveLength(0)
     destroyWorld(world)
   })
 
@@ -601,7 +601,7 @@ describe('two worlds sharing one engine', () => {
     removeEntity(live, e)
 
     expect(flushedDestroys(live)).toHaveLength(1)
-    expect(gone.authoredQueue).toHaveLength(0)
+    expect(gone.destroyQueue).toHaveLength(0)
     destroyWorld(live)
   })
 })

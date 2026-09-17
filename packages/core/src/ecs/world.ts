@@ -5,7 +5,8 @@
  * storage, time, and systems. Everything that counts as "ECS" is engine-wide.
  * A `World` is a virtual scope on top. It holds a `worldRoot` entity that
  * anchors a `BelongsTo` subtree, the per-world mutation pipeline state
- * (`authoredQueue`, `eventLog`, `runtimeDirty`), and the local identity
+ * (`componentDirty`, `relationQueue`, `destroyQueue`, `eventLog`,
+ * `runtimeDirty`), and the local identity
  * (`localAgent`, `localUser`, `localPeer`).
  *
  * The world also carries its `networks` map. `ecs/` names the `Network` type
@@ -25,10 +26,6 @@ import type { Engine } from './engine'
 import { collectDescendants, removeEntity } from './entity'
 
 export type Entity = number
-
-/** Mutation source. It drives re-broadcast suppression. A `local` write queues
- *  for outbound. A `network` write arrived over the wire, and does not queue. */
-export type Origin = 'local' | 'network'
 
 // ── Agent (opaque local identity) ────────────────────────────────────────────
 
@@ -76,32 +73,27 @@ export interface AuthoredEnvelope {
 
 // ── Queue + connection types ─────────────────────────────────────────────────-
 
-export interface QueuedAuthored {
+/**
+ * A relation mutation queued for the authored flush. Relations need the target
+ * entity captured at mutation time, because a same-tick removal could invalidate
+ * the path before flush runs.
+ */
+export interface QueuedRelation {
   entity: Entity
   predicate: string
-  op: 'set' | 'remove' | 'destroy'
-  value: unknown
-  origin: 'local' | 'network'
-  /**
-   * Entity path captured at queue time. `flushAuthored` normally resolves the
-   * path itself, but `removeEntity` clears the identity caches before the
-   * flush runs, so a destroy has to carry its own path.
-   */
-  entityPath?: string[]
-  /**
-   * Index entries captured at queue time, for the same reason as `entityPath`:
-   * the entity no longer exists when the flush runs. Keyed by relation
-   * definition, so a reader stays typed — `queued.indexed?.get(OwnedBy)`.
-   *
-   * `flushAuthored` reads the `OwnedBy` entry to decide whether this peer may
-   * announce the removal.
-   */
-  indexed?: ReadonlyMap<import('./relation').RelationDefinition<unknown>, Entity>
+  op: 'set' | 'remove'
+  target: Entity
 }
 
-export interface DirtyKey {
+/**
+ * An entity destroy queued for the authored flush. The entity path and indexed
+ * relations must be captured before `removeEntity` clears the identity caches,
+ * because neither survives to flush time.
+ */
+export interface QueuedDestroy {
   entity: Entity
-  componentId: string
+  entityPath: string[]
+  indexed?: ReadonlyMap<import('./relation').RelationDefinition<unknown>, Entity>
 }
 
 // ── World ────────────────────────────────────────────────────────────────────
@@ -121,7 +113,17 @@ export interface World {
   localAgent: Agent
 
   // ── Mutation pipeline state. Network-layer state, held per world. ──────────
-  authoredQueue: QueuedAuthored[]
+
+  /** Component dirty set. `setComponent` / `removeComponent` mark entries.
+   *  `flushAuthored` drains it. Keyed by componentId → dirty entities. */
+  componentDirty: Map<string, Set<Entity>>
+  /** Relation mutation queue. `addRelation` / `removeRelation` push entries.
+   *  `flushAuthored` drains it. */
+  relationQueue: QueuedRelation[]
+  /** Entity destroy queue. `removeEntity` pushes entries (with captured path).
+   *  `flushAuthored` drains it. */
+  destroyQueue: QueuedDestroy[]
+
   /** Append-only canonical event log. It holds plain AuthoredEvent records,
    *  with no signatures. */
   eventLog: AuthoredEvent[]
@@ -172,7 +174,9 @@ export const createWorld = (options: CreateWorldOptions): World => {
     engine,
     worldRoot,
     localAgent: options.agent,
-    authoredQueue: [],
+    componentDirty: new Map(),
+    relationQueue: [],
+    destroyQueue: [],
     eventLog: [],
     eventLogSeen: new Set(),
     authoredSeq: 0,
@@ -197,10 +201,9 @@ export const destroyWorld = (world: World): void => {
   if (bitecs.entityExists(world.engine.bitECS, world.worldRoot)) {
     bitecs.removeEntity(world.engine.bitECS, world.worldRoot)
   }
-  // The pipeline state clears last. Each `removeEntity` above queues a destroy,
-  // so clearing first would leave the queue dirty on a world that no longer
-  // exists.
-  world.authoredQueue.length = 0
+  world.componentDirty.clear()
+  world.relationQueue.length = 0
+  world.destroyQueue.length = 0
   world.eventLog.length = 0
   world.eventLogSeen.clear()
   world.runtimeDirty.clear()

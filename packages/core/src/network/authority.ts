@@ -36,7 +36,7 @@ import { defineRelation } from '../ecs/relation'
 import { hasComponent } from '../ecs/component'
 import { BelongsTo, resolveEntityPath } from '../ecs/entity'
 import { getUserDID, PeerComponent } from './agents'
-import type { Entity, Origin, World, AuthoredEvent } from '../ecs/world'
+import type { Entity, World, AuthoredEvent } from '../ecs/world'
 
 /**
  * Provenance and runtime authority. Both declare `index: true`, so each carries
@@ -138,9 +138,9 @@ export const requestAuthority = (world: World, entity: Entity, peer: Entity): Au
  * receive path, and `recoverAuthority` after a disconnect. Application code
  * calls `requestAuthority` instead.
  */
-export const grantAuthority = (world: World, entity: Entity, peer: Entity, options: { origin?: Origin } = {}): void => {
+export const grantAuthority = (world: World, entity: Entity, peer: Entity): void => {
   if (AuthoritativeFor.get(world, entity) === peer) return
-  AuthoritativeFor.set(world, entity, peer, { origin: options.origin ?? 'local' })
+  AuthoritativeFor.set(world, entity, peer)
 }
 
 // ── Receive-side standing check ───────────────────────────────────────────────-
@@ -213,5 +213,5 @@ export const recoverAuthority = (world: World, entity: Entity, disconnectedPeer:
   }
   const successor = lowest ?? world.localPeer
   if (successor === undefined || successor === disconnectedPeer) return
-  grantAuthority(world, entity, successor, { origin: 'network' })
+  grantAuthority(world, entity, successor)
 }

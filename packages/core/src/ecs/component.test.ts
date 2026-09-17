@@ -159,13 +159,14 @@ describe('setComponent / getComponent / removeComponent', () => {
     expect(Health.$componentSchema.shaclShape).toBeDefined()
   })
 
-  it('origin: network skips the authored queue (suppresses re-broadcast)', () => {
+  it('setComponent always marks componentDirty for synced components', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Health, { current: 80 })
-    expect(world.authoredQueue).toHaveLength(1)
-    setComponent(world, e, Health, { current: 70 }, { origin: 'network' })
-    expect(world.authoredQueue).toHaveLength(1)
+    expect(world.componentDirty.get('Health')?.has(e)).toBe(true)
+    world.componentDirty.clear()
+    setComponent(world, e, Health, { current: 70 })
+    expect(world.componentDirty.get('Health')?.has(e)).toBe(true)
     destroyWorld(world)
   })
 })
@@ -227,94 +228,73 @@ describe('mixed-channel components', () => {
     destroyWorld(world)
   })
 
-  it('instantiation authors one event carrying the WHOLE component', () => {
+  it('instantiation marks componentDirty and runtimeDirty', () => {
     const { world, e } = mk()
     setComponent(world, e, Mixed, { position: [1, 2, 3], label: 'rock' })
-    expect(world.authoredQueue).toHaveLength(1)
-    const queued = world.authoredQueue[0]
-    expect(queued.op).toBe('set')
-    // Wire-safe: SoA fields as plain arrays, value fields verbatim.
-    expect(queued.value).toEqual({ position: [1, 2, 3], label: 'rock' })
-    // And the continuous half is marked for the binary channel too.
+    expect(world.componentDirty.get('Mixed')?.has(e)).toBe(true)
     expect(world.runtimeDirty.get('Mixed')?.has(e)).toBe(true)
     destroyWorld(world)
   })
 
-  it('a continuous-only write on an existing component authors nothing', () => {
+  it('a continuous-only write on an existing component does not mark componentDirty', () => {
     const { world, e } = mk()
     setComponent(world, e, Mixed, { position: [0, 0, 0], label: 'rock' })
     drainRuntimeDirty(world)
-    world.authoredQueue.length = 0
+    world.componentDirty.clear()
 
     setComponent(world, e, Mixed, { position: [5, 5, 5] })
-    expect(world.authoredQueue).toHaveLength(0)
+    expect(world.componentDirty.get('Mixed')?.has(e) ?? false).toBe(false)
     expect(world.runtimeDirty.get('Mixed')?.has(e)).toBe(true)
     destroyWorld(world)
   })
 
-  it('a discrete write on an existing component authors the whole component', () => {
+  it('a discrete write on an existing component marks componentDirty', () => {
     const { world, e } = mk()
     setComponent(world, e, Mixed, { position: [1, 2, 3], label: 'rock' })
-    world.authoredQueue.length = 0
+    world.componentDirty.clear()
 
     setComponent(world, e, Mixed, { label: 'boulder' })
-    expect(world.authoredQueue).toHaveLength(1)
-    expect(world.authoredQueue[0].value).toEqual({ position: [1, 2, 3], label: 'boulder' })
+    expect(world.componentDirty.get('Mixed')?.has(e)).toBe(true)
     destroyWorld(world)
   })
 
-  it('removal authors a single event that takes both halves', () => {
+  it('removal marks componentDirty and clears runtimeDirty', () => {
     const { world, e } = mk()
     setComponent(world, e, Mixed, { position: [1, 2, 3], label: 'rock' })
-    world.authoredQueue.length = 0
+    world.componentDirty.clear()
 
     removeComponent(world, e, Mixed)
-    expect(world.authoredQueue).toHaveLength(1)
-    expect(world.authoredQueue[0].op).toBe('remove')
+    expect(world.componentDirty.get('Mixed')?.has(e)).toBe(true)
     expect(hasComponent(world, e, Mixed)).toBe(false)
-    expect(world.runtimeDirty.get('Mixed')?.has(e)).toBe(false)
+    expect(world.runtimeDirty.get('Mixed')?.has(e) ?? false).toBe(false)
     destroyWorld(world)
   })
 
-  it('origin: network never authors, on either half', () => {
-    const { world, e } = mk()
-    setComponent(world, e, Mixed, { position: [1, 2, 3], label: 'rock' }, { origin: 'network' })
-    expect(world.authoredQueue).toHaveLength(0)
-    removeComponent(world, e, Mixed, { origin: 'network' })
-    expect(world.authoredQueue).toHaveLength(0)
-    destroyWorld(world)
-  })
-
-  it('a no-op write to an existing component authors nothing, mixed or not', () => {
+  it('a no-op write to an existing component does not mark componentDirty', () => {
     const { world, e } = mk()
     setComponent(world, e, Health, { current: 50 })
     setComponent(world, e, Mixed, { position: [0, 0, 0], label: 'rock' })
-    world.authoredQueue.length = 0
+    world.componentDirty.clear()
 
-    // Neither write names a discrete field, so neither is causally meaningful.
     setComponent(world, e, Health)
     setComponent(world, e, Mixed, { position: [1, 1, 1] })
-    expect(world.authoredQueue).toHaveLength(0)
+    expect(world.componentDirty.get('Health')?.has(e) ?? false).toBe(false)
+    expect(world.componentDirty.get('Mixed')?.has(e) ?? false).toBe(false)
     destroyWorld(world)
   })
 
-  it('a pure-continuous component authors its existence, never its motion', () => {
+  it('a pure-continuous component marks componentDirty on creation and removal, never on motion', () => {
     const { world, e } = mk()
-    // Coming into being is causal, so it authors — carrying the initial pose.
     setComponent(world, e, Transform, { position: [1, 2, 3] })
-    expect(world.authoredQueue).toHaveLength(1)
-    expect(world.authoredQueue[0].value).toMatchObject({ position: [1, 2, 3] })
-    world.authoredQueue.length = 0
+    expect(world.componentDirty.get('Transform')?.has(e)).toBe(true)
+    world.componentDirty.clear()
 
-    // Moving is not. This is the write that happens every tick.
     setComponent(world, e, Transform, { position: [4, 5, 6] })
-    expect(world.authoredQueue).toHaveLength(0)
+    expect(world.componentDirty.get('Transform')?.has(e) ?? false).toBe(false)
     expect(world.runtimeDirty.get('Transform')?.has(e)).toBe(true)
 
-    // Ceasing to exist is causal again.
     removeComponent(world, e, Transform)
-    expect(world.authoredQueue).toHaveLength(1)
-    expect(world.authoredQueue[0].op).toBe('remove')
+    expect(world.componentDirty.get('Transform')?.has(e)).toBe(true)
     destroyWorld(world)
   })
 })
@@ -554,7 +534,7 @@ describe('Accessors — sparse vs dense', () => {
 })
 
 describe('Mutation pipeline — per-field sync', () => {
-  it('discrete Vec3: setComponent authors on creation', () => {
+  it('discrete Vec3: setComponent marks componentDirty on creation', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const C = defineComponent({
       id: 'Mut.DiscCreate',
@@ -562,11 +542,11 @@ describe('Mutation pipeline — per-field sync', () => {
     })
     const e = createEntity(world)
     setComponent(world, e, C, { position: [1, 2, 3] })
-    expect(world.authoredQueue).toHaveLength(1)
+    expect(world.componentDirty.get(C.$id)?.has(e)).toBe(true)
     destroyWorld(world)
   })
 
-  it('discrete Vec3: setComponent authors on value change', () => {
+  it('discrete Vec3: setComponent marks componentDirty on value change', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const C = defineComponent({
       id: 'Mut.DiscChange',
@@ -574,28 +554,28 @@ describe('Mutation pipeline — per-field sync', () => {
     })
     const e = createEntity(world)
     setComponent(world, e, C, { position: [1, 2, 3] })
-    world.authoredQueue.length = 0
+    world.componentDirty.clear()
     setComponent(world, e, C, { position: [4, 5, 6] })
-    expect(world.authoredQueue).toHaveLength(1)
+    expect(world.componentDirty.get(C.$id)?.has(e)).toBe(true)
     destroyWorld(world)
   })
 
-  it('continuous Vec3: setComponent does not author after creation', () => {
+  it('continuous Vec3: setComponent does not mark componentDirty after creation', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 2, 3] })
-    world.authoredQueue.length = 0
+    world.componentDirty.clear()
     setComponent(world, e, Transform, { position: [4, 5, 6] })
-    expect(world.authoredQueue).toHaveLength(0)
+    expect(world.componentDirty.get('Transform')?.has(e) ?? false).toBe(false)
     expect(world.runtimeDirty.get('Transform')?.has(e)).toBe(true)
     destroyWorld(world)
   })
 
-  it('continuous Vec3: creation still authors', () => {
+  it('continuous Vec3: creation still marks componentDirty', () => {
     const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 2, 3] })
-    expect(world.authoredQueue).toHaveLength(1)
+    expect(world.componentDirty.get('Transform')?.has(e)).toBe(true)
     destroyWorld(world)
   })
 

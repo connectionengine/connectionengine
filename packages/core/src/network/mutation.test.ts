@@ -88,10 +88,10 @@ describe('Two-peer authored replication', () => {
     peers.dispose()
   })
 
-  it('origin tag prevents re-broadcast (no infinite loop)', async () => {
+  it('echo suppression prevents re-broadcast (no infinite loop)', async () => {
     const peers = await createPeerPair()
     const { a, b } = peers
-    const scene = spawnPrefab(a.world, 'scene:loop')
+    const scene = spawnPrefab(a.world, 'scene:echo')
     const e = createEntity(a.world)
     setUID(a.world, e, 'thing', { parent: scene })
     setComponent(a.world, e, Health, { current: 50 })
@@ -100,11 +100,13 @@ describe('Two-peer authored replication', () => {
     await peers.tick()
     await peers.tick()
 
-    // B never re-broadcasts the network-origin write back to A. A's authored
-    // events for 'thing' / Health flush via A; B's eventLog gains them with
-    // origin='network' which the dirty/queue paths skip.
-    const bAuthoredAboutThing = b.world.authoredQueue.filter((q) => q.predicate === 'Health')
-    expect(bAuthoredAboutThing).toHaveLength(0)
+    // B never re-broadcasts the network-received write back to A. Echo
+    // suppression clears the dirty entries that applyEvent produces.
+    expect(
+      b.world.componentDirty
+        .get('Health')
+        ?.has(getEntityByUID(b.world, getEntityByUID(b.world, b.world.worldRoot, 'scene:echo')!, 'thing')!) ?? false
+    ).toBe(false)
     peers.dispose()
   })
 
@@ -173,9 +175,8 @@ describe('Property invariants — pipeline', () => {
     setUID(a.world, e, 'p', { parent: scene })
     setComponent(a.world, e, Health, { current: 1 })
     await peers.tick()
-    const beforeQueueLen = b.world.authoredQueue.length
     await peers.tick()
-    expect(b.world.authoredQueue.length).toBe(beforeQueueLen)
+    expect(b.world.componentDirty.get('Health')?.size ?? 0).toBe(0)
     peers.dispose()
   })
 })
@@ -265,7 +266,7 @@ describe('Spec 08 — continuous sparse Vec3 replicates via binary channel', () 
 })
 
 describe('Spec 08 — mixed continuous+discrete only authors on discrete write', () => {
-  it('writing only the continuous field does not grow the authored queue', async () => {
+  it('writing only the continuous field does not mark componentDirty', async () => {
     const peers = await createPeerPair()
     const { a } = peers
     const scene = spawnPrefab(a.world, 'scene:s08-mix')
@@ -274,13 +275,11 @@ describe('Spec 08 — mixed continuous+discrete only authors on discrete write',
     setComponent(a.world, e, MixedChannels, { position: [1, 0, 0], label: 'init' })
     await peers.tick()
 
-    const queueBefore = a.world.authoredQueue.length
-
     MixedChannels.position.x[e] = 99
     a.world.runtimeDirty.get(MixedChannels.$id)?.add(e)
     await peers.tick()
 
-    expect(a.world.authoredQueue.length).toBe(queueBefore)
+    expect(a.world.componentDirty.get(MixedChannels.$id)?.has(e) ?? false).toBe(false)
     peers.dispose()
   })
 

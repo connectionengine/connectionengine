@@ -33,6 +33,7 @@ import { BelongsTo, removeEntity } from '../ecs/entity'
 import * as bitecs from 'bitecs'
 import { AuthoritativeFor, OwnedBy, recoverAuthority } from './authority'
 import { ConnectedTo, PeerComponent } from './agents'
+import { withoutAuthoring } from './mutation'
 
 /**
  * Hand every entity the departed peer was writing to a peer that remains.
@@ -82,11 +83,11 @@ const sweepOwnerIfLastPeer = (world: World, peer: Entity): void => {
  * may report a close more than once.
  */
 export const disconnectPeer = (world: World, peer: Entity): void => {
-  // A peer entity already torn down has no authority to recover and no session
-  // to close.
   if (!hasComponent(world, peer, PeerComponent)) return
   if (!hasComponent(world, peer, ConnectedTo)) return
-  removeComponent(world, peer, ConnectedTo)
-  recoverAuthorityFrom(world, peer)
-  sweepOwnerIfLastPeer(world, peer)
+  withoutAuthoring(world, () => {
+    removeComponent(world, peer, ConnectedTo)
+    recoverAuthorityFrom(world, peer)
+    sweepOwnerIfLastPeer(world, peer)
+  })
 }

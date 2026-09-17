@@ -60,7 +60,7 @@ import { Kind, type Static, type TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { resizableArray, type ResizableArray, type TypedArrayConstructor } from '../maths/common'
 import type { ArrayBufferKind, SoAStoreKind } from '../schema/kinds'
-import type { Entity, Origin, World } from './world'
+import type { Entity, World } from './world'
 import type { Engine } from './engine'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -379,12 +379,6 @@ export const getInstanceStore = (
 
 // ── set / get / remove ────────────────────────────────────────────────────────
 
-export interface SetComponentOptions {
-  /** Origin tag for the mutation pipeline. 'local', the default, goes outbound.
-   *  'network' stays suppressed. */
-  origin?: Origin
-}
-
 /**
  * Structural view of an SoA store — Vec3SoA, QuatSoA, a bare typed array, and
  * so on — as this module uses it. The stores sit on the definition itself, and
@@ -419,15 +413,20 @@ const writeSoA = (component: ComponentDefinition, entity: Entity, value: Record<
   }
 }
 
+const hasDiscreteWrite = (value: Record<string, unknown>, component: ComponentDefinition): boolean => {
+  for (const key of Object.keys(value)) {
+    if (!component.$continuousFieldSet.has(key)) return true
+  }
+  return false
+}
+
 export const setComponent = <T extends TSchema>(
   world: World,
   entity: Entity,
   component: ComponentDefinition<T>,
-  value: ComponentWriteShape<T> = {} as ComponentWriteShape<T>,
-  options: SetComponentOptions = {}
+  value: ComponentWriteShape<T> = {} as ComponentWriteShape<T>
 ): void => {
   const stores = getStores(world.engine, component as ComponentDefinition)
-  const origin: Origin = options.origin ?? 'local'
   const wasPresent = bitecs.hasComponent(world.engine.bitECS, entity, component.$ref)
 
   if (!wasPresent) {
@@ -435,8 +434,6 @@ export const setComponent = <T extends TSchema>(
     const merged: Record<string, unknown> = { ...component.$defaults }
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) merged[k] = v
     const initialised = Value.Default(component.$schema, merged) as Record<string, unknown>
-    // Reuse an existing instance object, so that references held earlier
-    // survive a remove and add cycle. Otherwise allocate one.
     let instance = stores.store[entity]
     if (!instance) {
       instance = {}
@@ -458,23 +455,10 @@ export const setComponent = <T extends TSchema>(
     writeSoA(component as ComponentDefinition, entity, value as Record<string, unknown>)
   }
 
-  if (origin === 'local' && component.$sync) {
+  if (component.$sync) {
     if (hasContinuousFields(component)) markRuntimeDirty(world, entity, component.$id)
-    // Two occasions author. The first is the creation of the component. The
-    // second is any write that names a field NOT in the continuous set. A write
-    // that only touches continuous fields on an existing component rides the
-    // binary channel alone.
-    const touchesDiscrete = Object.keys(value as Record<string, unknown>).some(
-      (f) => !component.$continuousFieldSet.has(f)
-    )
-    if (!wasPresent || touchesDiscrete) {
-      world.authoredQueue.push({
-        entity,
-        predicate: component.$id,
-        op: 'set',
-        value: serialiseComponentValue(world, entity, component as ComponentDefinition),
-        origin
-      })
+    if (!wasPresent || hasDiscreteWrite(value as Record<string, unknown>, component as ComponentDefinition)) {
+      markComponentDirty(world, entity, component.$id)
     }
   }
 }
@@ -588,30 +572,31 @@ export const hasComponent = (world: World, entity: Entity, component: ComponentD
 export const removeComponent = <T extends TSchema>(
   world: World,
   entity: Entity,
-  component: ComponentDefinition<T>,
-  options: SetComponentOptions = {}
+  component: ComponentDefinition<T>
 ): void => {
   if (!bitecs.hasComponent(world.engine.bitECS, entity, component.$ref)) return
   const stores = getStores(world.engine, component as ComponentDefinition)
-  const origin: Origin = options.origin ?? 'local'
   bitecs.removeComponent(world.engine.bitECS, entity, component.$ref)
   delete stores.store[entity]
   delete stores.views[entity]
   if (hasContinuousFields(component)) clearRuntimeDirty(world, entity, component.$id)
-  // Removal is causal, so it always authors. It emits one event, which carries
-  // whichever halves the component held.
-  if (origin === 'local' && component.$sync) {
-    world.authoredQueue.push({
-      entity,
-      predicate: component.$id,
-      op: 'remove',
-      value: null,
-      origin
-    })
-  }
+  if (component.$sync) markComponentDirty(world, entity, component.$id)
 }
 
-// ── Runtime dirty flag helpers. The runtime pipeline in mutation.ts uses them ─
+// ── Dirty-flag helpers ───────────────────────────────────────────────────────
+
+export const markComponentDirty = (world: World, entity: Entity, componentId: string): void => {
+  let set = world.componentDirty.get(componentId)
+  if (!set) {
+    set = new Set()
+    world.componentDirty.set(componentId, set)
+  }
+  set.add(entity)
+}
+
+export const clearComponentDirty = (world: World, entity: Entity, componentId: string): void => {
+  world.componentDirty.get(componentId)?.delete(entity)
+}
 
 export const markRuntimeDirty = (world: World, entity: Entity, componentId: string): void => {
   let set = world.runtimeDirty.get(componentId)
