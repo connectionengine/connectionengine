@@ -7,12 +7,12 @@ test('has title', async ({ page }) => {
 
 test('shows server message', async ({ page }) => {
   await page.route('https://localhost:3001/health', async (route) => {
-    const json = { message: 'template', status: 'ok' }
+    const json = { message: 'connectionengine', status: 'ok' }
     await route.fulfill({ json })
   })
   await page.goto('/')
   await expect(page.getByText('Client')).toBeVisible()
   // Wait for fetch
-  await expect(page.getByText('Shared: template')).toBeVisible()
-  await expect(page.getByText('Server: template ok')).toBeVisible()
+  await expect(page.getByText('Shared: connectionengine')).toBeVisible()
+  await expect(page.getByText('Server: connectionengine ok')).toBeVisible()
 })
