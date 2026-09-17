@@ -81,6 +81,34 @@ const RenderCache = defineComponent({
 })
 ```
 
+## Sparse storage
+
+Most SoA-typed fields store values in shared typed arrays indexed by entity ID. That suits fields carried by many entities and iterated by systems — positions, velocities, health.
+
+Some spatial data exists on only a few entities: spawn points, waypoints, anchor positions. A world-wide typed array for a field that three entities carry wastes memory. Mark these fields `sparse: true`:
+
+```ts
+const SpawnPoint = defineComponent({
+  id: 'SpawnPoint',
+  schema: Schema.Object({
+    position: Schema.Vec3({ sparse: true })
+  })
+})
+```
+
+A sparse field stores its value in the per-entity instance store as a plain array (`[x, y, z]` for a Vec3). `getComponent` returns the plain value directly. The hot-path SoA access (`SpawnPoint.position.x[eid]`) does not exist for sparse fields — the definition carries no SoA store for them.
+
+The `sync` option still controls the replication channel, independently of `sparse`:
+
+| `sparse` | `sync` | Storage | Channel | Example |
+|----------|--------|---------|---------|---------|
+| `false` (default) | `'discrete'` (default) | SoA typed array | Authored event | Health, label |
+| `false` | `'continuous'` | SoA typed array | Binary delta | Moving transforms |
+| `true` | `'discrete'` | Instance store | Authored event | Spawn points, waypoints |
+| `true` | `'continuous'` | Instance store | Binary delta (staged) | Anchors updated at tick rate |
+
+The last row — sparse continuous — uses a staging mechanism in the binary pipeline. The codec copies from the instance store into a temporary typed array for encoding, and reverses the copy on the read side. See [The Binary Wire](/binary-codec) for details.
+
 ## The `$`-prefixed meta surface
 
 All metadata on the definition uses a `$` prefix. The bare keys stay reserved for the SoA stores that come from the schema:

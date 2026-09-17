@@ -82,6 +82,32 @@ writeMask(mask)  // commit the mask now that we know what was written
 
 The shadow map uses the key `(typedArray, entity)` and stores the value written last. `writePropIfChanged` compares the current store value against the shadow, with `PROP_EPSILON` tolerance for floats. It writes the value when the two differ, and then updates the shadow. If no field of any component changed for an entity, the whole entity block rewinds. If nothing changed for any entity, the packet holds only a header, and the lifecycle layer does not send header-only packets.
 
+## Sparse continuous fields
+
+A sparse continuous field stores its value in the per-entity instance store, not in a SoA typed array. The binary codec works on typed arrays. A staging mechanism bridges the two.
+
+For each sparse continuous field, the codec builds `sparse-raw` Props. Each axis of the field (x, y, z for a Vec3; a single slot for a Float32) gets one Prop that carries:
+
+- **A staging typed array** — a temporary SoA store the same shape as a dense field would use.
+- **`stage(entity)`** — copies the current value from the instance store into the staging array, called before each write.
+- **`unstage(entity)`** — copies from the staging array back into the instance store, called after each read.
+
+The write loop calls `stage` to populate the staging array, then treats it as an ordinary SoA array for change-mask comparison and encoding. The read loop decodes into the staging array, then calls `unstage` to push the value back into the instance store.
+
+```
+write path (sender):
+  stage(entity)   →  instanceStore[entity].offset → staging.x[entity]
+  writeProp(...)  →  encode staging.x[entity] into the packet
+
+read path (receiver):
+  readProp(...)   →  decode packet into staging.x[entity]
+  unstage(entity) →  staging.x[entity] → instanceStore[entity].offset
+```
+
+Shadow-map change detection works the same as for dense fields. The shadow holds the last staged value. If no axis changed, the field produces zero bytes.
+
+A component may mix dense and sparse continuous fields. The codec builds `raw` Props for the dense half and `sparse-raw` Props for the sparse half, and both participate in the same component mask and change detection independently.
+
 ## Forcing full state
 
 Two calls force a full snapshot, whatever the shadow holds:

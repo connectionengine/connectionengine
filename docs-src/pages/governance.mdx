@@ -78,3 +78,5 @@ Use it to answer "what governs this entity?" while debugging, or to show a user 
 - It is not authority enforcement. See [Authority & Ownership](/authority-and-ownership). Runtime authority is structural, and carries no signature.
 
 Governance checks **authored events on apply**, and nowhere else.
+
+That means a write of only continuous fields to an existing component bypasses governance entirely. The write marks `runtimeDirty` and rides the binary delta channel, which produces no authored event. A governance constraint that inspects a component's `position` field only fires on the creation event (which carries the full component) — it never sees a per-tick position update. Enforce continuous constraints in **systems**, not governance rules.
