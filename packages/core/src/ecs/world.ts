@@ -1,11 +1,11 @@
 /**
- * World — a virtual hierarchy and identity scope inside an Engine.
+ * World — a virtual hierarchy and identity scope inside the Engine.
  *
  * The ECS runs on the Engine, which holds bitECS storage, per-component
- * storage, time, and systems. Everything that counts as "ECS" is engine-wide.
- * A `World` is a virtual scope on top. It holds a `worldRoot` entity that
- * anchors a `BelongsTo` subtree, the per-world mutation pipeline state
- * (`componentDirty`, `relationQueue`, `destroyQueue`, `eventLog`,
+ * storage, time, and systems. Everything that counts as "ECS" lives
+ * engine-wide. A `World` adds a virtual scope on top. It holds a `worldRoot`
+ * entity that anchors a `BelongsTo` subtree, the per-world mutation pipeline
+ * state (`componentDirty`, `relationQueue`, `destroyQueue`, `eventLog`,
  * `runtimeDirty`), and the local identity
  * (`localAgent`, `localUser`, `localPeer`).
  *
@@ -15,14 +15,14 @@
  * `addNetwork(world, …)`, `getNetworks(world)`, and `ensureDefaultNetwork(world)`
  * in `network/network.ts`.
  *
- * Many Worlds can coexist in one Engine, but ECS queries and systems operate
+ * Many Worlds can coexist in one Engine. ECS queries and systems operate
  * engine-wide. A caller that wants world-scoped iteration walks the `BelongsTo`
- * tree from `worldRoot`. A test that needs fully isolated peers gives each peer
- * its own Engine.
+ * tree from `worldRoot`.
  */
 
 import * as bitecs from 'bitecs'
 import type { Engine } from './engine'
+import { getEngine } from './engine'
 import { collectDescendants, removeEntity } from './entity'
 
 export type Entity = number
@@ -158,17 +158,12 @@ export interface World {
 }
 
 export interface CreateWorldOptions {
-  /** Engine that allocates this world. Always pass it explicitly. A production
-   *  app constructs one engine and composes its worlds inside it. A
-   *  multi-machine test creates one engine per peer. */
-  engine: Engine
   /** Local agent identity. Required. A runtime mode supplies a real agent. A
    *  solo caller can pass a stub, such as `{ did: 'did:anon:xxx' }`. */
   agent: Agent
 }
 
-export const createWorld = (options: CreateWorldOptions): World => {
-  const { engine } = options
+export const createWorld = (options: CreateWorldOptions, engine: Engine = getEngine()): World => {
   const worldRoot = bitecs.addEntity(engine.bitECS)
   const world: World = {
     engine,

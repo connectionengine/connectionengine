@@ -161,6 +161,13 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
   })
 
   endpoint.events.onMessage((payload) => {
+    // Bind controls share the `{ type: string }` shape with session controls,
+    // so they must be checked first to avoid the catch-all return after the
+    // session switch.
+    if (isBindControl(payload)) {
+      connection.channel?.registerBindings(payload.bindings)
+      return
+    }
     if (isControl(payload)) {
       switch (payload.type) {
         case 'hello': {
@@ -210,10 +217,6 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
       }
       return
     }
-    if (isBindControl(payload)) {
-      connection.channel?.registerBindings(payload.bindings)
-      return
-    }
     if (isAuthoredEnvelope(payload)) {
       const envelope = payload
       // Apply first, then relay what the apply accepted. Relaying the raw
@@ -226,7 +229,6 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
   })
 
   endpoint.stream.onMessage((buffer) => {
-    if (!options.runtimeComponents) return
     connection.channel?.applyBuffer(buffer)
   })
 

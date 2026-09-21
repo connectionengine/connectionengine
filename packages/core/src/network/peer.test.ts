@@ -1,15 +1,17 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
-import { createEngine } from '../ecs/engine'
+import { initEngine, resetEngine } from '../ecs/engine'
 import { createPeer, createUser } from './peer'
 import { findUserByDID, getPeersForUser, PeerComponent, UserComponent } from './agents'
 import { getComponent, hasComponent } from '../ecs/component'
 import { BelongsTo } from '../ecs/entity'
 
-const mkWorld = () => createWorld({ engine: createEngine(), agent: createAnonAgent('test') })
+const mkWorld = () => createWorld({ agent: createAnonAgent('test') })
 const did = (name: string): string => `did:test:${name}`
 
 describe('User + Peer', () => {
+  beforeEach(() => initEngine())
+  afterEach(() => resetEngine())
   it('createUser registers a user entity with did + displayName', () => {
     const world = mkWorld()
     const user = createUser(world, { did: did('alice'), displayName: 'Alice' })

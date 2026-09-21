@@ -6,12 +6,13 @@
  * `connectInMemory` shortcut is tested in integration.test.ts.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   AuthoritativeFor,
   applyAuthoredEnvelope,
   createAnonAgent,
-  createEngine,
+  initEngine,
+  resetEngine,
   createEntity,
   createMemoryTransport,
   createPeer,
@@ -39,17 +40,12 @@ import {
   spawnPrefab
 } from '../src'
 
-/**
- * Lifecycle tests model multiple physical machines — host + joiner — each
- * with its own engine. Identity caches live as per-engine WeakMaps on the
- * UIDComponent / BelongsTo definitions, so each peer's `worldRoot` subtree
- * stays isolated. The thin wrapper makes the intent explicit at every call.
- */
-const machine = (name: string): ReturnType<typeof createWorld> =>
-  createWorld({ engine: createEngine(), agent: createAnonAgent(name) })
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
 
-const machineFor = (did: string): ReturnType<typeof createWorld> =>
-  createWorld({ engine: createEngine(), agent: { did } })
+const machine = (name: string): ReturnType<typeof createWorld> => createWorld({ agent: createAnonAgent(name) })
+
+const machineFor = (did: string): ReturnType<typeof createWorld> => createWorld({ agent: { did } })
 
 const Health = defineComponent({
   id: 'LC.Health',

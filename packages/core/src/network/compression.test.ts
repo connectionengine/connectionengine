@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createViewCursor } from './cursor'
 import {
   decodeQuatSmallest3,
@@ -9,7 +9,7 @@ import {
   VEC3_INT16_BYTES
 } from './compression'
 import { Schema } from '../schema'
-import { createEngine } from '../ecs/engine'
+import { initEngine, resetEngine } from '../ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { createEntity } from '../ecs/entity'
 import { defineComponent, setComponent } from '../ecs/component'
@@ -74,6 +74,8 @@ describe('compression — quat-smallest3', () => {
 })
 
 describe('createBinaryPipeline — compression integration', () => {
+  beforeEach(() => initEngine())
+  afterEach(() => resetEngine())
   it('Transform with compressed position + rotation shrinks payload', () => {
     const Transform = defineComponent({
       id: 'Cmp.Transform',
@@ -82,7 +84,7 @@ describe('createBinaryPipeline — compression integration', () => {
         rotation: Schema.Quat({ sync: 'continuous' })
       })
     })
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('cmp') })
+    const world = createWorld({ agent: createAnonAgent('cmp') })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [10, 20, 30], rotation: [0, 0, 0, 1] })
 
@@ -113,8 +115,8 @@ describe('createBinaryPipeline — compression integration', () => {
         rotation: Schema.Quat({ sync: 'continuous' })
       })
     })
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('cmp-src') })
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('cmp-tgt') })
+    const source = createWorld({ agent: createAnonAgent('cmp-src') })
+    const target = createWorld({ agent: createAnonAgent('cmp-tgt') })
     const compression = {
       'Cmp.Round': {
         position: { kind: 'vec3-int16' as const, range: 100 },

@@ -10,7 +10,7 @@
  * Signing-aware scenarios live in @connectionengine/local's test suite.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../src/schema'
 import { defineComponent, getComponent, setComponent } from '../src/ecs/component'
 import { createEntity } from '../src/ecs/entity'
@@ -25,8 +25,11 @@ import { flushAsync } from '../src/network/transport'
 import { flushAuthored, flushRuntime } from '../src/network/mutation'
 import { createManualClock } from '../src/ecs/clock'
 import { createPeerMesh, createPeerPair } from './test-utils/peer-pair'
-import { createEngine } from '../src/ecs/engine'
+import { initEngine, resetEngine } from '../src/ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld, type World } from '../src/ecs/world'
+
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
 
 // Components used across scenarios — global definitions, per-world stores.
 const Health = defineComponent({
@@ -111,10 +114,10 @@ describe('Scenario: governance rejects unauthorised mutations', () => {
   it('a write a constraint refuses never lands on the other peer', async () => {
     // Governance runs engine-internally. Both peers hold the same constraint
     // entities, so they reach the same verdict on every event.
-    const clockA = createManualClock(0)
-    const clockB = createManualClock(0)
-    const worldA = createWorld({ engine: createEngine({ clock: clockA }), agent: createAnonAgent('gov-a') })
-    const worldB = createWorld({ engine: createEngine({ clock: clockB }), agent: createAnonAgent('gov-b') })
+    const clock = createManualClock(0)
+    initEngine({ clock })
+    const worldA = createWorld({ agent: createAnonAgent('gov-a') })
+    const worldB = createWorld({ agent: createAnonAgent('gov-b') })
     const bootstrapId = (w: World, n: string) => {
       const u = createUser(w, { did: w.localAgent.did, asLocal: true })
       createPeer(w, { user: u, peerId: `${n}-p`, asLocal: true })
@@ -123,8 +126,7 @@ describe('Scenario: governance rejects unauthorised mutations', () => {
     bootstrapId(worldB, 'gov-b')
     const link = await connectInMemory(worldA, worldB)
     const tick = async () => {
-      clockA.advance(1000 / 60)
-      clockB.advance(1000 / 60)
+      clock.advance(1000 / 60)
       flushAuthored(worldA)
       flushRuntime(worldA)
       flushAuthored(worldB)
@@ -156,7 +158,7 @@ describe('Scenario: governance rejects unauthorised mutations', () => {
 
 describe('Scenario: authority transfer between peers', () => {
   it('owner-user grants authority to one of their peers', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('owner') })
+    const world = createWorld({ agent: createAnonAgent('owner') })
     const user = createUser(world, { did: 'did:test:owner' })
     const desktopPeer = createPeer(world, { user, peerId: 'desktop', asLocal: true })
     const phonePeer = createPeer(world, { user, peerId: 'phone' })
@@ -186,7 +188,7 @@ describe('Scenario: snapshot bootstraps a late-joining peer', () => {
     await peers.tick()
     expect(getEntityByUID(b.world, b.world.worldRoot, 'scene:late')).toBeDefined()
 
-    const cWorld = createWorld({ engine: createEngine(), agent: createAnonAgent('carol') })
+    const cWorld = createWorld({ agent: createAnonAgent('carol') })
     const snap = createSnapshot(a.world)
     applySnapshot(cWorld, snap)
 

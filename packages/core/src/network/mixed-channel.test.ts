@@ -12,10 +12,10 @@
  * ungoverned fast path from resurrecting a write governance refused.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { createAnonAgent, createWorld, destroyWorld, type World } from '../ecs/world'
-import { createEngine } from '../ecs/engine'
+import { initEngine, resetEngine } from '../ecs/engine'
 import { createEntity, getEntityByUID, setUID } from '../ecs/entity'
 import { defineComponent, getComponent, hasComponent, removeComponent, setComponent } from '../ecs/component'
 import { createBinaryPipeline } from './binary'
@@ -49,7 +49,10 @@ const Velocity = defineComponent({
   schema: Schema.Object({ linear: Schema.Vec3({ sync: 'continuous' }) })
 })
 
-const mkWorld = (name: string): World => createWorld({ engine: createEngine(), agent: createAnonAgent(name) })
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
+
+const mkWorld = (name: string): World => createWorld({ agent: createAnonAgent(name) })
 
 describe('mixed-channel — the authored half carries the whole component', () => {
   it('the wire event carries both halves, and applying it reconstructs both', () => {
@@ -227,7 +230,7 @@ describe('mixed-channel — a delta may not create a governed component', () => 
 describe('mixed-channel — governance holds', () => {
   it('a refused creation cannot be resurrected by a delta', () => {
     const source = mkWorld('mx-gov-src')
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('mx-gov-tgt') })
+    const target = createWorld({ agent: createAnonAgent('mx-gov-tgt') })
     addConstraint(target, target.worldRoot, 'mx:block-predicate', { blocked: 'MX.Body' })
 
     const e = createEntity(source)

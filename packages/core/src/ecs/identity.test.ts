@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
-import { createEngine } from '../ecs/engine'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { initEngine, resetEngine } from '../ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { createEntity, removeEntity } from '../ecs/entity'
 import { BelongsTo, UIDComponent, getEntityByUID, getEntityPath, resolveEntityPath, setUID, uidOfFor } from './entity'
@@ -15,9 +15,12 @@ const named = (world: World, uid: string, parent?: Entity): Entity => {
   return e
 }
 
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
+
 describe('Identity — UID + BelongsTo', () => {
   it('createEntity + setUID assigns UID + registers in root cache', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const scene = named(world, 'scene:main')
     expect(UIDComponent.get(world, scene)).toBe('scene:main')
     expect(getEntityByUID(world, world.worldRoot, 'scene:main')).toBe(scene)
@@ -26,7 +29,7 @@ describe('Identity — UID + BelongsTo', () => {
   })
 
   it('setUID attaches UID + BelongsTo and indexes under parent', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const scene = named(world, 'scene:main')
     const avatar = createEntity(world)
     setUID(world, avatar, 'avatar:alice', { parent: scene })
@@ -36,7 +39,7 @@ describe('Identity — UID + BelongsTo', () => {
   })
 
   it('rejects duplicate UID under the same parent', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const scene = named(world, 'scene:main')
     const a = createEntity(world)
     setUID(world, a, 'avatar:x', { parent: scene })
@@ -46,7 +49,7 @@ describe('Identity — UID + BelongsTo', () => {
   })
 
   it('same UID under different parents is allowed', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const s1 = named(world, 'scene:a')
     const s2 = named(world, 'scene:b')
     const a = createEntity(world)
@@ -59,7 +62,7 @@ describe('Identity — UID + BelongsTo', () => {
   })
 
   it('getEntityPath walks BelongsTo chain', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const scene = named(world, 'scene:main')
     const model = createEntity(world)
     setUID(world, model, 'model:knight', { parent: scene })
@@ -70,7 +73,7 @@ describe('Identity — UID + BelongsTo', () => {
   })
 
   it('resolveEntityPath inverts getEntityPath', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const scene = named(world, 'scene:main')
     const model = createEntity(world)
     setUID(world, model, 'model:knight', { parent: scene })
@@ -83,7 +86,7 @@ describe('Identity — UID + BelongsTo', () => {
   })
 
   it('removeEntity eventually clears identity caches (via observers)', async () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const scene = named(world, 'scene:main')
     const avatar = createEntity(world)
     setUID(world, avatar, 'avatar:alice', { parent: scene })
@@ -95,7 +98,7 @@ describe('Identity — UID + BelongsTo', () => {
   })
 
   it('BelongsTo is exclusive (re-parent replaces)', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const a = named(world, 'scene:a')
     const b = named(world, 'scene:b')
     const e = createEntity(world)
@@ -111,7 +114,7 @@ describe('Identity — UID + BelongsTo', () => {
 
 describe('identity accessors on the definitions', () => {
   it('BelongsTo.get answers for a top-level entity, which carries no edge', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('top') })
+    const world = createWorld({ agent: createAnonAgent('top') })
     const top = createEntity(world)
     setUID(world, top, 'top-level')
     // No BelongsTo edge replicates for a top-level entity — `worldRoot` is
@@ -128,7 +131,7 @@ describe('identity accessors on the definitions', () => {
   })
 
   it('UIDComponent.get falls back to component storage when the index is cold', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('cold') })
+    const world = createWorld({ agent: createAnonAgent('cold') })
     const e = createEntity(world)
     setUID(world, e, 'named')
     expect(UIDComponent.get(world, e)).toBe('named')
@@ -155,7 +158,7 @@ describe('module initialisation order', () => {
 
     // Reachable and working straight after evaluation, before anything else
     // touches the module.
-    const engine = createEngine()
+    const engine = initEngine()
     expect(fresh.uidOfFor(engine)).toBeInstanceOf(Map)
     expect(fresh.nameCacheFor(engine)).toBeInstanceOf(Map)
     expect(typeof fresh.UIDComponent.get).toBe('function')

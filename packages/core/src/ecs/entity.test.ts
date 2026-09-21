@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest'
-import { createEngine } from './engine'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { initEngine, resetEngine } from './engine'
 import { createAnonAgent, createWorld, destroyWorld } from './world'
 import { createEntity, removeEntity, entityExists } from './entity'
 
 describe('Entity', () => {
+  beforeEach(() => initEngine())
+  afterEach(() => resetEngine())
+
   it('creates and removes entities, reporting existence', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     expect(typeof e).toBe('number')
     expect(entityExists(world, e)).toBe(true)
@@ -15,7 +18,7 @@ describe('Entity', () => {
   })
 
   it('issues unique entity IDs', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const ids = new Set<number>()
     for (let i = 0; i < 100; i++) ids.add(createEntity(world))
     expect(ids.size).toBe(100)

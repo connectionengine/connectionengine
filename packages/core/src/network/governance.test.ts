@@ -4,9 +4,9 @@
  * the scope chain, and `validateEvent` runs whatever the registry holds.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
-import { createEngine } from '../ecs/engine'
+import { initEngine, resetEngine } from '../ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld, type AuthoredEvent, type Entity, type World } from '../ecs/world'
 import { createEntity, setUID } from '../ecs/entity'
 import { addConstraint, defineConstraint, resolveConstraints, validateEvent } from './governance'
@@ -35,7 +35,10 @@ defineConstraint({
   }
 })
 
-const mkWorld = (): World => createWorld({ engine: createEngine(), agent: createAnonAgent('test') })
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
+
+const mkWorld = (): World => createWorld({ agent: createAnonAgent('test') })
 
 const named = (world: World, uid: string, parent?: Entity): Entity => {
   const e = createEntity(world)

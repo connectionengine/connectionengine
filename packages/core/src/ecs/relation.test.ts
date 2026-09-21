@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { createEngine } from './engine'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { initEngine, resetEngine } from './engine'
 import { createAnonAgent, createWorld, destroyWorld } from './world'
 import { createEntity, removeEntity } from './entity'
 import {
@@ -28,9 +28,12 @@ const Friend = defineRelation({
   name: 'Friend' // non-exclusive
 })
 
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
+
 describe('Relation', () => {
   it('adds and removes a relationship pair', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const parent = createEntity(world)
     const child = createEntity(world)
     addRelation(world, child, ChildOf, parent)
@@ -42,7 +45,7 @@ describe('Relation', () => {
   })
 
   it('exclusive relation auto-replaces existing target', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const child = createEntity(world)
     const a = createEntity(world)
     const b = createEntity(world)
@@ -54,7 +57,7 @@ describe('Relation', () => {
   })
 
   it('autoRemoveSubject cascades when target removed', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const parent = createEntity(world)
     const child = createEntity(world)
     addRelation(world, child, ChildOf, parent)
@@ -67,7 +70,7 @@ describe('Relation', () => {
   })
 
   it('non-exclusive relation supports multiple targets', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const me = createEntity(world)
     const a = createEntity(world)
     const b = createEntity(world)
@@ -78,7 +81,7 @@ describe('Relation', () => {
   })
 
   it('per-pair store data is allocated and writable', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const item = createEntity(world)
     const owner = createEntity(world)
     addRelation(world, item, EquippedBy, owner)
@@ -90,7 +93,7 @@ describe('Relation', () => {
   })
 
   it('addRelation pushes to the relation queue for synced relations', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const child = createEntity(world)
     const parent = createEntity(world)
     addRelation(world, child, ChildOf, parent)
@@ -118,7 +121,7 @@ const Tracked = defineRelation({
 
 describe('defineRelation index accessors', () => {
   const setup = () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('idx') })
+    const world = createWorld({ agent: createAnonAgent('idx') })
     return { world, a: createEntity(world), b: createEntity(world), c: createEntity(world) }
   }
 
@@ -154,12 +157,11 @@ describe('defineRelation index accessors', () => {
     destroyWorld(world)
   })
 
-  it('keeps two engines apart', () => {
+  it('index shares across worlds in the same engine', () => {
     const { world, a, b } = setup()
-    const other = createWorld({ engine: createEngine(), agent: createAnonAgent('idx2') })
+    const other = createWorld({ agent: createAnonAgent('idx2') })
     Tracked.set(world, a, b)
-    // Entity ids repeat across engines, so the index must key on the engine.
-    expect(Tracked.get(other, a)).toBeUndefined()
+    expect(Tracked.get(other, a)).toBe(b)
     destroyWorld(other)
     destroyWorld(world)
   })

@@ -1,7 +1,7 @@
 /**
- * Engine — the ECS runtime container.
+ * Engine — the process-wide ECS runtime singleton.
  *
- * The Engine IS the bitECS world, plus the ambient runtime state: the
+ * The Engine holds the bitECS world, plus the ambient runtime state: the
  * per-component storage and the time. Systems run at the engine level. Several
  * `World` objects, each a virtual hierarchy and network scope, can coexist
  * inside one engine. They share storage and tick together.
@@ -11,25 +11,22 @@
  *   - Per-component storage. The SoA arrays live on `ComponentDefinition`,
  *     which is a module-level singleton. The instance maps and view bags live
  *     in `componentStores`, keyed by engine-global entity ID.
- *   - Systems. `defineSystem(engine, ...)` registers phase-ordered functions.
+ *   - Systems. `defineSystem(...)` registers phase-ordered functions.
  *     Each pushes a disposer onto `engine.disposers`.
  *   - Time state: `clock`, `frameTime`, `simulationTime`, `fixedTimeStep`,
  *     `deltaSeconds`, and `accumulator`. The engine ticks. `tickEngine` and
  *     `runSystems` drive every system registered on it.
  *
- * `destroyEngine(engine)` drains the disposer list, which disposes every
- * system reactor. Call it after destroying the worlds that share this engine.
+ * `initEngine(options?)` creates the singleton. A second call tears down the
+ * previous engine first. `resetEngine()` tears down and clears.
+ * `getEngine()` returns the live singleton; `tryGetEngine()` returns it or
+ * `undefined` when no engine exists yet.
  *
  * The identity caches (`nameCache`, `uidOf`, `parentOf`) are NOT here. They
  * live as typed extension properties on `UIDComponent` and `BelongsTo`. The
  * extension itself is global. The inner maps use `Engine` as their `WeakMap`
- * key, so two engines in the same process keep their state isolated, because
- * entity IDs are not unique across bitECS worlds. `destroyWorld` sweeps the
- * descendants of a world from the caches of the engine.
- *
- * Every `createWorld` takes an explicit `engine`, so the caller decides what to
- * share. A production app constructs one engine and composes its worlds inside
- * it. A multi-machine test gives each peer its own engine.
+ * key, so the caches stay scoped to the engine. `destroyWorld` sweeps the
+ * descendants of a world from the caches.
  */
 
 import * as bitecs from 'bitecs'
@@ -37,7 +34,7 @@ import type { ComponentDefinition, PerComponentStores } from './component'
 import type { Clock } from './clock'
 import { wallClock } from './clock'
 
-export interface CreateEngineOptions {
+export interface InitEngineOptions {
   /** Simulation tick rate in seconds. Default 1/60. */
   fixedTimeStep?: number
   /** Injectable clock. It defaults to the wall clock. A test passes a manual clock. */
@@ -55,7 +52,7 @@ export interface Engine {
   readonly componentStores: WeakMap<ComponentDefinition, PerComponentStores>
 
   /** Teardown callbacks. `defineSystem` pushes its disposer here.
-   *  `destroyEngine` drains the list. Other modules may push their own. */
+   *  `resetEngine` drains the list. Other modules may push their own. */
   readonly disposers: (() => void)[]
 
   // ── Time ───────────────────────────────────────────────────────────────────
@@ -67,8 +64,11 @@ export interface Engine {
   accumulator: number
 }
 
-/** Create a fresh isolated engine. */
-export const createEngine = (options: CreateEngineOptions = {}): Engine => ({
+// ── Singleton ────────────────────────────────────────────────────────────────
+
+let _engine: Engine | undefined
+
+const buildEngine = (options: InitEngineOptions = {}): Engine => ({
   bitECS: bitecs.createWorld(),
   componentStores: new WeakMap(),
   disposers: [],
@@ -80,11 +80,29 @@ export const createEngine = (options: CreateEngineOptions = {}): Engine => ({
   accumulator: 0
 })
 
-/** Tear down an engine and release its resources. It disposes every system
- *  reactor and drains the disposer list. */
-export const destroyEngine = (engine: Engine): void => {
-  for (const dispose of engine.disposers) dispose()
-  engine.disposers.length = 0
+/** Create the engine singleton. A second call tears down the previous one. */
+export const initEngine = (options: InitEngineOptions = {}): Engine => {
+  if (_engine) resetEngine()
+  _engine = buildEngine(options)
+  return _engine
+}
+
+/** Return the live singleton, or throw when no engine exists yet. */
+export const getEngine = (): Engine => {
+  if (!_engine) throw new Error('Engine not initialised — call initEngine() first')
+  return _engine
+}
+
+/** Return the live singleton, or `undefined` when no engine exists yet.
+ *  Use this in code that runs at module scope, before `initEngine`. */
+export const tryGetEngine = (): Engine | undefined => _engine
+
+/** Tear down the engine: drain disposers and clear the singleton. */
+export const resetEngine = (): void => {
+  if (!_engine) return
+  for (const dispose of _engine.disposers) dispose()
+  _engine.disposers.length = 0
+  _engine = undefined
 }
 
 // ── Time loop ────────────────────────────────────────────────────────────────

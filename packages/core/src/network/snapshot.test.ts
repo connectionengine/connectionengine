@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { defineComponent, getComponent, hasComponent, setComponent } from '../ecs/component'
 import { defineRelation, addRelation, getRelationTargets } from '../ecs/relation'
 import { createAnonAgent, createWorld, destroyWorld, type Entity, type World } from '../ecs/world'
-import { createEngine } from '../ecs/engine'
+import { initEngine, resetEngine } from '../ecs/engine'
 import { getEntityByUID, setUID } from '../ecs/entity'
 import { createEntity } from '../ecs/entity'
 import { applySnapshot, createSnapshot } from './snapshot'
@@ -63,9 +63,12 @@ const Transform = defineComponent({
 })
 const ChildOf = defineRelation({ name: 'ChildOf-snap', exclusive: true })
 
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
+
 describe('Snapshot', () => {
   it('createSnapshot captures named entities + components + relations', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const scene = named(world, 'scene:snap')
     const a = createEntity(world)
     setUID(world, a, 'a', { parent: scene })
@@ -88,7 +91,7 @@ describe('Snapshot', () => {
   })
 
   it('applySnapshot to fresh world rebuilds equivalent state', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const source = createWorld({ agent: createAnonAgent() })
     const scene = named(source, 'scene:snap2')
     const a = createEntity(source)
     setUID(source, a, 'a', { parent: scene })
@@ -97,7 +100,7 @@ describe('Snapshot', () => {
 
     const snap = createSnapshot(source)
 
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const target = createWorld({ agent: createAnonAgent() })
     applySnapshot(target, snap)
 
     const tScene = getEntityByUID(target, target.worldRoot, 'scene:snap2')
@@ -114,7 +117,7 @@ describe('Snapshot', () => {
   })
 
   it('snapshot round-trip preserves relations', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const source = createWorld({ agent: createAnonAgent() })
     const scene = named(source, 'scene:rel')
     const a = createEntity(source)
     setUID(source, a, 'a', { parent: scene })
@@ -122,7 +125,7 @@ describe('Snapshot', () => {
     setUID(source, b, 'b', { parent: scene })
     addRelation(source, b, ChildOf, a)
     const snap = createSnapshot(source)
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const target = createWorld({ agent: createAnonAgent() })
     applySnapshot(target, snap)
     const tScene = getEntityByUID(target, target.worldRoot, 'scene:rel')!
     const tA = getEntityByUID(target, tScene, 'a')!
@@ -133,7 +136,7 @@ describe('Snapshot', () => {
   })
 
   it('filter restricts captured components', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = named(world, 'x')
     setComponent(world, e, Health)
     setComponent(world, e, Transform, { position: [0, 0, 0] })
@@ -144,7 +147,7 @@ describe('Snapshot', () => {
   })
 
   it('replace mode clears prior named entities', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const a = named(world, 'a')
     setComponent(world, a, Health, { current: 1 })
     const snap = createSnapshot(world)
@@ -169,14 +172,14 @@ const SpawnPoint = defineComponent({
 
 describe('Spec 08 — discrete sparse Vec3 round-trips through snapshot', () => {
   it('createSnapshot captures sparse Vec3 and applySnapshot restores it', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-snap-src') })
+    const source = createWorld({ agent: createAnonAgent('s08-snap-src') })
     const scene = named(source, 'scene:s08snap')
     const e = named(source, 'sp', scene)
     setComponent(source, e, SpawnPoint, { position: [7, 14, 21] })
 
     const snap = createSnapshot(source)
 
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-snap-tgt') })
+    const target = createWorld({ agent: createAnonAgent('s08-snap-tgt') })
     applySnapshot(target, snap)
 
     const tScene = getEntityByUID(target, target.worldRoot, 'scene:s08snap')!
@@ -189,14 +192,14 @@ describe('Spec 08 — discrete sparse Vec3 round-trips through snapshot', () => 
   })
 
   it('discrete sparse Vec3 survives JSON.parse(JSON.stringify(snapshot))', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-json-src') })
+    const source = createWorld({ agent: createAnonAgent('s08-json-src') })
     const e = named(source, 'sp-json')
     setComponent(source, e, SpawnPoint, { position: [3, 6, 9] })
 
     const snap = createSnapshot(source)
     const roundTripped = JSON.parse(JSON.stringify(snap))
 
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-json-tgt') })
+    const target = createWorld({ agent: createAnonAgent('s08-json-tgt') })
     applySnapshot(target, roundTripped)
 
     const tE = getEntityByUID(target, target.worldRoot, 'sp-json')!
@@ -215,8 +218,8 @@ describe('applySnapshot — governance', () => {
    * bootstrap path cannot admit state that the authored path would refuse.
    */
   it('skips writes a constraint refuses, keeping the rest', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('gate-src') })
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('gate-tgt') })
+    const source = createWorld({ agent: createAnonAgent('gate-src') })
+    const target = createWorld({ agent: createAnonAgent('gate-tgt') })
     addConstraint(target, target.worldRoot, 'snap:block-predicate', { blocked: Health.$id })
 
     const e = named(source, 'thing')
@@ -234,8 +237,8 @@ describe('applySnapshot — governance', () => {
   })
 
   it('constraint validators see the sending peer as author', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('author-src') })
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('author-tgt') })
+    const source = createWorld({ agent: createAnonAgent('author-src') })
+    const target = createWorld({ agent: createAnonAgent('author-tgt') })
     // A constraint that blocks a specific author. If the admitter passes the
     // correct author through, the constraint fires and Health never lands.
     addConstraint(target, target.worldRoot, 'snap:block-author', { blocked: 'did:test:sender' })
@@ -248,7 +251,7 @@ describe('applySnapshot — governance', () => {
     expect(hasComponent(target, te, Health)).toBe(false)
 
     // A different author does not match the constraint, so the write lands.
-    const target2 = createWorld({ engine: createEngine(), agent: createAnonAgent('author-tgt2') })
+    const target2 = createWorld({ agent: createAnonAgent('author-tgt2') })
     addConstraint(target2, target2.worldRoot, 'snap:block-author', { blocked: 'did:test:sender' })
     applySnapshot(target2, snap, { from: { author: 'did:test:other' } })
     const te2 = getEntityByUID(target2, target2.worldRoot, 'thing')!
@@ -260,7 +263,7 @@ describe('applySnapshot — governance', () => {
   })
 
   it('cannot hand the sender authority it has no standing to take', () => {
-    const host = createWorld({ engine: createEngine(), agent: createAnonAgent('auth-host') })
+    const host = createWorld({ agent: createAnonAgent('auth-host') })
     const hostUser = createUser(host, { did: 'did:test:host', uid: 'user:host', asLocal: true })
     const hostPeer = createPeer(host, { user: hostUser, peerId: 'host-p', uid: 'peer:host-p', asLocal: true })
     const thing = spawnPrefab(host, 'thing')
@@ -282,12 +285,12 @@ describe('applySnapshot — governance', () => {
   })
 
   it('a local apply bypasses governance — persistence and rollback are trusted', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('trusted') })
+    const world = createWorld({ agent: createAnonAgent('trusted') })
     setComponent(world, named(world, 'thing'), Health, { current: 7 })
     const snap = createSnapshot(world)
 
     // A deny-all constraint that would reject everything through governance.
-    const restored = createWorld({ engine: createEngine(), agent: createAnonAgent('restored') })
+    const restored = createWorld({ agent: createAnonAgent('restored') })
     addConstraint(restored, restored.worldRoot, 'snap:deny-all', {})
     // No `from` → local apply → governance does not run.
     applySnapshot(restored, snap)

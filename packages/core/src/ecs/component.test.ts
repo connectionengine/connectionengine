@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
-import { createEngine } from './engine'
+import { initEngine, resetEngine } from './engine'
 import { createAnonAgent, createWorld, destroyWorld } from './world'
 import { createEntity } from './entity'
 import {
@@ -81,9 +81,12 @@ describe('defineComponent — replication contract', () => {
   })
 })
 
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
+
 describe('setComponent / getComponent / removeComponent', () => {
   it('round-trips value-typed fields with defaults', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Health)
     const h = getComponent(world, e, Health)
@@ -92,7 +95,7 @@ describe('setComponent / getComponent / removeComponent', () => {
   })
 
   it('partial set merges into existing instance', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Health, { current: 50 })
     expect(getComponent(world, e, Health)).toEqual({ current: 50, max: 100 })
@@ -102,7 +105,7 @@ describe('setComponent / getComponent / removeComponent', () => {
   })
 
   it('writes and reads SoA fields via Vec3/Quat helpers', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 2, 3], rotation: [0, 0, 0, 1] })
     const t = getComponent(world, e, Transform)
@@ -119,7 +122,7 @@ describe('setComponent / getComponent / removeComponent', () => {
   })
 
   it('getComponent returns a stable object reference across calls', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     // Event component — instance store is the live data
     setComponent(world, e, Health, { current: 50 })
@@ -142,7 +145,7 @@ describe('setComponent / getComponent / removeComponent', () => {
   })
 
   it('hasComponent toggles correctly across set/remove', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     expect(hasComponent(world, e, Health)).toBe(false)
     setComponent(world, e, Health)
@@ -160,7 +163,7 @@ describe('setComponent / getComponent / removeComponent', () => {
   })
 
   it('setComponent always marks componentDirty for synced components', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Health, { current: 80 })
     expect(world.componentDirty.get('Health')?.has(e)).toBe(true)
@@ -178,7 +181,7 @@ describe('mixed-channel components', () => {
    * writes only mark dirty.
    */
   const mk = () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     return { world, e: createEntity(world) }
   }
 
@@ -301,7 +304,7 @@ describe('mixed-channel components', () => {
 
 describe('runtime dirty tracking', () => {
   it('marks dirty on runtime-category set, drains atomically', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const a = createEntity(world)
     const b = createEntity(world)
     setComponent(world, a, Transform, { position: [0, 0, 0] })
@@ -314,7 +317,7 @@ describe('runtime dirty tracking', () => {
   })
 
   it('does not mark dirty for authored or local components', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Health)
     setComponent(world, e, Debug, { label: 'x' })
@@ -323,7 +326,7 @@ describe('runtime dirty tracking', () => {
   })
 
   it('clears dirty flag when component removed', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [0, 0, 0] })
     expect(world.runtimeDirty.get('Transform')?.has(e)).toBe(true)
@@ -335,7 +338,7 @@ describe('runtime dirty tracking', () => {
 
 describe('property invariants', () => {
   it('setComponent then getComponent round-trips a value field', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     for (let i = 0; i < 50; i++) {
       const e = createEntity(world)
       const cur = Math.floor(Math.random() * 1000)
@@ -346,7 +349,7 @@ describe('property invariants', () => {
   })
 
   it('idempotent registration: defining same id twice yields the same definition', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     setComponent(world, createEntity(world), Health)
     setComponent(world, createEntity(world), Health)
     const Health2 = defineComponent({
@@ -483,7 +486,7 @@ describe('Storage — sparse vs dense', () => {
   })
 
   it('sparse: true Vec3 stores in instance store', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const C = defineComponent({
       id: 'Stor.SparseInst',
       schema: Schema.Object({ position: Schema.Vec3({ sparse: true }) })
@@ -497,7 +500,7 @@ describe('Storage — sparse vs dense', () => {
   })
 
   it('sparse: false Vec3 stores in SoA arrays', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [7, 8, 9] })
     expect(Transform.position.x[e]).toBeCloseTo(7)
@@ -509,7 +512,7 @@ describe('Storage — sparse vs dense', () => {
 
 describe('Accessors — sparse vs dense', () => {
   it('getComponent for SoA Vec3 returns live view', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 2, 3], rotation: [0, 0, 0, 1] })
     const t = getComponent(world, e, Transform)!
@@ -520,7 +523,7 @@ describe('Accessors — sparse vs dense', () => {
   })
 
   it('getComponent for sparse Vec3 returns plain value', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const C = defineComponent({
       id: 'Acc.SparseView',
       schema: Schema.Object({ position: Schema.Vec3({ sparse: true }) })
@@ -535,7 +538,7 @@ describe('Accessors — sparse vs dense', () => {
 
 describe('Mutation pipeline — per-field sync', () => {
   it('discrete Vec3: setComponent marks componentDirty on creation', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const C = defineComponent({
       id: 'Mut.DiscCreate',
       schema: Schema.Object({ position: Schema.Vec3() })
@@ -547,7 +550,7 @@ describe('Mutation pipeline — per-field sync', () => {
   })
 
   it('discrete Vec3: setComponent marks componentDirty on value change', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const C = defineComponent({
       id: 'Mut.DiscChange',
       schema: Schema.Object({ position: Schema.Vec3() })
@@ -561,7 +564,7 @@ describe('Mutation pipeline — per-field sync', () => {
   })
 
   it('continuous Vec3: setComponent does not mark componentDirty after creation', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 2, 3] })
     world.componentDirty.clear()
@@ -572,7 +575,7 @@ describe('Mutation pipeline — per-field sync', () => {
   })
 
   it('continuous Vec3: creation still marks componentDirty', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 2, 3] })
     expect(world.componentDirty.get('Transform')?.has(e)).toBe(true)
@@ -580,7 +583,7 @@ describe('Mutation pipeline — per-field sync', () => {
   })
 
   it('continuous field marks runtime dirty', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [0, 0, 0] })
     expect(world.runtimeDirty.get('Transform')?.has(e)).toBe(true)
@@ -588,7 +591,7 @@ describe('Mutation pipeline — per-field sync', () => {
   })
 
   it('discrete field does not mark runtime dirty', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const C = defineComponent({
       id: 'Mut.DiscDirty',
       schema: Schema.Object({ position: Schema.Vec3() })

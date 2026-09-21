@@ -1,12 +1,15 @@
-import { describe, expect, it } from 'vitest'
-import { createEngine } from '../ecs/engine'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { initEngine, resetEngine } from '../ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { createPeer, createUser } from './peer'
 import { AuthoritativeFor, OwnedBy, canRequestAuthority, recoverAuthority, requestAuthority } from './authority'
 import { spawnPrefab } from './prefab'
 
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
+
 const mkWorld = () => {
-  const world = createWorld({ engine: createEngine(), agent: createAnonAgent('owner') })
+  const world = createWorld({ agent: createAnonAgent('owner') })
   const user = createUser(world, { did: 'did:test:owner', uid: 'user:owner', asLocal: true })
   const peerA = createPeer(world, { user, peerId: 'a', uid: 'peer:a', asLocal: true })
   const peerB = createPeer(world, { user, peerId: 'b', uid: 'peer:b' })
@@ -32,7 +35,7 @@ describe('Ownership', () => {
   })
 
   it('spawnPrefab throws when no owner can be determined', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('noowner') })
+    const world = createWorld({ agent: createAnonAgent('noowner') })
     expect(() => spawnPrefab(world, 'thing')).toThrow(/no owner provided/i)
     destroyWorld(world)
   })
@@ -85,7 +88,7 @@ describe('Authority', () => {
   })
 
   it('a request without standing is refused, and changes nothing', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('alice') })
+    const world = createWorld({ agent: createAnonAgent('alice') })
     const aliceUser = createUser(world, { did: 'did:test:alice', uid: 'user:alice', asLocal: true })
     const alicePeer = createPeer(world, { user: aliceUser, peerId: 'a', uid: 'peer:alice', asLocal: true })
     const bobUser = createUser(world, { did: 'did:test:bob', uid: 'user:bob' })
@@ -131,7 +134,7 @@ describe('Authority', () => {
   })
 
   it('recoverAuthority falls back to localPeer when no other peer of owner remains', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('solo') })
+    const world = createWorld({ agent: createAnonAgent('solo') })
     createUser(world, { did: 'did:test:solo', uid: 'user:solo', asLocal: true })
     const soloPeer = createPeer(world, { user: world.localUser!, peerId: 'p', uid: 'peer:solo', asLocal: true })
     const remoteUser = createUser(world, { did: 'did:test:remote', uid: 'user:remote' })

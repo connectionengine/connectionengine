@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { defineComponent, getComponent, hasComponent } from '../ecs/component'
 import { createAnonAgent, createWorld, destroyWorld, type World } from '../ecs/world'
-import { createEngine } from '../ecs/engine'
+import { initEngine, resetEngine } from '../ecs/engine'
 import { getEntityByUID, UIDComponent } from '../ecs/entity'
 import { definePrefab, spawnPrefab } from './prefab'
 import { AuthoritativeFor, OwnedBy } from './authority'
@@ -41,9 +41,12 @@ describe('Prefab', () => {
   })
 })
 
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
+
 describe('spawnPrefab', () => {
   it('without a prefab — spawns a bare networked entity (UID + owner + authority)', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     bootstrap(world)
     const e = spawnPrefab(world, 'scene:bare')
     expect(UIDComponent.get(world, e)).toBe('scene:bare')
@@ -55,7 +58,7 @@ describe('spawnPrefab', () => {
 
   it('with a prefab — attaches all components with defaults', () => {
     const Avatar = definePrefab('Avatar2', { components: [Health, Tag] })
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     bootstrap(world)
     const e = spawnPrefab(world, 'avatar:1', { prefab: Avatar })
     expect(hasComponent(world, e, Health)).toBe(true)
@@ -69,7 +72,7 @@ describe('spawnPrefab', () => {
       components: [Health],
       defaults: { 'Health-prefab': { current: 999, max: 999 } }
     })
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     bootstrap(world)
     const e1 = spawnPrefab(world, 'boss:1', { prefab: Boss })
     expect(getComponent(world, e1, Health)).toEqual({ current: 999, max: 999 })
@@ -83,7 +86,7 @@ describe('spawnPrefab', () => {
 
   it('places under an explicit parent', () => {
     const Avatar = definePrefab('Avatar3', { components: [Tag] })
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     bootstrap(world)
     const scene = spawnPrefab(world, 'scene:prefabs')
     const e = spawnPrefab(world, 'alice', { prefab: Avatar, parent: scene })
@@ -93,14 +96,14 @@ describe('spawnPrefab', () => {
   })
 
   it('throws when no owner can be determined', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('lonely') })
+    const world = createWorld({ agent: createAnonAgent('lonely') })
     // No createUser / createPeer — world.localUser is undefined.
     expect(() => spawnPrefab(world, 'will-fail')).toThrow(/no owner provided/i)
     destroyWorld(world)
   })
 
   it('explicit owner option overrides the world default', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     bootstrap(world)
     const other = createUser(world, { did: 'did:test:other' })
     const e = spawnPrefab(world, 'thing', { owner: other })

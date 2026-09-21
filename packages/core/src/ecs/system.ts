@@ -1,24 +1,29 @@
 /**
  * System — phase-ordered functions with an optional reactor.
  *
- * `defineSystem(engine, definition)` registers a system on the engine.
+ * `defineSystem(definition)` registers a system on the engine.
  *   - phase: Input, Simulation, Animation, or Render. The phase selects the
  *     fixed or the variable timestep. Simulation uses the fixed timestep.
  *   - execute(engine, deltaTime): the continuous logic. It runs every tick in
  *     its phase.
  *   - reactor(): a DOMless Solid component, logic only. `createRoot` mounts it
- *     once at registration. `removeSystem` and `destroyEngine` dispose it.
+ *     once at registration. `removeSystem` and `resetEngine` dispose it.
  *   - before / after: ordering constraints. Each one names another system in
  *     the same phase. Every register and unregister sorts the phase
  *     topologically.
  *
- * `runSystems(engine, deltaSeconds)` drives one frame. `tickEngine` gives the
- * fixed substeps to the Simulation systems, and the variable steps to the rest.
+ * `runSystems(deltaSeconds)` drives one frame. `tickEngine` gives the fixed
+ * substeps to the Simulation systems, and the variable steps to the rest.
  *
  * Systems belong to the engine, not to a world. The ECS operates engine-wide:
  * queries, entities, SoA storage, and time all live on the engine, so systems
- * match. `defineSystem` pushes a disposer that `destroyEngine` drains — setup
+ * match. `defineSystem` pushes a disposer that `resetEngine` drains — setup
  * registers teardown, the same principle that governs `attachConnection`.
+ *
+ * `defineSystem` and `injectSystem` can run at module scope, before any engine
+ * exists. The handles go into a pending queue that the scheduler drains on the
+ * first call that needs the engine (e.g. `runSystems`). Disposers attach
+ * lazily at that point — never optimistically at define time.
  *
  * This module knows nothing about authoring or replication. A driver that
  * flushes networking at frame end calls `flushAuthored` and `flushRuntime`
@@ -27,7 +32,7 @@
 
 import { createRoot } from 'solid-js'
 import type { Engine } from './engine'
-import { tickEngine } from './engine'
+import { getEngine, tryGetEngine, tickEngine } from './engine'
 
 export type Phase = 'Input' | 'Simulation' | 'Animation' | 'Render'
 export const PHASES: readonly Phase[] = ['Input', 'Simulation', 'Animation', 'Render'] as const
@@ -56,17 +61,36 @@ export interface SystemHandle {
 interface SchedulerState {
   /** The systems of each phase, held in topological order. */
   byPhase: Map<Phase, SystemHandle[]>
-  /** Every handle, tracked so that destroyEngine can clean them up. */
+  /** Every handle, tracked so that resetEngine can clean them up. */
   all: Set<SystemHandle>
 }
 
 const schedulers = new WeakMap<Engine, SchedulerState>()
+
+/** Handles defined before any engine exists. Drained by `getOrCreate` on the
+ *  first call that touches the engine's scheduler. */
+const pendingHandles: SystemHandle[] = []
+
+const attachToScheduler = (engine: Engine, state: SchedulerState, handle: SystemHandle): void => {
+  state.all.add(handle)
+  const phaseList = state.byPhase.get(handle.phase) ?? []
+  phaseList.push(handle)
+  state.byPhase.set(handle.phase, sortPhase(phaseList))
+  // Setup registers teardown. resetEngine drains this list.
+  engine.disposers.push(() => removeSystem(handle))
+}
 
 const getOrCreate = (engine: Engine): SchedulerState => {
   let state = schedulers.get(engine)
   if (!state) {
     state = { byPhase: new Map(PHASES.map((p) => [p, []])), all: new Set() }
     schedulers.set(engine, state)
+  }
+  if (pendingHandles.length > 0) {
+    for (const handle of pendingHandles) {
+      if (!state.all.has(handle)) attachToScheduler(engine, state, handle)
+    }
+    pendingHandles.length = 0
   }
   return state
 }
@@ -113,8 +137,7 @@ const sortPhase = (handles: SystemHandle[]): SystemHandle[] => {
   return sorted
 }
 
-export const defineSystem = (engine: Engine, definition: SystemDefinition): SystemHandle => {
-  const state = getOrCreate(engine)
+export const defineSystem = (definition: SystemDefinition): SystemHandle => {
   let dispose: (() => void) | undefined
   if (definition.reactor) {
     const reactor = definition.reactor
@@ -124,25 +147,32 @@ export const defineSystem = (engine: Engine, definition: SystemDefinition): Syst
     })
   }
   const handle: SystemHandle = { name: definition.name, phase: definition.phase, definition, dispose }
-  state.all.add(handle)
-  const phaseList = state.byPhase.get(definition.phase) ?? []
-  phaseList.push(handle)
-  state.byPhase.set(definition.phase, sortPhase(phaseList))
-  // Setup registers teardown. destroyEngine drains this list.
-  engine.disposers.push(() => removeSystem(engine, handle))
+  const engine = tryGetEngine()
+  if (engine) {
+    attachToScheduler(engine, getOrCreate(engine), handle)
+  } else {
+    pendingHandles.push(handle)
+  }
   return handle
 }
 
-export const removeSystem = (engine: Engine, handle: SystemHandle): void => {
-  const state = schedulers.get(engine)
-  if (!state) return
-  state.all.delete(handle)
-  const phaseList = state.byPhase.get(handle.phase)
-  if (phaseList)
-    state.byPhase.set(
-      handle.phase,
-      phaseList.filter((h) => h !== handle)
-    )
+export const removeSystem = (handle: SystemHandle): void => {
+  const engine = tryGetEngine()
+  if (engine) {
+    const state = schedulers.get(engine)
+    if (state) {
+      state.all.delete(handle)
+      const phaseList = state.byPhase.get(handle.phase)
+      if (phaseList)
+        state.byPhase.set(
+          handle.phase,
+          phaseList.filter((h) => h !== handle)
+        )
+    }
+  }
+  // Also remove from pending if it was never attached
+  const idx = pendingHandles.indexOf(handle)
+  if (idx >= 0) pendingHandles.splice(idx, 1)
   handle.dispose?.()
   handle.dispose = undefined
 }
@@ -159,7 +189,12 @@ export const removeSystem = (engine: Engine, handle: SystemHandle): void => {
  * The function throws if a *different* handle with the same `name` already
  * exists on this engine. It does nothing when the handle already exists.
  */
-export const injectSystem = (engine: Engine, handle: SystemHandle): void => {
+export const injectSystem = (handle: SystemHandle): void => {
+  const engine = tryGetEngine()
+  if (!engine) {
+    if (!pendingHandles.includes(handle)) pendingHandles.push(handle)
+    return
+  }
   const state = getOrCreate(engine)
   if (state.all.has(handle)) return
   for (const existing of state.all) {
@@ -180,21 +215,17 @@ export const injectSystem = (engine: Engine, handle: SystemHandle): void => {
   state.byPhase.set(handle.phase, sortPhase(phaseList))
 }
 
-export const reorderSystem = (
-  engine: Engine,
-  handle: SystemHandle,
-  ordering: { before?: string[]; after?: string[] }
-): void => {
+export const reorderSystem = (handle: SystemHandle, ordering: { before?: string[]; after?: string[] }): void => {
   ;(handle.definition as { before?: string[]; after?: string[] }).before = ordering.before ?? handle.definition.before
   ;(handle.definition as { before?: string[]; after?: string[] }).after = ordering.after ?? handle.definition.after
-  const state = schedulers.get(engine)
+  const state = schedulers.get(getEngine())
   if (!state) return
   const phaseList = state.byPhase.get(handle.phase) ?? []
   state.byPhase.set(handle.phase, sortPhase(phaseList))
 }
 
-export const listSystems = (engine: Engine, phase?: Phase): SystemHandle[] => {
-  const state = schedulers.get(engine)
+export const listSystems = (phase?: Phase): SystemHandle[] => {
+  const state = schedulers.get(getEngine())
   if (!state) return []
   if (phase) return state.byPhase.get(phase)?.slice() ?? []
   return Array.from(state.all)
@@ -211,7 +242,8 @@ export const listSystems = (engine: Engine, phase?: Phase): SystemHandle[] => {
  * replication calls `flushAuthored` and `flushRuntime` after this function
  * returns.
  */
-export const runSystems = (engine: Engine, deltaSeconds: number): void => {
+export const runSystems = (deltaSeconds: number): void => {
+  const engine = getEngine()
   const state = getOrCreate(engine)
   const runPhase = (phase: Phase, dt: number): void => {
     for (const handle of state.byPhase.get(phase) ?? []) {
@@ -231,7 +263,9 @@ export const runSystems = (engine: Engine, deltaSeconds: number): void => {
 }
 
 /** Dispose every system on an engine and remove the scheduler state. */
-export const disposeAllSystems = (engine: Engine): void => {
+export const disposeAllSystems = (): void => {
+  const engine = tryGetEngine()
+  if (!engine) return
   const state = schedulers.get(engine)
   if (!state) return
   for (const h of state.all) h.dispose?.()

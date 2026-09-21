@@ -7,9 +7,10 @@
  *   - capability constraints reject events from peers without the right cap
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  createEngine,
+  initEngine,
+  resetEngine,
   createWorld,
   destroyWorld,
   defineComponent,
@@ -106,12 +107,13 @@ const Health = defineComponent({
   })
 })
 
-const tick = async (
-  worlds: Array<{ world: ReturnType<typeof createWorld>; clock: ReturnType<typeof createManualClock> }>
-) => {
-  for (const { world, clock } of worlds) {
-    clock.advance(1000 / 60)
-    runSystems(world.engine, 1 / 60)
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
+
+const tick = async (worlds: World[], clock: ReturnType<typeof createManualClock>) => {
+  clock.advance(1000 / 60)
+  runSystems(1 / 60)
+  for (const world of worlds) {
     flushAuthored(world)
     flushRuntime(world)
   }
@@ -120,12 +122,12 @@ const tick = async (
 
 describe('Local runtime — signed two-peer replication', () => {
   it('Ed25519-signed events propagate from A to B and apply', async () => {
-    const clockA = createManualClock(0)
-    const clockB = createManualClock(0)
+    const clock = createManualClock(0)
+    initEngine({ clock })
     const agentA = createLocalAgent({ seed: 'alice' })
     const agentB = createLocalAgent({ seed: 'bob' })
-    const worldA = createWorld({ engine: createEngine({ clock: clockA }), agent: agentA })
-    const worldB = createWorld({ engine: createEngine({ clock: clockB }), agent: agentB })
+    const worldA = createWorld({ agent: agentA })
+    const worldB = createWorld({ agent: agentB })
     const aliceUser = createUser(worldA, { did: agentA.did, asLocal: true })
     createPeer(worldA, { user: aliceUser, peerId: 'alice-p', asLocal: true })
     const bobUser = createUser(worldB, { did: agentB.did, asLocal: true })
@@ -137,10 +139,7 @@ describe('Local runtime — signed two-peer replication', () => {
     setUID(worldA, avatar, 'avatar:alice', { parent: scene })
     setComponent(worldA, avatar, Health, { current: 77 })
 
-    await tick([
-      { world: worldA, clock: clockA },
-      { world: worldB, clock: clockB }
-    ])
+    await tick([worldA, worldB], clock)
 
     const bScene = getEntityByUID(worldB, worldB.worldRoot, 'scene:local')!
     const bAva = getEntityByUID(worldB, bScene, 'avatar:alice')!
@@ -210,13 +209,12 @@ describe('Local runtime — signed two-peer replication', () => {
 
 describe('Local runtime — capability governance', () => {
   it('capability constraint rejects events from peer without matching cap', async () => {
-    const clockA = createManualClock(0)
-    const clockB = createManualClock(0)
+    const clock = createManualClock(0)
+    initEngine({ clock })
     const aliceAgent = createLocalAgent({ seed: 'cap-alice' })
     const bobAgent = createLocalAgent({ seed: 'cap-bob' })
-    // Governance runs engine-internally — no gate to pass.
-    const worldA = createWorld({ engine: createEngine({ clock: clockA }), agent: aliceAgent })
-    const worldB = createWorld({ engine: createEngine({ clock: clockB }), agent: bobAgent })
+    const worldA = createWorld({ agent: aliceAgent })
+    const worldB = createWorld({ agent: bobAgent })
     const aliceUser = createUser(worldA, { did: aliceAgent.did, asLocal: true })
     createPeer(worldA, { user: aliceUser, peerId: 'alice-p', asLocal: true })
     const bobUser = createUser(worldB, { did: bobAgent.did, asLocal: true })
@@ -242,10 +240,7 @@ describe('Local runtime — capability governance', () => {
     setUID(worldA, ava, 'avatar', { parent: scene })
     setComponent(worldA, ava, Health, { current: 50 })
 
-    await tick([
-      { world: worldA, clock: clockA },
-      { world: worldB, clock: clockB }
-    ])
+    await tick([worldA, worldB], clock)
 
     // Bob's world has the constraint + initial Health
     const bScene = getEntityByUID(worldB, worldB.worldRoot, 'scene:cap')!
@@ -254,10 +249,7 @@ describe('Local runtime — capability governance', () => {
 
     // Bob (no cap) attempts to modify Health — locally succeeds, but Alice's world rejects
     setComponent(worldB, bAva, Health, { current: 9999 })
-    await tick([
-      { world: worldA, clock: clockA },
-      { world: worldB, clock: clockB }
-    ])
+    await tick([worldA, worldB], clock)
 
     expect(getComponent(worldA, ava, Health)?.current).toBe(50)
 
@@ -270,10 +262,7 @@ describe('Local runtime — capability governance', () => {
 describe('Local runtime — direct envelope apply', () => {
   it('applyAuthoredEnvelope drops events failing governance', () => {
     // A deny-all constraint. Every event fails governance.
-    const world = createWorld({
-      engine: createEngine(),
-      agent: createLocalAgent({ seed: 'baseline' })
-    })
+    const world = createWorld({ agent: createLocalAgent({ seed: 'baseline' }) })
     addConstraint(world, world.worldRoot, 'loc:deny-all', {})
 
     applyAuthoredEnvelope(world, {

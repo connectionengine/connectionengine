@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
-import { createEngine } from '../ecs/engine'
+import { initEngine, resetEngine } from '../ecs/engine'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
 import { createEntity } from '../ecs/entity'
 import { defineComponent, setComponent } from '../ecs/component'
@@ -14,8 +14,11 @@ const B = defineComponent({ id: 'B', schema: Schema.Object({ v: Schema.Number({ 
 const ChildOf = defineRelation({ name: 'ChildOf', exclusive: true })
 
 describe('Query', () => {
+  beforeEach(() => initEngine())
+  afterEach(() => resetEngine())
+
   it('returns entities matching all components', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e1 = createEntity(world)
     const e2 = createEntity(world)
     const e3 = createEntity(world)
@@ -31,7 +34,7 @@ describe('Query', () => {
   })
 
   it('Or matches union of component sets', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e1 = createEntity(world)
     const e2 = createEntity(world)
     const e3 = createEntity(world)
@@ -44,7 +47,7 @@ describe('Query', () => {
   })
 
   it('Not excludes', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const e1 = createEntity(world)
     const e2 = createEntity(world)
     setComponent(world, e1, A)
@@ -56,7 +59,7 @@ describe('Query', () => {
   })
 
   it('relation queries match children of a parent', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const parent = createEntity(world)
     const c1 = createEntity(world)
     const c2 = createEntity(world)
@@ -70,7 +73,7 @@ describe('Query', () => {
   })
 
   it('wildcard relation matches any target', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent() })
+    const world = createWorld({ agent: createAnonAgent() })
     const p1 = createEntity(world)
     const p2 = createEntity(world)
     const c1 = createEntity(world)

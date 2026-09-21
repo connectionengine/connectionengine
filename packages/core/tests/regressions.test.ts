@@ -6,9 +6,9 @@
  * spans the seam between two peers, which is where these defects lived.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../src/schema'
-import { createEngine } from '../src/ecs/engine'
+import { initEngine, resetEngine } from '../src/ecs/engine'
 import { createManualClock } from '../src/ecs/clock'
 import {
   createAnonAgent,
@@ -73,8 +73,10 @@ defineConstraint({
   }
 })
 
-const machine = (name: string): World =>
-  createWorld({ engine: createEngine({ clock: createManualClock(0) }), agent: createAnonAgent(name) })
+beforeEach(() => initEngine({ clock: createManualClock(0) }))
+afterEach(() => resetEngine())
+
+const machine = (name: string): World => createWorld({ agent: createAnonAgent(name) })
 
 /**
  * The destroy events a flush would put on the wire.
@@ -563,10 +565,9 @@ describe('two worlds sharing one engine', () => {
     // engine — with a different `world` closed over each time. `removeEntity`
     // now queues onto the world it was handed, so the count cannot drift with
     // the number of worlds.
-    const engine = createEngine({ clock: createManualClock(0) })
-    const a = createWorld({ engine, agent: createAnonAgent('shared-a') })
-    const b = createWorld({ engine, agent: createAnonAgent('shared-b') })
-    const c = createWorld({ engine, agent: createAnonAgent('shared-c') })
+    const a = createWorld({ agent: createAnonAgent('shared-a') })
+    const b = createWorld({ agent: createAnonAgent('shared-b') })
+    const c = createWorld({ agent: createAnonAgent('shared-c') })
     for (const [w, n] of [
       [a, 'shared-a'],
       [b, 'shared-b'],
@@ -588,9 +589,8 @@ describe('two worlds sharing one engine', () => {
   it('a destroyed world stops authoring, and leaves the survivors intact', () => {
     // The observers never detached, so a destroyed world kept running its
     // handler on every later removal in the same engine.
-    const engine = createEngine({ clock: createManualClock(0) })
-    const gone = createWorld({ engine, agent: createAnonAgent('gone') })
-    const live = createWorld({ engine, agent: createAnonAgent('live') })
+    const gone = createWorld({ agent: createAnonAgent('gone') })
+    const live = createWorld({ agent: createAnonAgent('live') })
     bootstrap(gone, 'gone')
     bootstrap(live, 'live')
     destroyWorld(gone)

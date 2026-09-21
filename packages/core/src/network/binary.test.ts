@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { createAnonAgent, createWorld, destroyWorld } from '../ecs/world'
-import { createEngine } from '../ecs/engine'
+import { initEngine, resetEngine } from '../ecs/engine'
 import { createEntity } from '../ecs/entity'
 import { defineComponent, getComponent, getInstanceStore, setComponent } from '../ecs/component'
 import { createBinaryPipeline } from './binary'
@@ -37,10 +37,13 @@ const soaGet = (component: Record<string, unknown>, entity: number, field: strin
   return soa[channel][entity]
 }
 
+beforeEach(() => initEngine())
+afterEach(() => resetEngine())
+
 describe('createBinaryPipeline — paired write + read', () => {
   it('round-trips multiple entities + components between two worlds', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-src') })
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-tgt') })
+    const source = createWorld({ agent: createAnonAgent('pipe-src') })
+    const target = createWorld({ agent: createAnonAgent('pipe-tgt') })
 
     const sourcePipe = createBinaryPipeline(source, [Transform, Velocity])
     const targetPipe = createBinaryPipeline(target, [Transform, Velocity])
@@ -80,7 +83,7 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('persists shadow state across writes so unchanged entities emit zero payload', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-shadow') })
+    const world = createWorld({ agent: createAnonAgent('pipe-shadow') })
     const pipe = createBinaryPipeline(world, [Velocity])
     const e = createEntity(world)
     setComponent(world, e, Velocity, { linear: [1, 2, 3] })
@@ -100,7 +103,7 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('forceFullSync re-sends all fields regardless of shadow', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-full') })
+    const world = createWorld({ agent: createAnonAgent('pipe-full') })
     const pipe = createBinaryPipeline(world, [Velocity])
     const e = createEntity(world)
     setComponent(world, e, Velocity, { linear: [1, 2, 3] })
@@ -114,7 +117,7 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('resetShadow forces a full snapshot on the next write', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-reset') })
+    const world = createWorld({ agent: createAnonAgent('pipe-reset') })
     const pipe = createBinaryPipeline(world, [Velocity])
     const e = createEntity(world)
     setComponent(world, e, Velocity, { linear: [1, 2, 3] })
@@ -128,8 +131,8 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('unknown networkId on read still parses cleanly (cursor stays in sync)', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-unknown-src') })
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-unknown-tgt') })
+    const source = createWorld({ agent: createAnonAgent('pipe-unknown-src') })
+    const target = createWorld({ agent: createAnonAgent('pipe-unknown-tgt') })
     const sourcePipe = createBinaryPipeline(source, [Velocity])
     const targetPipe = createBinaryPipeline(target, [Velocity])
     const t = createEntity(target)
@@ -153,7 +156,7 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('Transform with one changed field emits ~6 bytes per entity (mask + 1 float)', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-delta-size') })
+    const world = createWorld({ agent: createAnonAgent('pipe-delta-size') })
     const pipe = createBinaryPipeline(world, [Transform])
     const e = createEntity(world)
     setComponent(world, e, Transform, { position: [1, 1, 1], rotation: [0, 0, 0, 1] })
@@ -170,13 +173,13 @@ describe('createBinaryPipeline — paired write + read', () => {
   })
 
   it('throws if constructed with empty components list', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-empty') })
+    const world = createWorld({ agent: createAnonAgent('pipe-empty') })
     expect(() => createBinaryPipeline(world, [])).toThrow(/at least one component/i)
     destroyWorld(world)
   })
 
   it('exposes the components list in registration order', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('pipe-order') })
+    const world = createWorld({ agent: createAnonAgent('pipe-order') })
     const pipe = createBinaryPipeline(world, [Transform, Velocity])
     expect(pipe.components).toEqual([Transform, Velocity])
     destroyWorld(world)
@@ -225,7 +228,7 @@ const MixedDenseSparse = defineComponent({
 
 describe('Spec 08 — binary pipeline includes only continuous fields', () => {
   it('discrete-only component produces zero payload', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-disc') })
+    const world = createWorld({ agent: createAnonAgent('s08-disc') })
     const pipe = createBinaryPipeline(world, [DiscreteOnly])
     const e = createEntity(world)
     setComponent(world, e, DiscreteOnly, { position: [1, 2, 3], rotation: [0, 0, 0, 1] })
@@ -237,8 +240,8 @@ describe('Spec 08 — binary pipeline includes only continuous fields', () => {
   })
 
   it('mixed continuous+discrete component only transports the continuous field', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-mix-src') })
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-mix-tgt') })
+    const source = createWorld({ agent: createAnonAgent('s08-mix-src') })
+    const target = createWorld({ agent: createAnonAgent('s08-mix-tgt') })
     const sPipe = createBinaryPipeline(source, [MixedContinuousDiscrete])
     const tPipe = createBinaryPipeline(target, [MixedContinuousDiscrete])
 
@@ -266,8 +269,8 @@ describe('Spec 08 — binary pipeline includes only continuous fields', () => {
 
 describe('Spec 08 — sparse continuous fields round-trip through binary', () => {
   it('sparse Vec3 stages from instance store, writes binary, unstages on read', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-sparse-src') })
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-sparse-tgt') })
+    const source = createWorld({ agent: createAnonAgent('s08-sparse-src') })
+    const target = createWorld({ agent: createAnonAgent('s08-sparse-tgt') })
     const sPipe = createBinaryPipeline(source, [SparseContinuous])
     const tPipe = createBinaryPipeline(target, [SparseContinuous])
 
@@ -294,8 +297,8 @@ describe('Spec 08 — sparse continuous fields round-trip through binary', () =>
   })
 
   it('sparse scalar stages and round-trips a single float', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-ss-src') })
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-ss-tgt') })
+    const source = createWorld({ agent: createAnonAgent('s08-ss-src') })
+    const target = createWorld({ agent: createAnonAgent('s08-ss-tgt') })
     const sPipe = createBinaryPipeline(source, [SparseScalarContinuous])
     const tPipe = createBinaryPipeline(target, [SparseScalarContinuous])
 
@@ -317,7 +320,7 @@ describe('Spec 08 — sparse continuous fields round-trip through binary', () =>
   })
 
   it('sparse continuous field participates in shadow-map change detection', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-sparse-shadow') })
+    const world = createWorld({ agent: createAnonAgent('s08-sparse-shadow') })
     const pipe = createBinaryPipeline(world, [SparseContinuous])
     const e = createEntity(world)
     setComponent(world, e, SparseContinuous, { offset: [1, 2, 3] })
@@ -340,8 +343,8 @@ describe('Spec 08 — sparse continuous fields round-trip through binary', () =>
 
 describe('Spec 08 — mixed dense + sparse continuous fields', () => {
   it('round-trips both dense SoA and sparse instance-store fields', () => {
-    const source = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-ds-src') })
-    const target = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-ds-tgt') })
+    const source = createWorld({ agent: createAnonAgent('s08-ds-src') })
+    const target = createWorld({ agent: createAnonAgent('s08-ds-tgt') })
     const sPipe = createBinaryPipeline(source, [MixedDenseSparse])
     const tPipe = createBinaryPipeline(target, [MixedDenseSparse])
 
@@ -370,7 +373,7 @@ describe('Spec 08 — mixed dense + sparse continuous fields', () => {
   })
 
   it('delta write detects changes independently in dense and sparse halves', () => {
-    const world = createWorld({ engine: createEngine(), agent: createAnonAgent('s08-ds-delta') })
+    const world = createWorld({ agent: createAnonAgent('s08-ds-delta') })
     const pipe = createBinaryPipeline(world, [MixedDenseSparse])
     const e = createEntity(world)
     setComponent(world, e, MixedDenseSparse, { position: [1, 2, 3], offset: [10, 20, 30] })
