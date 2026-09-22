@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { initEngine, resetEngine } from './engine'
 import { createAnonAgent, createWorld, destroyWorld } from './world'
-import { createEntity } from './entity'
+import { createEntity, removeEntity } from './entity'
 import {
   defineComponent,
   drainRuntimeDirty,
@@ -11,6 +11,7 @@ import {
   hasComponent,
   hasContinuousFields,
   removeComponent,
+  serialiseComponentValue,
   setComponent
 } from './component'
 
@@ -599,6 +600,57 @@ describe('Mutation pipeline — per-field sync', () => {
     const e = createEntity(world)
     setComponent(world, e, C, { position: [1, 2, 3] })
     expect(world.runtimeDirty.has('Mut.DiscDirty')).toBe(false)
+    destroyWorld(world)
+  })
+})
+
+// ── 10.1 regression: scalar SoA serialisation ──────────────────────────────
+
+describe('serialiseComponentValue — scalar SoA fields', () => {
+  it('serialises a scalar SoA field that has no .to() method', () => {
+    const Temp = defineComponent({
+      id: 'Ser.ScalarSoA',
+      schema: Schema.Object({ heat: Schema.Float32() })
+    })
+    const world = createWorld({ agent: createAnonAgent() })
+    const e = createEntity(world)
+    setComponent(world, e, Temp, { heat: 42.5 })
+    const out = serialiseComponentValue(world, e, Temp as any)
+    expect(out.heat).toBeCloseTo(42.5)
+    destroyWorld(world)
+  })
+
+  it('serialises Vec3 SoA fields alongside scalar SoA fields', () => {
+    const Combo = defineComponent({
+      id: 'Ser.Combo',
+      schema: Schema.Object({
+        position: Schema.Vec3(),
+        speed: Schema.Float32()
+      })
+    })
+    const world = createWorld({ agent: createAnonAgent() })
+    const e = createEntity(world)
+    setComponent(world, e, Combo, { position: [1, 2, 3], speed: 9.8 })
+    const out = serialiseComponentValue(world, e, Combo as any)
+    expect(out.position).toEqual([1, 2, 3])
+    expect(out.speed).toBeCloseTo(9.8)
+    destroyWorld(world)
+  })
+})
+
+// ── 10.5 regression: entity removal cleans instance stores ─────────────────
+
+describe('removeEntity cleans component stores', () => {
+  it('deletes instance store and view cache entries on entity removal', () => {
+    const world = createWorld({ agent: createAnonAgent() })
+    const e = createEntity(world)
+    setComponent(world, e, Health, { current: 50 })
+    setComponent(world, e, Transform, { position: [1, 2, 3], rotation: [0, 0, 0, 1] })
+    expect(getInstanceStore(world, Health)[e]).toBeDefined()
+    removeEntity(world, e)
+
+    expect(getInstanceStore(world, Health)[e]).toBeUndefined()
+    expect(getInstanceStore(world, Transform as any)[e]).toBeUndefined()
     destroyWorld(world)
   })
 })

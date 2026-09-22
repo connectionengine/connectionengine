@@ -562,6 +562,7 @@ export const serialiseComponentValue = (
   for (const field of component.$soaFields) {
     const soa = soaStores[field]
     if (typeof soa?.to === 'function') out[field] = Array.from(soa.to(entity))
+    else if (soa) out[field] = (soa as unknown as Record<number, number>)[entity]
   }
   return out
 }
@@ -581,6 +582,18 @@ export const removeComponent = <T extends TSchema>(
   delete stores.views[entity]
   if (hasContinuousFields(component)) clearRuntimeDirty(world, entity, component.$id)
   if (component.$sync) markComponentDirty(world, entity, component.$id)
+}
+
+/** Delete per-entity instance stores and view caches for every component on
+ *  this engine. Call before bitECS entity removal so stale entries do not
+ *  survive entity-ID recycling. */
+export const cleanupEntityStores = (engine: Engine, entity: Entity): void => {
+  for (const component of allComponents()) {
+    const stores = engine.componentStores.get(component)
+    if (!stores) continue
+    delete stores.store[entity]
+    delete stores.views[entity]
+  }
 }
 
 // ── Dirty-flag helpers ───────────────────────────────────────────────────────

@@ -17,7 +17,7 @@
 
 import { Schema } from '../schema'
 import { defineComponent, getComponent, hasComponent } from '../ecs/component'
-import { BelongsTo } from '../ecs/entity'
+import { BelongsTo, getEntityByUID } from '../ecs/entity'
 import { query } from '../ecs/query'
 import type { Entity, World } from '../ecs/world'
 
@@ -67,9 +67,11 @@ export const ConnectedTo = defineComponent({
 
 // ── Lookups ───────────────────────────────────────────────────────────────────
 
-/** Find a user entity by its DID. The scan is linear, which is acceptable
- *  because the user count stays small. */
+/** Find a user entity by its DID. O(1) when the user carries the default UID
+ *  pattern (`user:<did>`). Falls back to a linear scan for custom UIDs. */
 export const findUserByDID = (world: World, did: string): Entity | undefined => {
+  const cached = getEntityByUID(world, world.worldRoot, `user:${did}`)
+  if (cached !== undefined) return cached
   for (const entity of query(world, [UserComponent])) {
     const value = getComponent(world, entity, UserComponent) as { did?: string } | undefined
     if (value?.did === did) return entity
@@ -84,8 +86,12 @@ export const getUserDID = (world: World, user: Entity): string | undefined => {
   return value?.did
 }
 
-/** Find a peer entity by its peerId, under one specific user. The scan is linear. */
+/** Find a peer entity by its peerId under one specific user. O(1) when the
+ *  peer carries the default UID pattern (`peer:<peerId>`). Falls back to a
+ *  linear scan for custom UIDs. */
 export const findPeerByIdForUser = (world: World, user: Entity, peerId: string): Entity | undefined => {
+  const cached = getEntityByUID(world, user, `peer:${peerId}`)
+  if (cached !== undefined) return cached
   for (const entity of query(world, [PeerComponent])) {
     if (BelongsTo.indexFor(world.engine).get(entity) !== user) continue
     const value = getComponent(world, entity, PeerComponent) as { peerId?: string } | undefined

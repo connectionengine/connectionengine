@@ -30,7 +30,7 @@
 
 import * as bitecs from 'bitecs'
 import { Schema } from '../schema'
-import { defineComponent, getComponent, setComponent } from './component'
+import { cleanupEntityStores, defineComponent, getComponent, setComponent } from './component'
 import { captureRelationIndexes, clearRelationIndexes, defineRelation } from './relation'
 import type { Engine } from './engine'
 import type { Entity, World } from './world'
@@ -154,6 +154,7 @@ export const removeEntity = (world: World, entity: Entity): void => {
       indexed: captureRelationIndexes(world.engine, entity)
     })
   }
+  cleanupEntityStores(world.engine, entity)
   bitecs.removeEntity(world.engine.bitECS, entity)
   cleanupIdentity(world.engine, entity)
 }
@@ -266,9 +267,10 @@ export const getEntityPath = (world: World, entity: Entity): string[] => {
   while (cursor !== undefined) {
     const uid = uidMap.get(cursor)
     if (uid === undefined) break
-    path.unshift(uid)
+    path.push(uid)
     cursor = parentMap.get(cursor)
   }
+  path.reverse()
   return path
 }
 

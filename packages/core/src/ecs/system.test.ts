@@ -81,13 +81,17 @@ describe('System scheduler', () => {
     resetEngine()
   })
 
-  it('reactor: Solid signal updates propagate synchronously via createComputed', () => {
+  it('reactor: Solid signal updates propagate synchronously via createComputed', async () => {
+    // Vitest resolves solid-js to the server build (stub reactivity) under the
+    // 'node' export condition. Import the dev build directly to verify real
+    // reactive propagation.
+    const { createRoot: root, createSignal: signal, createComputed: computed } = await import('solid-js/dist/dev.js')
     let observed = 0
     let setter: ((v: number) => void) | undefined
-    const dispose = createRoot((d) => {
-      const [val, set] = createSignal(0)
+    const dispose = root((d: () => void) => {
+      const [val, set] = signal(0)
       setter = set
-      createComputed(() => {
+      computed(() => {
         observed = val()
       })
       return d
@@ -174,6 +178,15 @@ describe('System scheduler', () => {
     removeSystem(otherHandle)
     expect(() => injectSystem(otherHandle)).toThrow(/already exists/i)
     destroyWorld(world)
+  })
+
+  it('throws on circular before/after constraints', () => {
+    const world = createWorld({ agent: createAnonAgent() })
+    defineSystem({ name: 'cyc-a', phase: 'Render', before: ['cyc-b'] })
+    defineSystem({ name: 'cyc-b', phase: 'Render', before: ['cyc-c'] })
+    expect(() => defineSystem({ name: 'cyc-c', phase: 'Render', before: ['cyc-a'] })).toThrow(/cycle/i)
+    destroyWorld(world)
+    resetEngine()
   })
 
   it('resetEngine disposes all system reactors', () => {

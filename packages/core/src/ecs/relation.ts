@@ -131,6 +131,7 @@ export type RelationExtensions<O> = Omit<O, ReservedRelationOptionKey>
 // ── Global relation registry ─────────────────────────────────────────────────-
 // Relation definitions are module-level singletons, as component definitions are.
 const relationsByName = new Map<string, RelationDefinition<unknown>>()
+const indexedRelationsByName = new Map<string, RelationDefinition<unknown>>()
 const relationsByRef = new WeakMap<bitecs.Relation<unknown>, RelationDefinition<unknown>>()
 
 export const defineRelation = <T = void, O extends RelationOptions<T> = RelationOptions<T>>(
@@ -153,8 +154,9 @@ export const defineRelation = <T = void, O extends RelationOptions<T> = Relation
       `defineRelation('${name}'): index requires exclusive, because an index holds one target per subject`
     )
   }
-  const existing = relationsByName.get(name)
-  if (existing) return existing as RelationDefinition<T> & RelationExtensions<O> & RelationIndexAccessors<O>
+  if (relationsByName.has(name)) {
+    throw new Error(`defineRelation('${name}'): a relation with this name already exists`)
+  }
   const $relation = bitecs.createRelation<T>({
     exclusive,
     autoRemoveSubject,
@@ -193,6 +195,7 @@ export const defineRelation = <T = void, O extends RelationOptions<T> = Relation
 
   relationsByRef.set($relation as bitecs.Relation<unknown>, def as RelationDefinition<unknown>)
   relationsByName.set(name, def as RelationDefinition<unknown>)
+  if (index) indexedRelationsByName.set(name, def as RelationDefinition<unknown>)
   return def
 }
 
@@ -224,10 +227,8 @@ const indexOf = <T>(engine: Engine, relation: RelationDefinition<T>): Map<Entity
   return map
 }
 
-/** Every relation that declared an index. The list stays short, so the callers
- *  that walk it on entity removal walk a handful of entries. */
-export const indexedRelations = (): RelationDefinition<unknown>[] =>
-  Array.from(relationsByName.values()).filter((r) => r.$index !== undefined)
+/** Every relation that declared an index. */
+export const indexedRelations = (): IterableIterator<RelationDefinition<unknown>> => indexedRelationsByName.values()
 
 /**
  * The index entry of every indexed relation for one subject.

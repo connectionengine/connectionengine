@@ -131,8 +131,8 @@ const sortPhase = (handles: SystemHandle[]): SystemHandle[] => {
     }
   }
   if (sorted.length !== handles.length) {
-    // The graph holds a cycle. Fall back to the insertion order.
-    return handles
+    const inCycle = handles.filter((h) => !sorted.includes(h)).map((h) => h.name)
+    throw new Error(`System dependency cycle detected among: ${inCycle.join(', ')}`)
   }
   return sorted
 }
