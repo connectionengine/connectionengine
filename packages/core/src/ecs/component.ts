@@ -61,6 +61,7 @@ import { Value } from '@sinclair/typebox/value'
 import { resizableArray, type ResizableArray, type TypedArrayConstructor } from '../maths/common'
 import type { ArrayBufferKind, SoAStoreKind } from '../schema/kinds'
 import type { Entity, World } from './world'
+import { appendEventLog } from './event-log'
 import type { Engine } from './engine'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -420,12 +421,20 @@ const hasDiscreteWrite = (value: Record<string, unknown>, component: ComponentDe
   return false
 }
 
-export const setComponent = <T extends TSchema>(
+/**
+ * Raw store write. Apply the value to bitECS + instance + SoA stores, and mark
+ * runtimeDirty for continuous fields. Produce no event. Return whether the
+ * component already existed on this entity before the write.
+ *
+ * Use this on the receive path, snapshot apply, and identity infrastructure
+ * (`setUID` / `ensureEntityPath`). User-facing code calls `setComponent`.
+ */
+export const writeComponent = <T extends TSchema>(
   world: World,
   entity: Entity,
   component: ComponentDefinition<T>,
   value: ComponentWriteShape<T> = {} as ComponentWriteShape<T>
-): void => {
+): boolean => {
   const stores = getStores(world.engine, component as ComponentDefinition)
   const wasPresent = bitecs.hasComponent(world.engine.bitECS, entity, component.$ref)
 
@@ -455,10 +464,36 @@ export const setComponent = <T extends TSchema>(
     writeSoA(component as ComponentDefinition, entity, value as Record<string, unknown>)
   }
 
-  if (component.$sync) {
-    if (hasContinuousFields(component)) markRuntimeDirty(world, entity, component.$id)
-    if (!wasPresent || hasDiscreteWrite(value as Record<string, unknown>, component as ComponentDefinition)) {
-      markComponentDirty(world, entity, component.$id)
+  return wasPresent
+}
+
+export const setComponent = <T extends TSchema>(
+  world: World,
+  entity: Entity,
+  component: ComponentDefinition<T>,
+  value: ComponentWriteShape<T> = {} as ComponentWriteShape<T>
+): void => {
+  const wasPresent = writeComponent(world, entity, component, value)
+
+  if (component.$sync && hasContinuousFields(component)) {
+    markRuntimeDirty(world, entity, component.$id)
+  }
+
+  if (
+    component.$sync &&
+    (!wasPresent || hasDiscreteWrite(value as Record<string, unknown>, component as ComponentDefinition))
+  ) {
+    const path = world.entityPaths.get(entity)
+    if (path !== undefined && path.length > 0) {
+      appendEventLog(world, {
+        entityPath: path,
+        predicate: component.$id,
+        op: 'set',
+        value: serialiseComponentValue(world, entity, component as ComponentDefinition),
+        author: world.localAgent.did,
+        timestamp: world.engine.clock.now(),
+        seq: world.authoredSeq++
+      })
     }
   }
 }
@@ -570,18 +605,45 @@ export const serialiseComponentValue = (
 export const hasComponent = (world: World, entity: Entity, component: ComponentDefinition): boolean =>
   bitecs.hasComponent(world.engine.bitECS, entity, component.$ref)
 
-export const removeComponent = <T extends TSchema>(
+/**
+ * Raw store removal. Strip the component from bitECS + instance + view stores,
+ * and clear runtimeDirty. Produce no event. Return whether the component
+ * existed before the call.
+ */
+export const eraseComponent = <T extends TSchema>(
   world: World,
   entity: Entity,
   component: ComponentDefinition<T>
-): void => {
-  if (!bitecs.hasComponent(world.engine.bitECS, entity, component.$ref)) return
+): boolean => {
+  if (!bitecs.hasComponent(world.engine.bitECS, entity, component.$ref)) return false
   const stores = getStores(world.engine, component as ComponentDefinition)
   bitecs.removeComponent(world.engine.bitECS, entity, component.$ref)
   delete stores.store[entity]
   delete stores.views[entity]
   if (hasContinuousFields(component)) clearRuntimeDirty(world, entity, component.$id)
-  if (component.$sync) markComponentDirty(world, entity, component.$id)
+  return true
+}
+
+export const removeComponent = <T extends TSchema>(
+  world: World,
+  entity: Entity,
+  component: ComponentDefinition<T>
+): void => {
+  const wasPresent = eraseComponent(world, entity, component)
+  if (wasPresent && component.$sync) {
+    const path = world.entityPaths.get(entity)
+    if (path !== undefined && path.length > 0) {
+      appendEventLog(world, {
+        entityPath: path,
+        predicate: component.$id,
+        op: 'remove',
+        value: undefined,
+        author: world.localAgent.did,
+        timestamp: world.engine.clock.now(),
+        seq: world.authoredSeq++
+      })
+    }
+  }
 }
 
 /** Delete per-entity instance stores and view caches for every component on
@@ -597,19 +659,6 @@ export const cleanupEntityStores = (engine: Engine, entity: Entity): void => {
 }
 
 // ── Dirty-flag helpers ───────────────────────────────────────────────────────
-
-export const markComponentDirty = (world: World, entity: Entity, componentId: string): void => {
-  let set = world.componentDirty.get(componentId)
-  if (!set) {
-    set = new Set()
-    world.componentDirty.set(componentId, set)
-  }
-  set.add(entity)
-}
-
-export const clearComponentDirty = (world: World, entity: Entity, componentId: string): void => {
-  world.componentDirty.get(componentId)?.delete(entity)
-}
 
 export const markRuntimeDirty = (world: World, entity: Entity, componentId: string): void => {
   let set = world.runtimeDirty.get(componentId)

@@ -5,9 +5,14 @@
  * storage, time, and systems. Everything that counts as "ECS" lives
  * engine-wide. A `World` adds a virtual scope on top. It holds a `worldRoot`
  * entity that anchors a `BelongsTo` subtree, the per-world mutation pipeline
- * state (`componentDirty`, `relationQueue`, `destroyQueue`, `eventLog`,
- * `runtimeDirty`), and the local identity
- * (`localAgent`, `localUser`, `localPeer`).
+ * state (`destroyQueue`, `eventLog`, `runtimeDirty`, `authoredCursor`), and
+ * the local identity (`localAgent`, `localUser`, `localPeer`).
+ *
+ * The event log holds every AuthoredEvent produced by local mutation verbs
+ * (`setComponent`, `addRelation`, etc.) at mutation time. `flushAuthored`
+ * reads from `authoredCursor` forward, filters by local author, and
+ * broadcasts. Destroy events remain queue-based because the ownership check
+ * needs `OwnedBy` from `network/authority.ts`, which `ecs/` cannot import.
  *
  * The world also carries its `networks` map. `ecs/` names the `Network` type
  * through an inline import and never imports the module, so the layering holds
@@ -23,7 +28,7 @@
 import * as bitecs from 'bitecs'
 import type { Engine } from './engine'
 import { getEngine } from './engine'
-import { collectDescendants, removeEntity } from './entity'
+import { collectDescendants, destroyEntity } from './entity'
 
 export type Entity = number
 
@@ -71,24 +76,14 @@ export interface AuthoredEnvelope {
   fromPeer: string
 }
 
-// ── Queue + connection types ─────────────────────────────────────────────────-
-
-/**
- * A relation mutation queued for the authored flush. Relations need the target
- * entity captured at mutation time, because a same-tick removal could invalidate
- * the path before flush runs.
- */
-export interface QueuedRelation {
-  entity: Entity
-  predicate: string
-  op: 'set' | 'remove'
-  target: Entity
-}
+// ── Queue types ─────────────────────────────────────────────────────────────-
 
 /**
  * An entity destroy queued for the authored flush. The entity path and indexed
- * relations must be captured before `removeEntity` clears the identity caches,
- * because neither survives to flush time.
+ * relations must be captured before destruction clears the identity caches,
+ * because neither survives to flush time. Destroy events stay queue-based
+ * because the ownership check needs `OwnedBy` from `network/authority.ts`,
+ * which `ecs/` cannot import.
  */
 export interface QueuedDestroy {
   entity: Entity
@@ -114,24 +109,26 @@ export interface World {
 
   // ── Mutation pipeline state. Network-layer state, held per world. ──────────
 
-  /** Component dirty set. `setComponent` / `removeComponent` mark entries.
-   *  `flushAuthored` drains it. Keyed by componentId → dirty entities. */
-  componentDirty: Map<string, Set<Entity>>
-  /** Relation mutation queue. `addRelation` / `removeRelation` push entries.
-   *  `flushAuthored` drains it. */
-  relationQueue: QueuedRelation[]
   /** Entity destroy queue. `removeEntity` pushes entries (with captured path).
-   *  `flushAuthored` drains it. */
+   *  `flushAuthored` drains it with an ownership filter. */
   destroyQueue: QueuedDestroy[]
 
-  /** Append-only canonical event log. It holds plain AuthoredEvent records,
-   *  with no signatures. */
+  /** Append-only canonical event log. Local mutation verbs (`setComponent`,
+   *  `addRelation`, etc.) append events at mutation time. The receive path
+   *  also appends for dedup. */
   eventLog: AuthoredEvent[]
   /** Composite-signature index of the events in `eventLog`. Every push
    *  deduplicates against it. */
   eventLogSeen: Set<string>
   /** Ordinal of the next locally authored event. See `AuthoredEvent.seq`. */
   authoredSeq: number
+  /** Position in `eventLog` from which `flushAuthored` reads on the next
+   *  flush. Advances after each flush. */
+  authoredCursor: number
+  /** Cached entity → full UID path. `setUID` and `assignIdentity` maintain it.
+   *  `setComponent` and `addRelation` read it to stamp authored events without
+   *  importing entity.ts. */
+  entityPaths: Map<Entity, string[]>
   /** Runtime dirty set. `setComponent` writes to it for continuous-channel
    *  components. */
   runtimeDirty: Map<string, Set<Entity>>
@@ -169,12 +166,12 @@ export const createWorld = (options: CreateWorldOptions, engine: Engine = getEng
     engine,
     worldRoot,
     localAgent: options.agent,
-    componentDirty: new Map(),
-    relationQueue: [],
     destroyQueue: [],
     eventLog: [],
     eventLogSeen: new Set(),
     authoredSeq: 0,
+    authoredCursor: 0,
+    entityPaths: new Map(),
     runtimeDirty: new Map(),
     networks: new Map(),
     nextNetworkId: 1
@@ -192,17 +189,20 @@ export const destroyWorld = (world: World): void => {
   // are per-engine, through the WeakMaps on UIDComponent and BelongsTo. Cleanup
   // of the descendants stops a later world in the same engine from reading a
   // stale entry.
-  for (const e of collectDescendants(world.engine, world.worldRoot)) removeEntity(world, e)
+  for (const e of collectDescendants(world.engine, world.worldRoot)) destroyEntity(world, e)
   if (bitecs.entityExists(world.engine.bitECS, world.worldRoot)) {
     bitecs.removeEntity(world.engine.bitECS, world.worldRoot)
   }
-  world.componentDirty.clear()
-  world.relationQueue.length = 0
   world.destroyQueue.length = 0
   world.eventLog.length = 0
   world.eventLogSeen.clear()
+  world.authoredCursor = 0
   world.runtimeDirty.clear()
 }
+
+// Event log helpers live in `event-log.ts` to avoid a circular import through
+// entity.ts. Both `ecs/` mutation verbs and `network/` flush+apply import from
+// there directly.
 
 // ── Stub agent. Use it for solo mode and for tests. ──────────────────────────
 

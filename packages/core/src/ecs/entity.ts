@@ -30,8 +30,9 @@
 
 import * as bitecs from 'bitecs'
 import { Schema } from '../schema'
-import { cleanupEntityStores, defineComponent, getComponent, setComponent } from './component'
-import { captureRelationIndexes, clearRelationIndexes, defineRelation } from './relation'
+import { cleanupEntityStores, defineComponent, getComponent, writeComponent } from './component'
+import { captureRelationIndexes, clearRelationIndexes, defineRelation, writeRelation } from './relation'
+import { appendEventLog } from './event-log'
 import type { Engine } from './engine'
 import type { Entity, World } from './world'
 
@@ -145,6 +146,24 @@ export const createEntity = (world: World): Entity => bitecs.addEntity(world.eng
  */
 export const DESTROY_PREDICATE = '@destroy'
 
+/**
+ * Raw entity destruction. Strip component stores, the bitECS entity, and
+ * identity caches. Produce no event and push nothing to the destroy queue.
+ * Use on the receive path (`applyEvent`), snapshot replace, disconnect sweep,
+ * and `destroyWorld`.
+ */
+export const destroyEntity = (world: World, entity: Entity): void => {
+  cleanupEntityStores(world.engine, entity)
+  bitecs.removeEntity(world.engine.bitECS, entity)
+  cleanupIdentity(world.engine, entity)
+  world.entityPaths.delete(entity)
+}
+
+/**
+ * Remove an entity and queue the removal for replication. Captures the entity
+ * path and relation indexes before destruction so `flushAuthored` can produce
+ * the destroy event with an ownership gate.
+ */
 export const removeEntity = (world: World, entity: Entity): void => {
   const entityPath = getEntityPath(world, entity)
   if (entityPath.length > 0) {
@@ -154,9 +173,7 @@ export const removeEntity = (world: World, entity: Entity): void => {
       indexed: captureRelationIndexes(world.engine, entity)
     })
   }
-  cleanupEntityStores(world.engine, entity)
-  bitecs.removeEntity(world.engine.bitECS, entity)
-  cleanupIdentity(world.engine, entity)
+  destroyEntity(world, entity)
 }
 
 export const entityExists = (world: World, entity: Entity): boolean => bitecs.entityExists(world.engine.bitECS, entity)
@@ -212,11 +229,10 @@ export interface SetUIDOptions {
 }
 
 /**
- * Assign the UID and the BelongsTo parent. This function takes a `World`,
- * because a write to the `UIDComponent` and to the `BelongsTo` relation queues
- * authored events on the mutation pipeline of that world. The parent defaults
- * to `world.worldRoot`, which puts the entity at the top of the hierarchy of
- * this world.
+ * Assign the UID and the BelongsTo parent. Raw ops populate the store and
+ * identity caches first (avoiding the cache-timing bug where getEntityPath
+ * returns [] during setComponent). After the caches hold the correct path,
+ * append an authored event so the identity replicates.
  */
 export const setUID = (world: World, entity: Entity, uid: string, options: SetUIDOptions = {}): void => {
   const engine = world.engine
@@ -225,32 +241,40 @@ export const setUID = (world: World, entity: Entity, uid: string, options: SetUI
   const parentMap = BelongsTo.indexFor(engine)
   const parent = options.parent ?? parentMap.get(entity) ?? world.worldRoot
 
-  // Collision check
   const existingInBucket = nameCache.get(parent)?.get(uid)
   if (existingInBucket !== undefined && existingInBucket !== entity) {
     throw new Error(`Duplicate UID '${uid}' under parent ${parent} (existing entity ${existingInBucket})`)
   }
 
-  // Drop the previous identity entries for this entity. This covers re-parenting.
   const previousUid = uidMap.get(entity)
   const previousParent = parentMap.get(entity) ?? world.worldRoot
   if (previousUid !== undefined) unindexFromBucket(engine, previousParent, previousUid)
 
-  setComponent(world, entity, UIDComponent, { value: uid })
+  writeComponent(world, entity, UIDComponent, { value: uid })
   uidMap.set(entity, uid)
 
   if (options.parent !== undefined) {
-    BelongsTo.set(world, entity, options.parent)
+    writeRelation(world, entity, BelongsTo, options.parent)
   }
-  // Then write the index directly, which is the one place that does. A
-  // top-level entity carries no BelongsTo edge — nothing replicates, because
-  // `worldRoot` is local to each peer — yet it still sits under `worldRoot` in
-  // the identity cache, so that `cleanupIdentity` finds the right bucket on
-  // remove. `BelongsTo.get` therefore answers for every named entity, whether
-  // or not an edge exists.
   parentMap.set(entity, parent)
 
   indexInBucket(engine, parent, uid, entity)
+
+  const parentPath = world.entityPaths.get(parent) ?? []
+  const path = [...parentPath, uid]
+  world.entityPaths.set(entity, path)
+
+  if (path.length > 0) {
+    appendEventLog(world, {
+      entityPath: path,
+      predicate: UIDComponent.$id,
+      op: 'set',
+      value: { value: uid },
+      author: world.localAgent.did,
+      timestamp: world.engine.clock.now(),
+      seq: world.authoredSeq++
+    })
+  }
 }
 
 /** O(1) lookup. Find an entity by its UID under a parent. Use `world.worldRoot`
@@ -258,21 +282,9 @@ export const setUID = (world: World, entity: Entity, uid: string, options: SetUI
 export const getEntityByUID = (world: World, parent: Entity, uid: string): Entity | undefined =>
   nameCacheFor(world.engine).get(parent)?.get(uid)
 
-/** Walk the BelongsTo chain from root to leaf, and return the UID path. */
-export const getEntityPath = (world: World, entity: Entity): string[] => {
-  const uidMap = uidOfFor(world.engine)
-  const parentMap = BelongsTo.indexFor(world.engine)
-  const path: string[] = []
-  let cursor: Entity | undefined = entity
-  while (cursor !== undefined) {
-    const uid = uidMap.get(cursor)
-    if (uid === undefined) break
-    path.push(uid)
-    cursor = parentMap.get(cursor)
-  }
-  path.reverse()
-  return path
-}
+/** The cached UID path of an entity. `setUID` and `assignIdentity` maintain
+ *  the cache. Returns `[]` for entities without a UID. */
+export const getEntityPath = (world: World, entity: Entity): string[] => world.entityPaths.get(entity) ?? []
 
 /**
  * Collect every entity that descends from `root` through the BelongsTo and UID
@@ -309,10 +321,32 @@ export const resolveEntityPath = (world: World, path: string[]): Entity | undefi
 }
 
 /**
+ * Raw identity assignment for a freshly created entity. Write the UIDComponent
+ * and BelongsTo relation through raw ops (no events). Maintain the identity
+ * caches. Use only for `ensureEntityPath` — user code calls `setUID`.
+ */
+const assignIdentity = (world: World, entity: Entity, uid: string, parent: Entity): void => {
+  const engine = world.engine
+  writeComponent(world, entity, UIDComponent, { value: uid })
+  uidOfFor(engine).set(entity, uid)
+  if (parent !== world.worldRoot) {
+    writeRelation(world, entity, BelongsTo, parent)
+  }
+  BelongsTo.indexFor(engine).set(entity, parent)
+  indexInBucket(engine, parent, uid, entity)
+  const parentPath = world.entityPaths.get(parent) ?? []
+  world.entityPaths.set(entity, [...parentPath, uid])
+}
+
+/**
  * Walk a UID path from the world root, and create every missing node. The
  * optional `decorate` callback runs on the leaf, but only when this call
  * created that leaf. An existing leaf already carries its components from
  * replay or earlier setup.
+ *
+ * Uses raw ops internally — produces no events. The caller (snapshot apply,
+ * `applyEvent`, handshake materialisation) controls whether the surrounding
+ * writes produce events.
  */
 export const ensureEntityPath = (world: World, path: string[], decorate?: (entity: Entity) => void): Entity => {
   let parent: Entity = world.worldRoot
@@ -326,8 +360,7 @@ export const ensureEntityPath = (world: World, path: string[], decorate?: (entit
       freshLeaf = false
     } else {
       cursor = createEntity(world)
-      if (parent === world.worldRoot) setUID(world, cursor, uid)
-      else setUID(world, cursor, uid, { parent })
+      assignIdentity(world, cursor, uid, parent)
       freshLeaf = i === path.length - 1
     }
     parent = cursor

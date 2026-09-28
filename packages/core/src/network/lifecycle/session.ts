@@ -29,10 +29,10 @@
 
 import type { AuthoredEnvelope, AuthoredEvent, World } from '../../ecs/world'
 import type { ComponentDefinition } from '../../ecs/component'
-import { allComponents, getComponent, hasContinuousFields, setComponent } from '../../ecs/component'
+import { allComponents, getComponent, hasContinuousFields, setComponent, writeComponent } from '../../ecs/component'
 import { ensureEntityPath, getEntityPath } from '../../ecs/entity'
-import { addRelation } from '../../ecs/relation'
-import { applyAuthoredEnvelope, flushAuthored, isAuthoredEnvelope, withoutAuthoring } from '../mutation'
+import { writeRelation } from '../../ecs/relation'
+import { applyAuthoredEnvelope, flushAuthored, isAuthoredEnvelope } from '../mutation'
 import { ConnectedTo, PeerComponent, UserComponent } from '../agents'
 import { AuthoritativeFor, OwnedBy } from '../authority'
 import { disconnectPeer } from '../presence'
@@ -177,16 +177,16 @@ export const joinNetwork = async (world: World, options: JoinNetworkOptions): Pr
           // solo flow).
           const userPath = payload.userPath.length > 0 ? payload.userPath : [`user:${payload.agentDID}`]
           const peerPath = payload.peerPath.length > 0 ? payload.peerPath : [...userPath, `peer:${payload.peerId}`]
-          withoutAuthoring(world, () => {
-            const remoteUser = ensureEntityPath(world, userPath, (entity) => {
-              setComponent(world, entity, UserComponent, { did: payload.agentDID, displayName: '' })
-              OwnedBy.set(world, entity, entity)
-            })
-            connection.peer = ensureEntityPath(world, peerPath, (entity) => {
-              setComponent(world, entity, PeerComponent, { peerId: payload.peerId, latency: 0 })
-              OwnedBy.set(world, entity, remoteUser)
-              addRelation(world, entity, AuthoritativeFor, entity)
-            })
+          // Materialise the remote peer with raw ops — no events. The remote
+          // peer's own authored events carry this identity when they arrive.
+          const remoteUser = ensureEntityPath(world, userPath, (entity) => {
+            writeComponent(world, entity, UserComponent, { did: payload.agentDID, displayName: '' })
+            writeRelation(world, entity, OwnedBy, entity)
+          })
+          connection.peer = ensureEntityPath(world, peerPath, (entity) => {
+            writeComponent(world, entity, PeerComponent, { peerId: payload.peerId, latency: 0 })
+            writeRelation(world, entity, OwnedBy, remoteUser)
+            writeRelation(world, entity, AuthoritativeFor, entity)
           })
           setComponent(world, connection.peer, ConnectedTo, { networkId: network.id })
           connection.channel?.registerBindings(payload.bindings)

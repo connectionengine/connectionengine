@@ -67,12 +67,14 @@ export const ConnectedTo = defineComponent({
 
 // ── Lookups ───────────────────────────────────────────────────────────────────
 
-/** Find a user entity by its DID. O(1) when the user carries the default UID
- *  pattern (`user:<did>`). Falls back to a linear scan for custom UIDs. */
+/** Find a user entity by its DID, scoped to this world. O(1) when the user
+ *  carries the default UID pattern (`user:<did>`). Falls back to a linear scan
+ *  for custom UIDs, filtered to entities that belong to this world's root. */
 export const findUserByDID = (world: World, did: string): Entity | undefined => {
   const cached = getEntityByUID(world, world.worldRoot, `user:${did}`)
   if (cached !== undefined) return cached
   for (const entity of query(world, [UserComponent])) {
+    if (BelongsTo.indexFor(world.engine).get(entity) !== world.worldRoot) continue
     const value = getComponent(world, entity, UserComponent) as { did?: string } | undefined
     if (value?.did === did) return entity
   }

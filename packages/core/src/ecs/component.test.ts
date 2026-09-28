@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Schema } from '../schema'
 import { initEngine, resetEngine } from './engine'
 import { createAnonAgent, createWorld, destroyWorld } from './world'
-import { createEntity, removeEntity } from './entity'
+import { createEntity, removeEntity, setUID } from './entity'
 import {
   defineComponent,
   drainRuntimeDirty,
@@ -163,14 +163,18 @@ describe('setComponent / getComponent / removeComponent', () => {
     expect(Health.$componentSchema.shaclShape).toBeDefined()
   })
 
-  it('setComponent always marks componentDirty for synced components', () => {
+  it('setComponent appends an event for synced components', () => {
     const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
+    setUID(world, e, 'test-dirty')
+    const before = world.eventLog.length
     setComponent(world, e, Health, { current: 80 })
-    expect(world.componentDirty.get('Health')?.has(e)).toBe(true)
-    world.componentDirty.clear()
+    expect(world.eventLog.length).toBe(before + 1)
+    expect(world.eventLog[before].predicate).toBe('Health')
+    expect(world.eventLog[before].op).toBe('set')
+    const before2 = world.eventLog.length
     setComponent(world, e, Health, { current: 70 })
-    expect(world.componentDirty.get('Health')?.has(e)).toBe(true)
+    expect(world.eventLog.length).toBe(before2 + 1)
     destroyWorld(world)
   })
 })
@@ -181,9 +185,12 @@ describe('mixed-channel components', () => {
    * are discrete. Creation and discrete writes author events. Continuous
    * writes only mark dirty.
    */
+  let mkCounter = 0
   const mk = () => {
     const world = createWorld({ agent: createAnonAgent() })
-    return { world, e: createEntity(world) }
+    const e = createEntity(world)
+    setUID(world, e, `mixed-${mkCounter++}`)
+    return { world, e }
   }
 
   it('getComponent returns one merged live view over both halves', () => {
@@ -232,73 +239,78 @@ describe('mixed-channel components', () => {
     destroyWorld(world)
   })
 
-  it('instantiation marks componentDirty and runtimeDirty', () => {
+  it('instantiation appends an event and marks runtimeDirty', () => {
     const { world, e } = mk()
+    const before = world.eventLog.length
     setComponent(world, e, Mixed, { position: [1, 2, 3], label: 'rock' })
-    expect(world.componentDirty.get('Mixed')?.has(e)).toBe(true)
+    expect(world.eventLog.length).toBe(before + 1)
+    expect(world.eventLog[before].predicate).toBe('Mixed')
     expect(world.runtimeDirty.get('Mixed')?.has(e)).toBe(true)
     destroyWorld(world)
   })
 
-  it('a continuous-only write on an existing component does not mark componentDirty', () => {
+  it('a continuous-only write on an existing component does not append an event', () => {
     const { world, e } = mk()
     setComponent(world, e, Mixed, { position: [0, 0, 0], label: 'rock' })
     drainRuntimeDirty(world)
-    world.componentDirty.clear()
+    const before = world.eventLog.length
 
     setComponent(world, e, Mixed, { position: [5, 5, 5] })
-    expect(world.componentDirty.get('Mixed')?.has(e) ?? false).toBe(false)
+    expect(world.eventLog.length).toBe(before)
     expect(world.runtimeDirty.get('Mixed')?.has(e)).toBe(true)
     destroyWorld(world)
   })
 
-  it('a discrete write on an existing component marks componentDirty', () => {
+  it('a discrete write on an existing component appends an event', () => {
     const { world, e } = mk()
     setComponent(world, e, Mixed, { position: [1, 2, 3], label: 'rock' })
-    world.componentDirty.clear()
+    const before = world.eventLog.length
 
     setComponent(world, e, Mixed, { label: 'boulder' })
-    expect(world.componentDirty.get('Mixed')?.has(e)).toBe(true)
+    expect(world.eventLog.length).toBe(before + 1)
     destroyWorld(world)
   })
 
-  it('removal marks componentDirty and clears runtimeDirty', () => {
+  it('removal appends a remove event and clears runtimeDirty', () => {
     const { world, e } = mk()
     setComponent(world, e, Mixed, { position: [1, 2, 3], label: 'rock' })
-    world.componentDirty.clear()
+    const before = world.eventLog.length
 
     removeComponent(world, e, Mixed)
-    expect(world.componentDirty.get('Mixed')?.has(e)).toBe(true)
+    expect(world.eventLog.length).toBe(before + 1)
+    expect(world.eventLog[before].op).toBe('remove')
     expect(hasComponent(world, e, Mixed)).toBe(false)
     expect(world.runtimeDirty.get('Mixed')?.has(e) ?? false).toBe(false)
     destroyWorld(world)
   })
 
-  it('a no-op write to an existing component does not mark componentDirty', () => {
+  it('a no-op write to an existing component does not append an event', () => {
     const { world, e } = mk()
     setComponent(world, e, Health, { current: 50 })
     setComponent(world, e, Mixed, { position: [0, 0, 0], label: 'rock' })
-    world.componentDirty.clear()
+    const before = world.eventLog.length
 
     setComponent(world, e, Health)
     setComponent(world, e, Mixed, { position: [1, 1, 1] })
-    expect(world.componentDirty.get('Health')?.has(e) ?? false).toBe(false)
-    expect(world.componentDirty.get('Mixed')?.has(e) ?? false).toBe(false)
+    expect(world.eventLog.length).toBe(before)
     destroyWorld(world)
   })
 
-  it('a pure-continuous component marks componentDirty on creation and removal, never on motion', () => {
+  it('a pure-continuous component appends an event on creation and removal, never on motion', () => {
     const { world, e } = mk()
+    const before = world.eventLog.length
     setComponent(world, e, Transform, { position: [1, 2, 3] })
-    expect(world.componentDirty.get('Transform')?.has(e)).toBe(true)
-    world.componentDirty.clear()
+    expect(world.eventLog.length).toBe(before + 1)
+    expect(world.eventLog[before].predicate).toBe('Transform')
+    const after1 = world.eventLog.length
 
     setComponent(world, e, Transform, { position: [4, 5, 6] })
-    expect(world.componentDirty.get('Transform')?.has(e) ?? false).toBe(false)
+    expect(world.eventLog.length).toBe(after1)
     expect(world.runtimeDirty.get('Transform')?.has(e)).toBe(true)
 
     removeComponent(world, e, Transform)
-    expect(world.componentDirty.get('Transform')?.has(e)).toBe(true)
+    expect(world.eventLog.length).toBe(after1 + 1)
+    expect(world.eventLog[after1].op).toBe('remove')
     destroyWorld(world)
   })
 })
@@ -538,48 +550,54 @@ describe('Accessors — sparse vs dense', () => {
 })
 
 describe('Mutation pipeline — per-field sync', () => {
-  it('discrete Vec3: setComponent marks componentDirty on creation', () => {
+  it('discrete Vec3: setComponent appends an event on creation', () => {
     const world = createWorld({ agent: createAnonAgent() })
     const C = defineComponent({
       id: 'Mut.DiscCreate',
       schema: Schema.Object({ position: Schema.Vec3() })
     })
     const e = createEntity(world)
+    setUID(world, e, 'disc-create')
+    const before = world.eventLog.length
     setComponent(world, e, C, { position: [1, 2, 3] })
-    expect(world.componentDirty.get(C.$id)?.has(e)).toBe(true)
+    expect(world.eventLog.length).toBe(before + 1)
     destroyWorld(world)
   })
 
-  it('discrete Vec3: setComponent marks componentDirty on value change', () => {
+  it('discrete Vec3: setComponent appends an event on value change', () => {
     const world = createWorld({ agent: createAnonAgent() })
     const C = defineComponent({
       id: 'Mut.DiscChange',
       schema: Schema.Object({ position: Schema.Vec3() })
     })
     const e = createEntity(world)
+    setUID(world, e, 'disc-change')
     setComponent(world, e, C, { position: [1, 2, 3] })
-    world.componentDirty.clear()
+    const before = world.eventLog.length
     setComponent(world, e, C, { position: [4, 5, 6] })
-    expect(world.componentDirty.get(C.$id)?.has(e)).toBe(true)
+    expect(world.eventLog.length).toBe(before + 1)
     destroyWorld(world)
   })
 
-  it('continuous Vec3: setComponent does not mark componentDirty after creation', () => {
+  it('continuous Vec3: setComponent does not append an event after creation', () => {
     const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
+    setUID(world, e, 'cont-no-event')
     setComponent(world, e, Transform, { position: [1, 2, 3] })
-    world.componentDirty.clear()
+    const before = world.eventLog.length
     setComponent(world, e, Transform, { position: [4, 5, 6] })
-    expect(world.componentDirty.get('Transform')?.has(e) ?? false).toBe(false)
+    expect(world.eventLog.length).toBe(before)
     expect(world.runtimeDirty.get('Transform')?.has(e)).toBe(true)
     destroyWorld(world)
   })
 
-  it('continuous Vec3: creation still marks componentDirty', () => {
+  it('continuous Vec3: creation still appends an event', () => {
     const world = createWorld({ agent: createAnonAgent() })
     const e = createEntity(world)
+    setUID(world, e, 'cont-create')
+    const before = world.eventLog.length
     setComponent(world, e, Transform, { position: [1, 2, 3] })
-    expect(world.componentDirty.get('Transform')?.has(e)).toBe(true)
+    expect(world.eventLog.length).toBe(before + 1)
     destroyWorld(world)
   })
 

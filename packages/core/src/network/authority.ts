@@ -32,7 +32,7 @@
  *     failed event is rejected and never applied.
  */
 
-import { defineRelation } from '../ecs/relation'
+import { defineRelation, writeRelation } from '../ecs/relation'
 import { hasComponent } from '../ecs/component'
 import { BelongsTo, resolveEntityPath } from '../ecs/entity'
 import { getUserDID, PeerComponent } from './agents'
@@ -188,14 +188,12 @@ export const checkAuthorityChangeStanding = (world: World, event: AuthoredEvent)
  * back to `world.localPeer` when it knows no remaining local peer of the owner,
  * which gives a last-resort host migration.
  *
- * The observer on `ConnectedTo` removal calls it, in `network/presence.ts`, so
- * it runs on every disconnect without anyone invoking it.
+ * `disconnectPeer` in `network/presence.ts` calls it on every disconnect.
  *
- * The reassignment does not author. Every peer that sees the disconnect runs
- * this same deterministic choice and reaches the same successor, so an event
- * would be redundant. It would also usually be refused: the peer doing the
- * recovery is rarely the owner-user or the outgoing authority, which is exactly
- * what the receive-side standing check rejects.
+ * The reassignment uses raw ops (no events). Every peer that sees the
+ * disconnect runs this same deterministic choice and reaches the same
+ * successor, so an event would produce redundant traffic. It would also
+ * usually fail the receive-side standing check.
  */
 export const recoverAuthority = (world: World, entity: Entity, disconnectedPeer: Entity): void => {
   const current = AuthoritativeFor.get(world, entity)
@@ -206,12 +204,11 @@ export const recoverAuthority = (world: World, entity: Entity, disconnectedPeer:
   for (const [child, parent] of BelongsTo.indexFor(world.engine)) {
     if (parent !== owner) continue
     if (child === disconnectedPeer) continue
-    // Every child of the owner-user shares this index, including ordinary
-    // entities spawned with `{ parent: user }`. Only a Peer can hold authority.
     if (!hasComponent(world, child, PeerComponent)) continue
     if (lowest === undefined || child < lowest) lowest = child
   }
   const successor = lowest ?? world.localPeer
   if (successor === undefined || successor === disconnectedPeer) return
-  grantAuthority(world, entity, successor)
+  if (AuthoritativeFor.get(world, entity) === successor) return
+  writeRelation(world, entity, AuthoritativeFor, successor)
 }

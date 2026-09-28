@@ -3,13 +3,13 @@
  *
  * Relationships are predicates: typed, queryable links between entities. They
  * always travel as authored events, which are discrete causal mutations. A
- * relation marked `sync: false` is the one exception, and stays machine-local.
+ * relation marked `sync: false` stays machine-local.
  *
  * This module builds on `createRelation` from bitECS. The wrapper adds two
  * things:
  *   - a stable name, which serves as the predicate URI
- *   - a push of each relation add and remove onto `world.relationQueue`, which
- *     the network-layer mutation pipeline drains at the end of the tick
+ *   - event production: `addRelation` and `removeRelation` append an
+ *     AuthoredEvent to the world's event log at mutation time
  *
  * Two ways to put extra state on a definition:
  *   - `index: true` on an exclusive relation. This module then keeps a
@@ -24,6 +24,7 @@
 import * as bitecs from 'bitecs'
 import type { Engine } from './engine'
 import type { Entity, World } from './world'
+import { appendEventLog } from './event-log'
 
 export interface RelationOptions<T = void> {
   /** Predicate name. It serves as the relation URI in semantic triples. */
@@ -252,9 +253,11 @@ export const clearRelationIndexes = (engine: Engine, subject: Entity): void => {
   for (const relation of indexedRelations()) indexOf(engine, relation)?.delete(subject)
 }
 
-// ── add / remove pair ────────────────────────────────────────────────────────-
+// ── raw write / erase ───────────────────────────────────────────────────────-
 
-export const addRelation = <T>(
+/** Raw relation add. Write the bitECS pair + update the index. Produce no
+ *  event. Use on the receive path, snapshot apply, and authority recovery. */
+export const writeRelation = <T>(
   world: World,
   subject: Entity,
   relation: RelationDefinition<T>,
@@ -262,8 +265,44 @@ export const addRelation = <T>(
 ): void => {
   bitecs.addComponent(world.engine.bitECS, subject, relation.$relation(target))
   indexOf(world.engine, relation)?.set(subject, target)
+}
+
+/** Raw relation remove. Strip the bitECS pair + update the index. Produce no
+ *  event. */
+export const eraseRelation = <T>(
+  world: World,
+  subject: Entity,
+  relation: RelationDefinition<T>,
+  target: Entity
+): void => {
+  bitecs.removeComponent(world.engine.bitECS, subject, relation.$relation(target))
+  const index = indexOf(world.engine, relation)
+  if (index?.get(subject) === target) index.delete(subject)
+}
+
+// ── event-producing add / remove ────────────────────────────────────────────-
+
+export const addRelation = <T>(
+  world: World,
+  subject: Entity,
+  relation: RelationDefinition<T>,
+  target: Entity
+): void => {
+  writeRelation(world, subject, relation, target)
   if (relation.sync) {
-    world.relationQueue.push({ entity: subject, predicate: relation.name, op: 'set', target })
+    const subjectPath = world.entityPaths.get(subject) ?? []
+    const targetPath = world.entityPaths.get(target) ?? []
+    if (subjectPath.length > 0 && targetPath.length > 0) {
+      appendEventLog(world, {
+        entityPath: subjectPath,
+        predicate: relation.name,
+        op: 'set',
+        value: { targetPath },
+        author: world.localAgent.did,
+        timestamp: world.engine.clock.now(),
+        seq: world.authoredSeq++
+      })
+    }
   }
 }
 
@@ -273,11 +312,21 @@ export const removeRelation = <T>(
   relation: RelationDefinition<T>,
   target: Entity
 ): void => {
-  bitecs.removeComponent(world.engine.bitECS, subject, relation.$relation(target))
-  const index = indexOf(world.engine, relation)
-  if (index?.get(subject) === target) index.delete(subject)
+  eraseRelation(world, subject, relation, target)
   if (relation.sync) {
-    world.relationQueue.push({ entity: subject, predicate: relation.name, op: 'remove', target })
+    const subjectPath = world.entityPaths.get(subject) ?? []
+    const targetPath = world.entityPaths.get(target) ?? []
+    if (subjectPath.length > 0 && targetPath.length > 0) {
+      appendEventLog(world, {
+        entityPath: subjectPath,
+        predicate: relation.name,
+        op: 'remove',
+        value: { targetPath },
+        author: world.localAgent.did,
+        timestamp: world.engine.clock.now(),
+        seq: world.authoredSeq++
+      })
+    }
   }
 }
 

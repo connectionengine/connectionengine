@@ -33,7 +33,6 @@ import { BelongsTo, removeEntity } from '../ecs/entity'
 import * as bitecs from 'bitecs'
 import { AuthoritativeFor, OwnedBy, recoverAuthority } from './authority'
 import { ConnectedTo, PeerComponent } from './agents'
-import { withoutAuthoring } from './mutation'
 
 /**
  * Hand every entity the departed peer was writing to a peer that remains.
@@ -85,9 +84,12 @@ const sweepOwnerIfLastPeer = (world: World, peer: Entity): void => {
 export const disconnectPeer = (world: World, peer: Entity): void => {
   if (!hasComponent(world, peer, PeerComponent)) return
   if (!hasComponent(world, peer, ConnectedTo)) return
-  withoutAuthoring(world, () => {
-    removeComponent(world, peer, ConnectedTo)
-    recoverAuthorityFrom(world, peer)
-    sweepOwnerIfLastPeer(world, peer)
-  })
+  // ConnectedTo has sync:false — removeComponent produces no event.
+  // recoverAuthority uses writeRelation (raw). sweepOwnerIfLastPeer calls
+  // removeEntity which pushes to destroyQueue — the ownership gate in
+  // flushAuthored drops those events because the swept entities belong to the
+  // departing user, not the local one.
+  removeComponent(world, peer, ConnectedTo)
+  recoverAuthorityFrom(world, peer)
+  sweepOwnerIfLastPeer(world, peer)
 }

@@ -13,12 +13,16 @@
  * parameter.
  */
 
-import { allComponents, getComponentById, hasComponent, serialiseComponentValue, setComponent } from '../ecs/component'
-import { getEntityPath, uidOfFor, ensureEntityPath } from '../ecs/entity'
-import { addRelation, allRelations, getRelationByName, getRelationTargets } from '../ecs/relation'
-import { removeEntity } from '../ecs/entity'
+import {
+  allComponents,
+  getComponentById,
+  hasComponent,
+  serialiseComponentValue,
+  writeComponent
+} from '../ecs/component'
+import { getEntityPath, uidOfFor, ensureEntityPath, destroyEntity } from '../ecs/entity'
+import { allRelations, getRelationByName, getRelationTargets, writeRelation } from '../ecs/relation'
 import { checkAuthorityChangeStanding } from './authority'
-import { withoutAuthoring } from './mutation'
 import { validateAuthored } from './network'
 import type { AuthoredEvent, World } from '../ecs/world'
 
@@ -113,33 +117,31 @@ export interface SnapshotOrigin {
 }
 
 export const applySnapshot = (world: World, snapshot: Snapshot, options: ApplySnapshotOptions = {}): void => {
-  withoutAuthoring(world, () => {
-    if (options.replace) {
-      const named = Array.from(uidOfFor(world.engine).keys())
-      for (const e of named) removeEntity(world, e)
+  if (options.replace) {
+    const named = Array.from(uidOfFor(world.engine).keys())
+    for (const e of named) destroyEntity(world, e)
+  }
+  const admit = admitter(world, snapshot, options.from)
+  for (const ent of snapshot.entities) ensureEntityPath(world, ent.path)
+  for (const ent of snapshot.entities) {
+    const entity = ensureEntityPath(world, ent.path)
+    for (const [componentId, value] of Object.entries(ent.components)) {
+      const def = getComponentById(componentId)
+      if (!def || !admit(ent.path, componentId, value)) continue
+      writeComponent(world, entity, def, value as Record<string, unknown>)
     }
-    const admit = admitter(world, snapshot, options.from)
-    for (const ent of snapshot.entities) ensureEntityPath(world, ent.path)
-    for (const ent of snapshot.entities) {
-      const entity = ensureEntityPath(world, ent.path)
-      for (const [componentId, value] of Object.entries(ent.components)) {
-        const def = getComponentById(componentId)
-        if (!def || !admit(ent.path, componentId, value)) continue
-        setComponent(world, entity, def, value as Record<string, unknown>)
+  }
+  for (const ent of snapshot.entities) {
+    const entity = ensureEntityPath(world, ent.path)
+    for (const [relName, targetPaths] of Object.entries(ent.relations)) {
+      const rel = getRelationByName(relName)
+      if (!rel) continue
+      for (const targetPath of targetPaths) {
+        if (!admit(ent.path, relName, { targetPath })) continue
+        writeRelation(world, entity, rel, ensureEntityPath(world, targetPath))
       }
     }
-    for (const ent of snapshot.entities) {
-      const entity = ensureEntityPath(world, ent.path)
-      for (const [relName, targetPaths] of Object.entries(ent.relations)) {
-        const rel = getRelationByName(relName)
-        if (!rel) continue
-        for (const targetPath of targetPaths) {
-          if (!admit(ent.path, relName, { targetPath })) continue
-          addRelation(world, entity, rel, ensureEntityPath(world, targetPath))
-        }
-      }
-    }
-  })
+  }
 }
 
 /**

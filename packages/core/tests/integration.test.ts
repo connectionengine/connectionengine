@@ -258,9 +258,8 @@ describe('Property: echo suppression prevents re-broadcast', () => {
     const startLog = b.world.eventLog.length
     for (let i = 0; i < 5; i++) await peers.tick()
     // After A's write replicated to B, further ticks must not grow B's log —
-    // `applyEvent` runs inside `withoutAuthoring`, so nothing re-broadcasts.
+    // the receive path uses raw ops that produce no new events.
     expect(b.world.eventLog.length).toBe(startLog)
-    expect(b.world.componentDirty.size).toBe(0)
     peers.dispose()
   })
 })

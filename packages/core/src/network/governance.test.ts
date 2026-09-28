@@ -226,7 +226,9 @@ describe('Spec 08 — governance does not run on continuous-only writes', () => 
     a.world.runtimeDirty.get(ContinuousOnly.$id)?.add(e)
     await peers.tick()
 
-    expect(a.world.componentDirty.get(ContinuousOnly.$id)?.has(e) ?? false).toBe(false)
+    const logBefore = a.world.eventLog.length
+    await peers.tick()
+    expect(a.world.eventLog.length).toBe(logBefore)
 
     const bScene = getEntityByUID(b.world, b.world.worldRoot, 'scene:gov-cont')!
     const bE = getEntityByUID(b.world, bScene, 'mover')!

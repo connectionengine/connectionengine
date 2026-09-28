@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { initEngine, resetEngine } from './engine'
 import { createAnonAgent, createWorld, destroyWorld } from './world'
-import { createEntity, removeEntity } from './entity'
+import { createEntity, removeEntity, setUID } from './entity'
 import {
   addRelation,
   defineRelation,
@@ -92,15 +92,17 @@ describe('Relation', () => {
     destroyWorld(world)
   })
 
-  it('addRelation pushes to the relation queue for synced relations', () => {
+  it('addRelation appends an event for synced relations', () => {
     const world = createWorld({ agent: createAnonAgent() })
     const child = createEntity(world)
     const parent = createEntity(world)
+    setUID(world, child, 'rel-child')
+    setUID(world, parent, 'rel-parent')
+    const before = world.eventLog.length
     addRelation(world, child, ChildOf, parent)
-    expect(world.relationQueue).toHaveLength(1)
-    expect(world.relationQueue[0].predicate).toBe('ChildOf')
-    expect(world.relationQueue[0].entity).toBe(child)
-    expect(world.relationQueue[0].target).toBe(parent)
+    expect(world.eventLog.length).toBe(before + 1)
+    expect(world.eventLog[world.eventLog.length - 1].predicate).toBe('ChildOf')
+    expect(world.eventLog[world.eventLog.length - 1].op).toBe('set')
     destroyWorld(world)
   })
 

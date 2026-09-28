@@ -100,13 +100,11 @@ describe('Two-peer authored replication', () => {
     await peers.tick()
     await peers.tick()
 
-    // B never re-broadcasts the network-received write back to A. Echo
-    // suppression clears the dirty entries that applyEvent produces.
-    expect(
-      b.world.componentDirty
-        .get('Health')
-        ?.has(getEntityByUID(b.world, getEntityByUID(b.world, b.world.worldRoot, 'scene:echo')!, 'thing')!) ?? false
-    ).toBe(false)
+    // B never re-broadcasts the network-received write back to A. The
+    // receive path uses raw ops that produce no new events in B's log.
+    const bLogBefore = b.world.eventLog.length
+    await peers.tick()
+    expect(b.world.eventLog.length).toBe(bLogBefore)
     peers.dispose()
   })
 
@@ -121,10 +119,11 @@ describe('Two-peer authored replication', () => {
     setComponent(a.world, e, Health, { current: 30 })
 
     await peers.tick()
-    // A logged 3 emits + 1 for the UID component set + 1 for the scene UID
+    // A logged every write (3 Health + UID + scene setup)
     expect(a.world.eventLog.length).toBeGreaterThanOrEqual(3)
-    // B's log should match A's count after receive
-    expect(b.world.eventLog.length).toBe(a.world.eventLog.length)
+    // B receives the collapsed set (same-tick writes deduplicate per entity+predicate)
+    expect(b.world.eventLog.length).toBeGreaterThan(0)
+    expect(b.world.eventLog.length).toBeLessThanOrEqual(a.world.eventLog.length)
     peers.dispose()
   })
 })
@@ -176,7 +175,9 @@ describe('Property invariants — pipeline', () => {
     setComponent(a.world, e, Health, { current: 1 })
     await peers.tick()
     await peers.tick()
-    expect(b.world.componentDirty.get('Health')?.size ?? 0).toBe(0)
+    const bLogBefore = b.world.eventLog.length
+    await peers.tick()
+    expect(b.world.eventLog.length).toBe(bLogBefore)
     peers.dispose()
   })
 })
@@ -266,7 +267,7 @@ describe('Spec 08 — continuous sparse Vec3 replicates via binary channel', () 
 })
 
 describe('Spec 08 — mixed continuous+discrete only authors on discrete write', () => {
-  it('writing only the continuous field does not mark componentDirty', async () => {
+  it('writing only the continuous field produces no authored event', async () => {
     const peers = await createPeerPair()
     const { a } = peers
     const scene = spawnPrefab(a.world, 'scene:s08-mix')
@@ -279,7 +280,9 @@ describe('Spec 08 — mixed continuous+discrete only authors on discrete write',
     a.world.runtimeDirty.get(MixedChannels.$id)?.add(e)
     await peers.tick()
 
-    expect(a.world.componentDirty.get(MixedChannels.$id)?.has(e) ?? false).toBe(false)
+    const logBefore = a.world.eventLog.length
+    await peers.tick()
+    expect(a.world.eventLog.length).toBe(logBefore)
     peers.dispose()
   })
 
