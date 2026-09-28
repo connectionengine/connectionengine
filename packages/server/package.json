@@ -1,18 +1,21 @@
 {
   "name": "@connectionengine/server",
   "version": "1.0.0",
+  "license": "CAL-1.0",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "build": "tsdown",
+    "start": "node dist/index.js",
     "check": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@connectionengine/core": "workspace:*",
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "zod": "^4.3.5"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

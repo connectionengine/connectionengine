@@ -11,3 +11,26 @@ test-results
 .env.local
 
 .certs
+
+# Built docs site — sources live in /docs-src, built into /docs via
+# `pnpm --filter @connectionengine/docs build`. Deploy from CI rather than
+# tracking the generated output.
+/docs
+
+# CodeGraph index — local, per-machine. Built via `pnpm --filter @connectionengine/core map`.
+.codegraph
+
+# Working specs / planning notes — kept on disk per-machine, never pushed.
+.specs/
+
+# AD4M submodule contents — the submodule pointer itself is tracked by git;
+# its internal files are managed by its own repo. We ignore everything inside
+# from this outer repo's perspective so the codegraph indexer (which honours
+# .gitignore) skips them. pnpm-workspace still resolves @coasys/ad4m via
+# `packages/ad4m/core/package.json` which is read directly, bypassing
+# .gitignore.
+packages/ad4m/*
+!packages/ad4m/core
+packages/ad4m/core/*
+!packages/ad4m/core/package.json
+!packages/ad4m/core/lib

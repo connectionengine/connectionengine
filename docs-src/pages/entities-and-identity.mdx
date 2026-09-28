@@ -1,0 +1,112 @@
+---
+description: Entities, UIDs, BelongsTo, and why paths — not IDs — are the unit of identity.
+---
+
+# Entities & Identity
+
+## Two kinds of "id"
+
+An entity in Connection Engine has two identifiers. They are not interchangeable:
+
+- **The integer ID** (`Entity = number`) is a bitECS handle, valid only inside one world. The same integer means different entities on different worlds, and it does not stay stable across reconnects. Do not put it on the wire. Do not store it in user data.
+- **The UID path** is the identity of the entity. It is the list of UIDs walked from a root entity through `BelongsTo` relations. It stays stable, addressable, and comparable across worlds.
+
+```ts
+import { spawnPrefab, getEntityPath } from '@connectionengine/core'
+
+// Top-level networked entity — owner defaults to world.localUser,
+// authority defaults to world.localPeer.
+const scene = spawnPrefab(world, 'scene:arena')
+const alice = spawnPrefab(world, 'avatar:alice', { parent: scene })
+
+getEntityPath(world, alice) // → ['scene:arena', 'avatar:alice']
+```
+
+`spawnPrefab` is the only factory you normally need for wire-addressable entities. It composes the four primitives that together define a networked entity:
+
+1. `createEntity` — allocate the bitECS entity (pure ECS, no identity).
+2. `setUID(uid, { parent })` — give it a path, so that authored events can address it. An anonymous entity, which has no path, never ships.
+3. `OwnedBy(owner ?? world.localUser)` — permanent provenance.
+4. `AuthoritativeFor(authority ?? world.localPeer)` — runtime authority.
+
+Pass `{ prefab }` to apply a bundle of components in the same call. That is how prefabs work — see [the Prefab section below](#prefabs). The function stays the same, and the prefab is an optional extra.
+
+Use `createEntity` directly for entities that never travel, which have no UID and no owner. Test scaffolding and ECS-only structures are the usual cases. The base `createEntity` does one thing only: it allocates the bitECS entity.
+
+## Prefabs
+
+A `PrefabDefinition` is a named bundle of components with optional per-component defaults. It is data, and `definePrefab` touches no world.
+
+```ts
+import { definePrefab, spawnPrefab } from '@connectionengine/core'
+
+const Avatar = definePrefab('Avatar', {
+  components: [Transform, Health],
+  defaults: { Health: { current: 100, max: 100 } }
+})
+
+// Apply the prefab at spawn:
+const alice = spawnPrefab(world, 'avatar:alice', { prefab: Avatar })
+const boss  = spawnPrefab(world, 'boss:1', {
+  prefab: Avatar,
+  overrides: { Health: { max: 999 } }
+})
+```
+
+`spawnPrefab` without a prefab creates a bare entity. `spawnPrefab` with a prefab performs a full instantiation. One function, one mental model.
+
+## BelongsTo is a relation, not a special case
+
+`BelongsTo` is an ordinary exclusive ECS relation, defined in `ecs/entity.ts`:
+
+```ts
+export const BelongsTo = defineRelation({
+  name: 'BelongsTo',
+  exclusive: true,
+  index: true
+})
+```
+
+`index: true` gives it a child → parent map, read with `BelongsTo.get(world, entity)`. `UIDComponent` carries two more indexes as typed extension properties. All three keep a path lookup O(1), so no operation walks the relation.
+
+Identity therefore composes from two existing primitives: one component and one relation. The engine adds no separate namespace system.
+
+## Why paths, not IDs
+
+Because the data fabric **is** the semantic graph. A URI such as `scene:arena/avatar:alice` carries meaning across the whole network. Every peer can resolve it to a local entity, or instantiate the path on demand. An integer such as `42` loses all meaning the moment it leaves the world that allocated it.
+
+Late join works the same way. When a fresh peer applies the event log of the host, the `entityPath` of every event resolves into the world of the joiner, with no ID remapping. The path is the addressing scheme.
+
+The `continuous` channel needs something more compact than a full path on every packet at the simulation tick rate. Each entity that enters the binary wire receives a `NetworkId` component — a compact `u32` label. That label is an optimisation on top, not a second identity system. The path remains the truth, and the network id is only a shorthand for that path on one specific wire.
+
+## The indexes behind it
+
+Three per-engine indexes keep every path operation O(1):
+
+| Index               | Direction                | Read it with                    |
+|---------------------|--------------------------|---------------------------------|
+| `UIDComponent.nameCache` | `(parent, uid) → entity` | `getEntityByUID(world, parent, uid)` |
+| `UIDComponent.uidOf`     | entity → uid             | `UIDComponent.get(world, entity)`    |
+| `BelongsTo` (`index: true`) | child → parent        | `BelongsTo.get(world, entity)`       |
+
+`setUID` maintains all three. `removeEntity` clears all three. Both live in the same module as the indexes, so neither needs a registration step.
+
+Prefer `getEntityByUID`, `getEntityPath`, and `resolveEntityPath` for path work. Use `uidOfFor(engine)` and `nameCacheFor(engine)` only to iterate a whole map.
+
+One subtlety: a top-level entity carries no `BelongsTo` edge, because `worldRoot` is local to each peer and must not replicate. `setUID` still indexes that entity under `worldRoot`, so `BelongsTo.get` answers for every named entity, with or without an edge.
+
+## Conventions for UIDs
+
+UIDs are opaque strings, and Connection Engine assigns no meaning to them. Three conventions:
+
+- **Type prefix** — `scene:arena`, `user:did:key:z6Mk...`, `avatar:bob`, `item:sword-of-truth`. A prefix makes path debugging readable, and prevents accidental collisions between kinds.
+- **DID-as-UID for users** — store the DID of the user directly as the UID under a `users` root. `users/did:key:z6Mk...` is then both the path **and** the source of the identity proof.
+- **Random suffixes for spawned things** — `bullet:9f3a2c1`. A UID does not have to carry meaning.
+
+The engine enforces one hard rule: **a UID must be unique under a given parent.** Two children of the same parent cannot share a UID, and `setUID` throws on a collision.
+
+## Anonymous entities still work
+
+You can call `createEntity` and never call `setUID`. The entity exists, holds bitECS storage, carries components, and answers queries. It cannot travel the authored wire, because `flushAuthored` checks `getEntityPath(world, entity)` and skips an entity with an empty path, which has no UID chain to a root.
+
+Bullets, particles, transient cursor state, and debug entities live for a tick or two, and need no identity. Give one a UID to make it addressable. Leave the UID off to keep it local.

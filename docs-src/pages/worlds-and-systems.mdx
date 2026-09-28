@@ -1,0 +1,134 @@
+---
+description: Worlds are logical scopes inside an Engine. Systems are how time and logic flow through them.
+---
+
+# Worlds & Systems
+
+## A world is a virtual scope inside an Engine
+
+The ECS runs on the [Engine](/engine), which holds bitECS storage, per-component storage, time, and systems. The identity indexes live as per-engine WeakMaps on the `UIDComponent` and `BelongsTo` definitions. Everything that counts as "ECS" is engine-wide. A `World` is a virtual scope on top of that. It holds its own `worldRoot` entity, which anchors a `BelongsTo` subtree. It holds its own network state — the `networks` map, the authored queue, the event log, and the runtime-dirty set. It also holds the local identity for that scope: `localAgent`, `localUser`, and `localPeer`.
+
+```ts
+import { createWorld, destroyWorld, createAnonAgent } from '@connectionengine/core'
+
+const world = createWorld({
+  engine: createEngine(),         // required. ECS runtime container.
+  agent: createAnonAgent(),       // required. Local identity for this world.
+})
+
+// ...
+
+destroyWorld(world) // closes networks, drops the worldRoot. Entities under it survive on the engine.
+```
+
+Both options are required. Every call to `createWorld` takes an explicit `engine`, built with `createEngine({ fixedTimeStep?, clock? })`.
+
+Four points control how worlds behave:
+
+- **Entity IDs are engine-wide.** Two worlds that share an engine see the same ID space. Per-world iteration walks the `BelongsTo` tree from `worldRoot`.
+- **The `worldRoot` of the world** is a sentinel entity. Top-level named entities, created with `spawnPrefab`, hold their UIDs under `world.worldRoot` in the name cache of the engine. You use it occasionally, as in `getEntityByUID(world, world.worldRoot, 'scene:main')`.
+- **The event log is per-world, and canonical.** Networks are sync topology, and hold no history of their own. See [Peers & Sessions](/networking).
+- **Isolated worlds cost little.** Tests routinely create two worlds and link them with `connectInMemory` to simulate two peers in microseconds. Each world defaults to its own engine, so storage stays clean between tests.
+
+## Time has two scales
+
+Time lives on the engine rather than on the world. The engine advances on two scales per frame:
+
+- **Variable step** — used by the `Input`, `Animation`, and `Render` phases. It carries the exact wall-clock delta since the last frame.
+- **Fixed step** — used by the `Simulation` phase. It is always exactly `engine.fixedTimeStep` seconds. The frame loop may run zero, one, or many simulation substeps, according to the variable delta. This is the accumulator pattern.
+
+Most game engines split time this way, because physics and game logic need determinism while rendering and input need frame-tight responsiveness.
+
+`tickEngine(engine, deltaSeconds, { fixed, variable })` is the low-level primitive. `runSystems(engine, deltaSeconds)` is the convenience wrapper. It runs every system registered on the engine, in its phase. It does NOT flush networking. The driver does that explicitly, as "Driving a frame" below shows.
+
+## Systems
+
+A system is a phase-scoped function that the scheduler runs every tick. Systems belong to the engine, not to a world — the ECS operates engine-wide, and systems match:
+
+```ts
+import { defineSystem } from '@connectionengine/core'
+
+defineSystem(engine, {
+  name: 'ApplyVelocity',
+  phase: 'Simulation', // runs at fixed dt
+  execute: (engine, dt) => {
+    for (const e of velocityQuery(world)) {
+      // ...
+    }
+  }
+})
+
+defineSystem(engine, {
+  name: 'RenderAvatars',
+  phase: 'Render', // runs at variable dt
+  execute: (engine, dt) => {
+    // ...
+  }
+})
+```
+
+Four phases run in this order each frame:
+
+```
+Input (variable) → Simulation (fixed, may repeat) → Animation (variable) → Render (variable)
+```
+
+`runSystems` drives the engine only. Networking sits above it. The driver — the runtime mode, the test harness, or the application tick loop — calls `flushAuthored` and then `flushRuntime` from `network/mutation` after `runSystems` returns:
+
+```ts
+import { runSystems, flushAuthored, flushRuntime } from '@connectionengine/core'
+
+// One frame
+runSystems(engine, dt)
+flushAuthored(world)  // authored first — receivers see new entities before binary packets reference them
+flushRuntime(world)   // then the binary delta
+```
+
+A flush at frame end coalesces the writes of that frame. Each channel therefore sends one outbound packet per peer, instead of racing as the systems execute. Authored data goes first, so that new entities are addressable on the receiver before the SoA payloads reference them.
+
+## Ordering systems
+
+Use `before` and `after` when the order of systems matters inside a phase:
+
+```ts
+defineSystem(engine, {
+  name: 'Damage',
+  phase: 'Simulation',
+  before: ['ApplyHealing'],
+  execute: (engine, dt) => { /* ... */ }
+})
+```
+
+The scheduler sorts each phase topologically. A cycle falls back to insertion order. You can also call `reorderSystem(engine, handle, { before, after })` to change the order at runtime.
+
+## Reactors
+
+Each system can hold an optional `reactor` — a DOMless Solid component, logic only, mounted with `createRoot` at registration:
+
+```ts
+defineSystem(engine, {
+  name: 'PresenceCounter',
+  phase: 'Render',
+  reactor: () => {
+    const peers = useTrackedPeers()
+    createEffect(() => console.log(`peers: ${peers().length}`))
+  }
+})
+```
+
+Reactors suit systems whose work is "react to changes" rather than "iterate entities" — UI bindings, telemetry, and anything else that needs the signal graph of Solid. The engine disposes the reactor when `removeSystem` or `destroyEngine` runs.
+
+Supply `execute` alone, and omit `reactor`, when you do not need reactivity.
+
+## Injecting and removing
+
+Systems are values that you can move:
+
+```ts
+const handle = defineSystem(engine, { name: 'Foo', phase: 'Render', execute: ... })
+removeSystem(engine, handle)
+// later:
+injectSystem(engine, handle) // re-attach + re-mount reactor
+```
+
+This matters for plugin systems and hot-reload flows. Keep a `SystemHandle` reference, detach during the reload, and inject again afterwards. Each injection gives the reactor a fresh `createRoot`.

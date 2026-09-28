@@ -1,0 +1,43 @@
+{
+  "--start": {
+    "type": "separator",
+    "title": "Getting Started"
+  },
+  "index": "Introduction",
+  "installation": "Installation",
+  "architecture": "Architecture at a Glance",
+  "--core": {
+    "type": "separator",
+    "title": "Core Concepts"
+  },
+  "engine": "Engine",
+  "worlds-and-systems": "Worlds & Systems",
+  "entities-and-identity": "Entities & Identity",
+  "components": "Components",
+  "relations": "Relations",
+  "mutations": "The Mutation Pipeline",
+  "--network": {
+    "type": "separator",
+    "title": "Networking"
+  },
+  "networking": "Peers & Sessions",
+  "binary-codec": "The Binary Wire",
+  "authority-and-ownership": "Authority & Ownership",
+  "governance": "Governance",
+  "--modes": {
+    "type": "separator",
+    "title": "Runtime Modes"
+  },
+  "runtime-modes": "Solo, Local, AD4M",
+  "--ref": {
+    "type": "separator",
+    "title": "Reference"
+  },
+  "vision": "Vision & Convergence",
+  "repo": {
+    "title": "GitHub →",
+    "type": "page",
+    "href": "https://github.com/connectionengine/connectionengine",
+    "newWindow": true
+  }
+}

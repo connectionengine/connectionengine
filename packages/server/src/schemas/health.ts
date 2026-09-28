@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 /**
- * Schema for the health check API response.
+ * The schema of the health-check API response.
  */
 export const healthResponseSchema = z.object({
   status: z.string(),
@@ -9,6 +9,6 @@ export const healthResponseSchema = z.object({
 })
 
 /**
- * Type inferred from the healthResponseSchema.
+ * The type that TypeScript infers from healthResponseSchema.
  */
 export type HealthResponse = z.infer<typeof healthResponseSchema>
